@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+*.rs.bk
+
+# Build artifacts
+debug/
+release/
+dist/
+node_modules/
+
+# Logs
+*.log
+
+# Env files
+.env
+.env.*
+
+# Editors
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS/tooling
+*.tmp
+*.temp

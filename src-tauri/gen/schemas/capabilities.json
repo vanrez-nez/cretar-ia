@@ -1,0 +1,1 @@
+{"settings-ui":{"identifier":"settings-ui","description":"Enable settings window IPC and window controls.","local":true,"windows":["settings"],"permissions":["core:default","settings-ui-commands"]}}

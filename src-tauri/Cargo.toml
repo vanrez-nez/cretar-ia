@@ -1,0 +1,40 @@
+[package]
+name = "cretar-ia"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+cpal = "0.15"
+hound = "3.5"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri-plugin-opener = "2.5.4"
+dirs = "6.0"
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+log = "0.4"
+fern = "0.7"
+chrono = "0.4"
+arboard = "3.4"
+rdev = "0.5"
+rodio = "0.17"
+tray-item = { version = "0.10", optional = true }
+tauri = { version = "2", optional = true , features = [] }
+
+[features]
+tray = ["tray-item"]
+settings-ui = ["tauri"]
+default = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[lib]
+name = "app_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cretar-ia"
+path = "src/main.rs"

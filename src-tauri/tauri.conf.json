@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cretar IA",
+  "version": "0.1.0",
+  "identifier": "com.cretar-ia.app",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist",
+    "features": ["tray", "settings-ui"]
+  },
+  "bundle": {
+    "icon": ["icons/icon.png"]
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "settings-ui",
+          "description": "Runtime access for the settings window",
+          "windows": ["settings"],
+          "permissions": ["core:default", "settings-ui-commands"]
+        }
+      ]
+    },
+    "windows": []
+  }
+}
