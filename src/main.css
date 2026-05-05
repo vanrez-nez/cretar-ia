@@ -91,3 +91,9 @@ textarea {
   background: #2f3845;
   color: var(--text);
 }
+
+.error-message {
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}

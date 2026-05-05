@@ -1,4 +1,5 @@
-use crate::config::{AppEvent, InteractionConfig, InteractionMode};
+use crate::config::{InteractionConfig, InteractionMode};
+use crate::domain::AppEvent;
 use anyhow::{anyhow, Result};
 use rdev::{listen, Event, EventType, Key};
 use std::sync::{Mutex};

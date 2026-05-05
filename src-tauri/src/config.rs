@@ -126,10 +126,10 @@ pub struct AudioCueConfig {
 impl Default for AudioCueConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            start_sound: None,
-            stop_sound: None,
-            error_sound: None,
+            enabled: true,
+            start_sound: Some("sounds/start.wav".to_string()),
+            stop_sound: Some("sounds/stop.wav".to_string()),
+            error_sound: Some("sounds/error_1.wav".to_string()),
             volume: 0.6,
         }
     }
@@ -232,14 +232,6 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum AppEvent {
-    Start,
-    Stop,
-    Toggle,
-    Quit,
-}
-
 impl AppConfig {
     pub fn home_dir() -> PathBuf {
         home_dir().unwrap_or_else(|| PathBuf::from("."))
@@ -281,6 +273,8 @@ impl AppConfig {
     }
 
     pub fn load_or_create() -> Result<Self> {
+        Self::seed_default_sound_cues()?;
+
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -302,6 +296,27 @@ impl AppConfig {
         let cfg = Self::default();
         cfg.save_to(&path)?;
         Ok(cfg)
+    }
+
+    fn seed_default_sound_cues() -> Result<()> {
+        let target_dir = Self::base_dir().join("sounds");
+        fs::create_dir_all(&target_dir)
+            .with_context(|| format!("creating sound cue directory {}", target_dir.display()))?;
+
+        let assets: [(&str, &[u8]); 3] = [
+            ("start.wav", include_bytes!("../sounds/start.wav")),
+            ("stop.wav", include_bytes!("../sounds/stop.wav")),
+            ("error_1.wav", include_bytes!("../sounds/error_1.wav")),
+        ];
+
+        for (name, bytes) in assets {
+            let target = target_dir.join(name);
+            if !target.exists() {
+                fs::write(&target, bytes).with_context(|| format!("writing sound cue {}", target.display()))?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn save_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {

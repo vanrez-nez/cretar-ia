@@ -1,14 +1,9 @@
-use crate::config::AppEvent;
- use anyhow::Result;
-#[cfg(feature = "tray")]
-use std::process::Command;
-#[cfg(feature = "tray")]
-use std::io;
-use tokio::sync::mpsc::UnboundedSender;
-
 #[cfg(feature = "tray")]
 mod tray_impl {
-    use super::*;
+    use super::open_settings_file;
+    use crate::domain::{AppEvent, AppRuntimeStatus};
+    use anyhow::Result;
+    use tokio::sync::mpsc::UnboundedSender;
     use tray_item::{IconSource, TrayItem};
 
     const ICON_STATE_IDLE: &str = "idle";
@@ -59,11 +54,12 @@ mod tray_impl {
         pub fn run(self) {}
 
         #[cfg_attr(target_os = "macos", allow(dead_code))]
-        pub fn set_status(&mut self, text: String, state: &str) {
-            log::info!("tray status ({state}): {text}");
-            self.recording_pulse = matches!(state, ICON_STATE_RECORDING);
-            if let Err(err) = self.item.set_icon(icon_for_state(state)) {
-                log::warn!("failed to set tray icon for state '{state}': {err}");
+        pub fn set_status(&mut self, text: String, state: AppRuntimeStatus) {
+            let state_name = state.icon_state();
+            log::info!("tray status ({state_name}): {text}");
+            self.recording_pulse = matches!(state_name, ICON_STATE_RECORDING);
+            if let Err(err) = self.item.set_icon(icon_for_state(state_name)) {
+                log::warn!("failed to set tray icon for state '{state_name}': {err}");
             }
         }
 
@@ -207,7 +203,7 @@ fn open_settings_file(path: &str) -> std::io::Result<()> {
     #[cfg(feature = "settings-ui")]
     {
         let exe = std::env::current_exe()?;
-        let mut command = Command::new(exe);
+        let mut command = std::process::Command::new(exe);
         command.arg("--settings");
         match command.spawn().map(|_| ()) {
             Ok(()) => return Ok(()),
@@ -226,12 +222,16 @@ fn open_settings_file(path: &str) -> std::io::Result<()> {
 
 #[cfg(feature = "tray")]
 fn open_path_with_default_app(path: &str) -> std::io::Result<()> {
-    tauri_plugin_opener::open_path(path, None::<&str>).map_err(io::Error::other)
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(std::io::Error::other)
 }
 
 #[cfg(not(feature = "tray"))]
 mod tray_impl {
-    use super::*;
+    use anyhow::Result;
+    use crate::domain::AppEvent;
+    #[cfg(not(target_os = "macos"))]
+    use crate::domain::AppRuntimeStatus;
+    use tokio::sync::mpsc::UnboundedSender;
 
     pub struct TrayController {
         _status: String,
@@ -251,7 +251,7 @@ mod tray_impl {
         pub fn run(self) {}
 
         #[cfg(not(target_os = "macos"))]
-        pub fn set_status(&mut self, text: String, _state: &str) {
+        pub fn set_status(&mut self, text: String, _state: AppRuntimeStatus) {
             log::info!("tray status: {text}");
         }
 
