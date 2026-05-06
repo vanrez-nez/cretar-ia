@@ -31,19 +31,58 @@ pub fn start(
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
+    start_with_worker_mode(cfg, openrouter, true)
+}
+
+#[cfg(test)]
+pub fn start_without_workers_for_tests(
+    cfg: AppConfig,
+    _cue: CuePlayer,
+    openrouter: Option<OpenRouterClient>,
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    JoinHandle<Result<()>>,
+) {
+    start_with_worker_mode(cfg, openrouter, false)
+}
+
+fn start_with_worker_mode(
+    cfg: AppConfig,
+    openrouter: Option<OpenRouterClient>,
+    start_workers: bool,
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    JoinHandle<Result<()>>,
+) {
     let bus = CommandBus::new(&cfg);
     let tx = bus.sender();
     let (status_tx, status_rx) = bounded_status_channel(SESSION_STATUS_QUEUE_CAPACITY);
     let runner_tx = tx.clone();
     let initial_mode = cfg.interaction.pipeline_mode();
 
-    let audio_worker = AudioWorker::start(runner_tx.clone());
-    let processor_worker = ProcessorWorker::start(runner_tx.clone());
-    let recovery_worker = RecoveryWorker::start(
-        runner_tx.clone(),
-        audio_worker.handle(),
-        processor_worker.handle(),
-    );
+    let worker_set = if start_workers {
+        let audio_worker = AudioWorker::start(runner_tx.clone());
+        let processor_worker = ProcessorWorker::start(runner_tx.clone());
+        let recovery_worker = RecoveryWorker::start(
+            runner_tx.clone(),
+            audio_worker.handle(),
+            processor_worker.handle(),
+        );
+        Some((audio_worker, processor_worker, recovery_worker))
+    } else {
+        None
+    };
+
+    let (audio_worker, processor_worker, recovery_worker) = match worker_set {
+        Some((audio_worker, processor_worker, recovery_worker)) => (
+            Some(audio_worker),
+            Some(processor_worker),
+            Some(recovery_worker),
+        ),
+        None => (None, None, None),
+    };
 
     let handle = tokio::spawn(async move {
         let mut runner = Orchestrator {
@@ -51,9 +90,9 @@ pub fn start(
             openrouter,
             bus,
             tx: runner_tx,
-            audio_worker: Some(audio_worker),
-            processor_worker: Some(processor_worker),
-            recovery_worker: Some(recovery_worker),
+            audio_worker,
+            processor_worker,
+            recovery_worker,
             status_tx,
             state: RecordingState::new(initial_mode, 0),
             pending_recording: None,

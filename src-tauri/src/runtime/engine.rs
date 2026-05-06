@@ -2,7 +2,7 @@ use crate::config::{AppConfig, TrayConfig};
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
 use crate::openrouter::OpenRouterClient;
-use crate::{audio_cues, hotkey, recording, runtime::compat, tray};
+use crate::{audio_cues, hotkey, recording, runtime::{compat, control}, tray};
 use anyhow::{anyhow, Result};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration, MissedTickBehavior};
@@ -81,19 +81,41 @@ async fn run_core(
     let _ = pulse_timer.tick().await;
 
     let mut is_recording = false;
+    let mut latest_phase = PipelinePhase::Idle;
+    let mut reload_pending = false;
 
     loop {
         tokio::select! {
             status = lifecycle.status_rx.recv() => {
                 match status {
                     Some(status) => {
+                        latest_phase = status.state;
                         let render = render_status(&lifecycle.cfg.tray, &status);
                         is_recording = render.should_pulse;
                         lifecycle.publish_status(status, render, tray.as_deref_mut());
+                        if reload_pending && latest_phase == PipelinePhase::Idle {
+                            lifecycle.reload_runtime();
+                        }
                     }
                     None => {
                         return lifecycle.wait_orchestrator().await;
                     }
+                }
+            }
+            control = lifecycle.event_rx.recv() => {
+                match control {
+                    Some(compat::RuntimeControlEvent::Quit) => {
+                        lifecycle.request_shutdown();
+                    }
+                    Some(compat::RuntimeControlEvent::ReloadRuntime) => {
+                        if latest_phase == PipelinePhase::Idle {
+                            lifecycle.reload_runtime();
+                        } else {
+                            reload_pending = true;
+                            log::info!("runtime reload deferred until idle; current_phase={latest_phase:?}");
+                        }
+                    }
+                    None => {}
                 }
             }
             _ = pulse_timer.tick(), if is_recording && tray.is_some() => {
@@ -111,10 +133,12 @@ async fn run_core(
 struct RuntimeLifecycle {
     cfg: AppConfig,
     cue: audio_cues::CuePlayer,
+    event_rx: mpsc::UnboundedReceiver<compat::RuntimeControlEvent>,
+    bus_tx: crate::recording::command_bus::CommandBusTx,
     status_rx: crate::contracts::status::SessionStatusReceiver,
     orchestrator: tokio::task::JoinHandle<Result<()>>,
     last_cued_event: Option<String>,
-    _legacy_events: tokio::task::JoinHandle<()>,
+    _runtime_control_server: std::thread::JoinHandle<()>,
     _hotkey_handle: std::thread::JoinHandle<()>,
     _signal_handle: tokio::task::JoinHandle<()>,
 }
@@ -135,10 +159,10 @@ impl RuntimeLifecycle {
     };
         let (bus_tx, status_rx, orchestrator) =
         recording::orchestrator::start(cfg.clone(), cue.clone(), openrouter);
-        let runtime_events = compat::spawn_runtime_control_bridge(event_rx, bus_tx.clone());
+        let runtime_control_server = control::spawn_runtime_control_server(event_tx.clone())?;
         let mut interaction = cfg.interaction.clone();
         interaction.repeat_debounce_ms = cfg.effective_repeat_debounce_ms();
-        let hotkey_handle = hotkey::spawn_listener(interaction, bus_tx)?;
+        let hotkey_handle = hotkey::spawn_listener(interaction, bus_tx.clone())?;
 
         let signal_handle = tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
@@ -148,10 +172,12 @@ impl RuntimeLifecycle {
         Ok(Self {
             cfg,
             cue,
+            event_rx,
+            bus_tx,
             status_rx,
             orchestrator,
             last_cued_event: None,
-            _legacy_events: runtime_events,
+            _runtime_control_server: runtime_control_server,
             _hotkey_handle: hotkey_handle,
             _signal_handle: signal_handle,
         })
@@ -186,6 +212,27 @@ impl RuntimeLifecycle {
             Ok(result) => result,
             Err(err) => Err(anyhow!("orchestrator task stopped unexpectedly: {err}")),
         }
+    }
+
+    fn request_shutdown(&self) {
+        let _ = self.bus_tx.send_command(crate::contracts::commands::RecordingCommand::Shutdown);
+    }
+
+    fn reload_runtime(&self) -> ! {
+        log::info!("reloading runtime by spawning replacement process");
+        match std::env::current_exe() {
+            Ok(exe) => {
+                if let Err(err) = std::process::Command::new(exe).spawn() {
+                    log::error!("failed to spawn replacement runtime: {err}");
+                    std::process::exit(1);
+                }
+            }
+            Err(err) => {
+                log::error!("failed to locate current executable for reload: {err}");
+                std::process::exit(1);
+            }
+        }
+        std::process::exit(0);
     }
 }
 

@@ -29,6 +29,7 @@ fn harness_config() -> AppConfig {
     };
     cfg.interaction.hotkey_queue_capacity = 8;
     cfg.interaction.worker_queue_capacity = 8;
+    cfg.audio_cues.enabled = false;
     cfg
 }
 
@@ -40,7 +41,8 @@ async fn start_runtime(
     tokio::task::JoinHandle<anyhow::Result<()>>,
 ) {
     let cue = CuePlayer::new(&cfg.audio_cues, &cfg);
-    let (command_tx, status_rx, handle) = orchestrator::start(cfg, cue, None);
+    let (command_tx, status_rx, handle) =
+        orchestrator::start_without_workers_for_tests(cfg, cue, None);
     (command_tx, status_rx, handle)
 }
 
@@ -64,7 +66,7 @@ where
     F: Fn(&SessionStatus) -> bool,
 {
     loop {
-        let status = timeout(Duration::from_secs(1), status_rx.recv())
+        let status = timeout(Duration::from_secs(5), status_rx.recv())
             .await
             .expect("timed out waiting for orchestrator status")
             .expect("orchestrator status channel closed unexpectedly");

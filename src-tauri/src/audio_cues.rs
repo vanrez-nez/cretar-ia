@@ -1,11 +1,12 @@
 use crate::config::{AudioCueConfig, AppConfig};
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
-use rodio::{OutputStream, OutputStreamHandle, Source};
+use rodio::{buffer::SamplesBuffer, OutputStream, OutputStreamHandle, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -35,10 +36,10 @@ impl CuePlayer {
             let player = SerializedCuePlayer {
                 enabled,
                 volume,
-                start_sound,
-                stop_sound,
-                error_sound,
-                output: CueOutput::new(),
+                start_sound: CueAsset::load("start", start_sound, 880),
+                stop_sound: CueAsset::load("stop", stop_sound, 1040),
+                error_sound: CueAsset::load("error", error_sound, 220),
+                output: if enabled { CueOutput::new() } else { None },
             };
 
             while let Ok(kind) = rx.recv() {
@@ -106,15 +107,28 @@ impl CuePlayer {
 struct SerializedCuePlayer {
     enabled: bool,
     volume: f32,
-    start_sound: Option<PathBuf>,
-    stop_sound: Option<PathBuf>,
-    error_sound: Option<PathBuf>,
+    start_sound: CueAsset,
+    stop_sound: CueAsset,
+    error_sound: CueAsset,
     output: Option<CueOutput>,
 }
 
 struct CueOutput {
     _stream: OutputStream,
     handle: OutputStreamHandle,
+}
+
+enum CueAsset {
+    Buffered {
+        label: &'static str,
+        channels: u16,
+        sample_rate: u32,
+        samples: Arc<Vec<f32>>,
+    },
+    Tone {
+        label: &'static str,
+        hz: u32,
+    },
 }
 
 impl SerializedCuePlayer {
@@ -125,90 +139,49 @@ impl SerializedCuePlayer {
         }
 
         log::debug!("audio cue {kind:?} playback requested");
-        match kind {
-            CueKind::Start => self.play_sound(self.start_sound.clone(), 880),
-            CueKind::Stop => self.play_sound(self.stop_sound.clone(), 1040),
-            CueKind::Error => self.play_sound(self.error_sound.clone(), 220),
-        }
+        let asset = match kind {
+            CueKind::Start => &self.start_sound,
+            CueKind::Stop => &self.stop_sound,
+            CueKind::Error => &self.error_sound,
+        };
+        self.play_asset(asset);
     }
 
-    fn play_sound(&self, path: Option<PathBuf>, fallback_hz: u32) {
-        if let Some(path) = path {
-            log::debug!("audio cue opening file {}", path.display());
-            match File::open(&path) {
-                Ok(file) => match self.output.as_ref() {
-                    Some(output) => {
-                        match rodio::Decoder::new(BufReader::new(file)) {
-                            Ok(decoder) => match rodio::Sink::try_new(&output.handle) {
-                                Ok(sink) => {
-                            log::debug!("playing cue {}", path.display());
-                            sink.set_volume(self.volume);
-                            sink.append(decoder);
-                            sink.sleep_until_end();
-                                    log::debug!("audio cue completed {}", path.display());
-                            return;
-                        }
-                                Err(err) => {
-                                    log::warn!(
-                                        "failed to create cue sink for {}: {err}",
-                                        path.display()
-                                    );
-                                    fallback_tone(fallback_hz, self.volume);
-                                    return;
-                                }
-                            },
-                            Err(err) => {
-                                log::warn!("failed to decode cue {}: {err}", path.display());
-                                fallback_tone(fallback_hz, self.volume);
-                                return;
-                            }
-                        }
-                    }
-                    None => {
-                        log::warn!(
-                            "audio cue output stream unavailable for {}",
-                            path.display()
-                        );
-                        fallback_tone(fallback_hz, self.volume);
-                        return;
-                    }
-                },
-                Err(err) => {
-                    log::warn!("failed to open cue file {}: {err}", path.display());
-                    fallback_tone(fallback_hz, self.volume);
-                    return;
-                }
+    fn play_asset(&self, asset: &CueAsset) {
+        let Some(output) = self.output.as_ref() else {
+            log::warn!("audio cue output stream unavailable");
+            return;
+        };
+
+        let sink = match rodio::Sink::try_new(&output.handle) {
+            Ok(sink) => sink,
+            Err(err) => {
+                log::warn!("failed to create cue sink: {err}");
+                return;
+            }
+        };
+
+        sink.set_volume(self.volume);
+        match asset {
+            CueAsset::Buffered {
+                label,
+                channels,
+                sample_rate,
+                samples,
+                ..
+            } => {
+                log::debug!("playing buffered cue {label}");
+                let source = SamplesBuffer::new(*channels, *sample_rate, samples.as_ref().clone());
+                sink.append(source);
+            }
+            CueAsset::Tone { label, hz } => {
+                log::debug!("playing fallback cue {label}: {hz}hz");
+                let source = rodio::source::SineWave::new(*hz as f32)
+                    .take_duration(Duration::from_millis(120));
+                sink.append(source);
             }
         }
-
-        log::debug!("using fallback tone {}hz", fallback_hz);
-        fallback_tone(fallback_hz, self.volume);
-    }
-}
-
-fn fallback_tone(freq: u32, volume: f32) {
-    log::debug!("audio cue fallback tone requested: freq={freq}hz volume={volume}");
-    match rodio::OutputStream::try_default() {
-        Ok((stream, handle)) => {
-            let sink = match rodio::Sink::try_new(&handle) {
-                Ok(sink) => sink,
-                Err(err) => {
-                    log::warn!("failed to create fallback cue sink: {err}");
-                    drop(stream);
-                    return;
-                }
-            };
-            let tone = rodio::source::SineWave::new(freq as f32)
-                .take_duration(Duration::from_millis(120))
-                .amplify(volume);
-            sink.append(tone);
-            sink.sleep_until_end();
-            log::debug!("audio cue fallback tone completed: freq={freq}hz");
-            drop(stream);
-        }
-        Err(err) => {
-            log::warn!("failed to open output stream for fallback cue tone: {err}");
-        }
+        sink.detach();
     }
 }
 
@@ -226,6 +199,70 @@ impl CueOutput {
                 log::warn!("failed to initialize audio cue output stream: {err}");
                 None
             }
+        }
+    }
+}
+
+impl CueAsset {
+    fn load(label: &'static str, path: Option<PathBuf>, fallback_hz: u32) -> Self {
+        let Some(path) = path else {
+            log::info!("audio cue {label}: no file configured; using fallback tone");
+            return Self::Tone {
+                label,
+                hz: fallback_hz,
+            };
+        };
+
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(err) => {
+                log::warn!(
+                    "audio cue {label}: failed to open {}; using fallback tone: {err}",
+                    path.display()
+                );
+                return Self::Tone {
+                    label,
+                    hz: fallback_hz,
+                };
+            }
+        };
+
+        let decoder = match rodio::Decoder::new(BufReader::new(file)) {
+            Ok(decoder) => decoder,
+            Err(err) => {
+                log::warn!(
+                    "audio cue {label}: failed to decode {}; using fallback tone: {err}",
+                    path.display()
+                );
+                return Self::Tone {
+                    label,
+                    hz: fallback_hz,
+                };
+            }
+        };
+
+        let channels = decoder.channels();
+        let sample_rate = decoder.sample_rate();
+        let samples: Vec<f32> = decoder.convert_samples::<f32>().collect();
+        let duration_ms = if channels > 0 && sample_rate > 0 {
+            (samples.len() as f64 / channels as f64 / sample_rate as f64 * 1000.0).round() as u64
+        } else {
+            0
+        };
+        log::info!(
+            "audio cue {label}: buffered {} samples from {} (channels={} sample_rate={} duration_ms={})",
+            samples.len(),
+            path.display(),
+            channels,
+            sample_rate,
+            duration_ms
+        );
+
+        Self::Buffered {
+            label,
+            channels,
+            sample_rate,
+            samples: Arc::new(samples),
         }
     }
 }

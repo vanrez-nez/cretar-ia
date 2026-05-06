@@ -1,5 +1,6 @@
 use crate::commands::settings_service::SettingsService;
 use crate::config::AppConfig;
+use crate::runtime::control;
 use serde_json::Value;
 use tauri::State;
 
@@ -24,7 +25,9 @@ pub async fn save_config(
     state
         .service()
         .save_value(config)
-        .map_err(SettingsService::command_error)
+        .map_err(SettingsService::command_error)?;
+    notify_runtime_reload();
+    Ok(())
 }
 
 #[tauri::command]
@@ -54,7 +57,9 @@ pub async fn update_settings(
     state
         .service()
         .save(config)
-        .map_err(SettingsService::command_error)
+        .map_err(SettingsService::command_error)?;
+    notify_runtime_reload();
+    Ok(())
 }
 
 pub fn build_settings_state() -> Result<SettingsState, String> {
@@ -68,5 +73,11 @@ pub fn build_settings_state() -> Result<SettingsState, String> {
 impl SettingsState {
     fn service(&self) -> SettingsService {
         SettingsService::new(&self.config_path)
+    }
+}
+
+fn notify_runtime_reload() {
+    if let Err(err) = control::notify_runtime_reload() {
+        log::debug!("runtime reload notification skipped: {err}");
     }
 }
