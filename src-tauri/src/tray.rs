@@ -409,6 +409,11 @@ mod tray_impl {
             log::warn!("failed to add menu separator: {err}");
         }
 
+        let input_devices_label = MenuItem::with_id("input-device:label", "Input Devices", false, None);
+        if let Err(err) = menu.append(&input_devices_label) {
+            log::warn!("failed to add input devices menu label: {err}");
+        }
+
         if device_names.is_empty() {
             let empty = MenuItem::with_id("input-device:none", "No input devices found", false, None);
             if let Err(err) = menu.append(&empty) {
@@ -438,7 +443,7 @@ mod tray_impl {
             if !configured_available {
                 let unavailable = MenuItem::with_id(
                     "input-device:unavailable",
-                    format!("Selected unavailable: {configured}"),
+                    configured,
                     false,
                     None,
                 );
