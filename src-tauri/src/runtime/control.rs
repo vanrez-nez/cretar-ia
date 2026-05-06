@@ -30,6 +30,8 @@ struct RuntimeControlMessage {
 enum RuntimeControlMessageKind {
     ReloadRuntime,
     SwitchInputDevice,
+    PauseHotkeysForSettings,
+    ResumeHotkeysAfterSettings,
 }
 
 pub fn spawn_runtime_control_server(
@@ -67,6 +69,14 @@ pub fn notify_runtime_reload() -> Result<()> {
 
 pub fn notify_input_device_switch() -> Result<()> {
     notify_runtime_control(RuntimeControlMessageKind::SwitchInputDevice)
+}
+
+pub fn notify_hotkeys_pause_for_settings() -> Result<()> {
+    notify_runtime_control(RuntimeControlMessageKind::PauseHotkeysForSettings)
+}
+
+pub fn notify_hotkeys_resume_after_settings() -> Result<()> {
+    notify_runtime_control(RuntimeControlMessageKind::ResumeHotkeysAfterSettings)
 }
 
 fn notify_runtime_control(event: RuntimeControlMessageKind) -> Result<()> {
@@ -116,6 +126,14 @@ fn handle_stream(
         RuntimeControlMessageKind::SwitchInputDevice => {
             log::info!("runtime input device switch requested");
             let _ = tx.send(RuntimeControlEvent::SwitchInputDevice);
+        }
+        RuntimeControlMessageKind::PauseHotkeysForSettings => {
+            log::info!("runtime hotkey pause requested by settings");
+            let _ = tx.send(RuntimeControlEvent::PauseHotkeysForSettings);
+        }
+        RuntimeControlMessageKind::ResumeHotkeysAfterSettings => {
+            log::info!("runtime hotkey resume requested by settings");
+            let _ = tx.send(RuntimeControlEvent::ResumeHotkeysAfterSettings);
         }
     }
 }

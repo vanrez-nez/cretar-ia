@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::{HotkeyEvent, RecordingEvent};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, error::TrySendError, Receiver, Sender};
 
@@ -17,6 +17,7 @@ pub struct CommandBusTx {
     hotkey_dropped: Arc<AtomicU32>,
     worker_dropped: Arc<AtomicU32>,
     command_dropped: Arc<AtomicU32>,
+    hotkey_paused: Arc<AtomicBool>,
 }
 
 pub struct CommandBus {
@@ -52,6 +53,7 @@ impl CommandBus {
                 hotkey_dropped: Arc::new(AtomicU32::new(0)),
                 worker_dropped: Arc::new(AtomicU32::new(0)),
                 command_dropped: Arc::new(AtomicU32::new(0)),
+                hotkey_paused: Arc::new(AtomicBool::new(false)),
             },
         }
     }
@@ -98,6 +100,11 @@ fn normalized_capacity(configured: u32, fallback: usize) -> usize {
 
 impl CommandBusTx {
     pub fn send_hotkey(&self, event: HotkeyEvent) -> Option<RecordingEvent> {
+        if self.hotkey_paused.load(Ordering::Relaxed) {
+            log::trace!("hotkey event ignored while runtime hotkeys are paused for settings");
+            return None;
+        }
+
         match self.hotkey_tx.try_send(event) {
             Ok(()) => None,
             Err(TrySendError::Full(_)) => Some(self.queue_saturated("hotkey", &self.hotkey_dropped)),
@@ -119,6 +126,10 @@ impl CommandBusTx {
             Err(TrySendError::Full(_)) => Some(self.queue_saturated("command", &self.command_dropped)),
             Err(TrySendError::Closed(_)) => None,
         }
+    }
+
+    pub fn set_hotkey_paused(&self, paused: bool) {
+        self.hotkey_paused.store(paused, Ordering::Relaxed);
     }
 
     fn queue_saturated(&self, source: &str, metric: &AtomicU32) -> RecordingEvent {

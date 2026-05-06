@@ -128,6 +128,12 @@ async fn run_core(
                         log::info!("runtime reload requested for input device switch; current_phase={latest_phase:?}");
                         lifecycle.reload_runtime();
                     }
+                    Some(compat::RuntimeControlEvent::PauseHotkeysForSettings) => {
+                        lifecycle.pause_hotkeys_for_settings(latest_phase);
+                    }
+                    Some(compat::RuntimeControlEvent::ResumeHotkeysAfterSettings) => {
+                        lifecycle.resume_hotkeys_after_settings();
+                    }
                     None => {}
                 }
             }
@@ -229,6 +235,24 @@ impl RuntimeLifecycle {
 
     fn request_shutdown(&self) {
         let _ = self.bus_tx.send_command(crate::contracts::commands::RecordingCommand::Shutdown);
+    }
+
+    fn pause_hotkeys_for_settings(&self, latest_phase: PipelinePhase) {
+        log::info!("pausing runtime hotkeys while settings window is open");
+        self.bus_tx.set_hotkey_paused(true);
+        if matches!(
+            latest_phase,
+            PipelinePhase::Starting | PipelinePhase::Recording | PipelinePhase::Stopping
+        ) {
+            let _ = self
+                .bus_tx
+                .send_command(crate::contracts::commands::RecordingCommand::ForceStop);
+        }
+    }
+
+    fn resume_hotkeys_after_settings(&self) {
+        log::info!("resuming runtime hotkeys after settings window closed");
+        self.bus_tx.set_hotkey_paused(false);
     }
 
     fn reload_runtime(&self) -> ! {

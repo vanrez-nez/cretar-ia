@@ -6,4 +6,6 @@ pub enum RuntimeControlEvent {
     Quit,
     ReloadRuntime,
     SwitchInputDevice,
+    PauseHotkeysForSettings,
+    ResumeHotkeysAfterSettings,
 }

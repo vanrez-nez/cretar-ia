@@ -1,4 +1,5 @@
 use crate::commands::settings;
+use crate::runtime::control;
 use crate::settings_control;
 use anyhow::{Result, anyhow};
 use std::net::{SocketAddr, TcpStream};
@@ -35,10 +36,16 @@ pub fn run() -> Result<()> {
             .map_err(|err| anyhow!(err.to_string()))?;
             let _settings_control = settings_control::spawn_settings_control_server(app.handle().clone())
                 .map_err(|err| anyhow!(err.to_string()))?;
+            if let Err(err) = control::notify_hotkeys_pause_for_settings() {
+                log::debug!("runtime hotkey pause notification skipped: {err}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
             if window.label() == "settings" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Err(err) = control::notify_hotkeys_resume_after_settings() {
+                    log::debug!("runtime hotkey resume notification skipped: {err}");
+                }
                 settings_control::cleanup_settings_control_endpoint();
             }
         })

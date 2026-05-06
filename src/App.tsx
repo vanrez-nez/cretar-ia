@@ -9,12 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { HotkeyCapture } from "@/components/hotkey";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppConfig, InteractionMode } from "./lib/types";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
-
 export default function App() {
   const fetchSettings = useSettingsStore((s) => s.fetchSettings);
   const config = useSettingsStore((s) => s.config);
@@ -71,9 +71,7 @@ export default function App() {
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 p-5">
         <header className="flex flex-col gap-1">
           <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-          <p className="text-sm text-muted-foreground">
-            Changes are saved automatically.
-          </p>
+          <p className="text-sm text-muted-foreground">Changes are saved automatically.</p>
         </header>
 
         {!draft ? (
@@ -222,13 +220,20 @@ function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled:
             </Select>
           </SettingRow>
 
-          <SettingRow title="Hotkey" description="Hotkey editing is planned for a later phase.">
-            <div className="flex items-center gap-2">
-              <Input value={draft.interaction.shortcut} readOnly className="w-52" />
-              <Button variant="outline" size="sm" disabled>
-                Edit
-              </Button>
-            </div>
+          <SettingRow title="Hotkey" description="Press modifiers first, then the final trigger key.">
+            <HotkeyCapture
+              shortcut={draft.interaction.shortcut}
+              disabled={disabled}
+              onChange={(shortcut) =>
+                updateDraft((config) => ({
+                  ...config,
+                  interaction: {
+                    ...config.interaction,
+                    shortcut,
+                  },
+                }))
+              }
+            />
           </SettingRow>
 
           <SettingRow title="Microphone" description="Native device picker is available from the tray for now.">
@@ -339,10 +344,7 @@ function ModelsPane({ draft }: { draft: AppConfig }) {
           <CardDescription>Speech-to-text providers.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ProviderItem
-            name={providerName}
-            detail={draft.provider.openrouter.model || "No model configured"}
-          />
+          <ProviderItem name={providerName} detail={draft.provider.openrouter.model || "No model configured"} />
           <Button variant="outline" size="sm" disabled>
             Add Provider
           </Button>
