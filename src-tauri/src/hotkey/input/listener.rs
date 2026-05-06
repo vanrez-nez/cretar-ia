@@ -98,8 +98,6 @@ mod macos {
                     CGEventType::KeyDown,
                     CGEventType::KeyUp,
                     CGEventType::FlagsChanged,
-                    CGEventType::TapDisabledByTimeout,
-                    CGEventType::TapDisabledByUserInput,
                 ],
                 move |_proxy, event_type, event| {
                     handle_event(&callback_state, event_type, event);

@@ -216,6 +216,10 @@ mod tray_impl {
                                     log::warn!("cannot open settings editor: {err}");
                                 }
                             } else if event.id() == MENU_QUIT {
+                                #[cfg(feature = "settings-ui")]
+                                {
+                                    let _ = crate::settings_control::notify_settings_close();
+                                }
                                 let _ = tx.send(RuntimeControlEvent::Quit);
                                 *control_flow = ControlFlow::Exit;
                             } else if let Some(device_name) = device_menu_ids.get(event.id().as_ref()) {
@@ -502,6 +506,10 @@ mod tray_impl {
                 }
             });
             let _ = item.add_menu_item("Quit", move || {
+                #[cfg(feature = "settings-ui")]
+                {
+                    let _ = crate::settings_control::notify_settings_close();
+                }
                 let _ = tx.send(RuntimeControlEvent::Quit);
                 std::process::exit(0);
             });

@@ -29,6 +29,7 @@ struct SettingsControlMessage {
 #[serde(rename_all = "snake_case")]
 enum SettingsControlMessageKind {
     FocusSettings,
+    CloseSettings,
 }
 
 pub fn spawn_settings_control_server(app: AppHandle) -> Result<thread::JoinHandle<()>> {
@@ -59,6 +60,10 @@ pub fn spawn_settings_control_server(app: AppHandle) -> Result<thread::JoinHandl
 
 pub fn notify_settings_focus() -> Result<()> {
     notify_settings_control(SettingsControlMessageKind::FocusSettings)
+}
+
+pub fn notify_settings_close() -> Result<()> {
+    notify_settings_control(SettingsControlMessageKind::CloseSettings)
 }
 
 pub fn cleanup_settings_control_endpoint() {
@@ -102,6 +107,7 @@ fn handle_stream(stream: &mut TcpStream, token: &str, app: &AppHandle) {
 
     match message.event {
         SettingsControlMessageKind::FocusSettings => focus_settings_window(app),
+        SettingsControlMessageKind::CloseSettings => close_settings_window(app),
     }
 }
 
@@ -119,6 +125,17 @@ fn focus_settings_window(app: &AppHandle) {
     }
     if let Err(err) = window.set_focus() {
         log::warn!("failed to focus settings window: {err}");
+    }
+}
+
+fn close_settings_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) else {
+        log::debug!("settings close requested but settings window was not found");
+        return;
+    };
+
+    if let Err(err) = window.close() {
+        log::warn!("failed to close settings window: {err}");
     }
 }
 

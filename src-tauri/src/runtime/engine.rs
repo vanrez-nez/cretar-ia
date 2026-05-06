@@ -114,6 +114,7 @@ async fn run_core(
             control = lifecycle.event_rx.recv() => {
                 match control {
                     Some(compat::RuntimeControlEvent::Quit) => {
+                        close_settings_window_if_running();
                         lifecycle.request_shutdown();
                     }
                     Some(compat::RuntimeControlEvent::ReloadRuntime) => {
@@ -257,6 +258,7 @@ impl RuntimeLifecycle {
 
     fn reload_runtime(&self) -> ! {
         log::info!("reloading runtime by spawning replacement process");
+        close_settings_window_if_running();
         match std::env::current_exe() {
             Ok(exe) => {
                 if let Err(err) = std::process::Command::new(exe).spawn() {
@@ -270,6 +272,15 @@ impl RuntimeLifecycle {
             }
         }
         std::process::exit(0);
+    }
+}
+
+fn close_settings_window_if_running() {
+    #[cfg(feature = "settings-ui")]
+    {
+        if let Err(err) = crate::settings_control::notify_settings_close() {
+            log::debug!("settings close notification skipped: {err}");
+        }
     }
 }
 
