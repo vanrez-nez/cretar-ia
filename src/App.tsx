@@ -10,8 +10,11 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HotkeyCapture } from "@/components/hotkey";
+import { SettingsBadge } from "@/components/settings-badge";
+import { tauriInvoke } from "@/hooks/useTauriIPC";
 import { useSettingsStore } from "./stores/settingsStore";
-import type { AppConfig, InteractionMode } from "./lib/types";
+import type { AppConfig, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
+import { ShieldCheck, ShieldX } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -173,20 +176,65 @@ function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled:
   const startEnabled = draft.audio_cues.start_sound !== null;
   const stopEnabled = draft.audio_cues.stop_sound !== null;
   const errorEnabled = draft.audio_cues.error_sound !== null;
+  const [permissions, setPermissions] = useState<PermissionsStatus | null>(null);
+  const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
+
+  const refreshPermissions = async () => {
+    setIsRefreshingPermissions(true);
+    setPermissionError(null);
+
+    try {
+      if (!isTauri()) {
+        setPermissions({
+          microphone: "unsupported",
+          accessibility: "unsupported",
+        });
+        return;
+      }
+
+      const current = await tauriInvoke<PermissionsStatus>("check_permissions");
+      const next = { ...current };
+
+      if (current.microphone !== "granted") {
+        next.microphone = await tauriInvoke<PermissionState>("request_microphone_permission");
+      }
+
+      if (current.accessibility !== "granted") {
+        next.accessibility = await tauriInvoke<PermissionState>("request_accessibility_permission");
+      }
+
+      setPermissions(next);
+    } catch (error) {
+      setPermissionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsRefreshingPermissions(false);
+    }
+  };
 
   return (
     <div className="grid gap-4">
       <Card>
         <CardHeader>
           <CardTitle>Permissions</CardTitle>
-          <CardDescription>Permission refresh will be connected to native status checks later.</CardDescription>
+          <CardDescription>
+            Refresh checks current macOS permission status and requests missing permissions when available.
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-3">
-          <Badge variant="secondary">Microphone</Badge>
-          <Badge variant="secondary">Accessibility</Badge>
-          <Button variant="outline" size="sm" disabled>
-            Refresh
+          <PermissionBadge label="Microphone" state={permissions?.microphone} />
+          <PermissionBadge label="Accessibility" state={permissions?.accessibility} />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isRefreshingPermissions}
+            onClick={refreshPermissions}
+          >
+            {isRefreshingPermissions ? "Refreshing..." : "Refresh"}
           </Button>
+          {permissionError ? (
+            <span className="text-xs text-destructive">{permissionError}</span>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -330,6 +378,17 @@ function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled:
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function PermissionBadge({ label, state }: { label: string; state?: PermissionState }) {
+  const isGranted = state === "granted";
+  const Icon = isGranted ? ShieldCheck : ShieldX;
+
+  return (
+    <SettingsBadge tone={isGranted ? "success" : "danger"} icon={<Icon className="size-3" aria-hidden="true" />}>
+      {label}
+    </SettingsBadge>
   );
 }
 

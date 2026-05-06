@@ -20,6 +20,9 @@ pub fn run() -> Result<()> {
             settings::open_config_file,
             settings::get_settings,
             settings::update_settings,
+            settings::check_permissions,
+            settings::request_microphone_permission,
+            settings::request_accessibility_permission,
         ])
         .setup(|app| {
             let _window = tauri::WebviewWindowBuilder::new(

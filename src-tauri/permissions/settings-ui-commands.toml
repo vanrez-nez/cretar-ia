@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "settings-ui-commands"
 description = "Allows settings UI configuration commands."
-commands.allow = ["get_config_path", "load_config", "save_config", "open_config_file"]
+commands.allow = ["get_config_path", "load_config", "save_config", "open_config_file", "get_settings", "update_settings", "refresh_permissions"]

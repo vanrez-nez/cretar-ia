@@ -67,6 +67,7 @@ pub fn notify_runtime_reload() -> Result<()> {
     notify_runtime_control(RuntimeControlMessageKind::ReloadRuntime)
 }
 
+#[allow(dead_code)]
 pub fn notify_input_device_switch() -> Result<()> {
     notify_runtime_control(RuntimeControlMessageKind::SwitchInputDevice)
 }

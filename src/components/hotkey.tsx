@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Badge } from "@/components/ui/badge";
+import { SettingsBadge } from "@/components/settings-badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArrowBigUp, Command, CornerDownLeft, Option } from "lucide-react";
@@ -110,29 +110,19 @@ export function HotkeyCapture({ shortcut, disabled, onChange }: HotkeyCapturePro
   );
 }
 
-function HotkeyBadge({
-  part,
-  pending = false,
-  tone = "defined",
-}: {
+function HotkeyBadge({ part, pending = false, tone = "defined" }: {
   part: ShortcutPart | "?";
   pending?: boolean;
   tone?: "defined" | "capture" | "example";
 }) {
   const icon = iconForShortcutPart(part);
   return (
-    <Badge
-      variant={pending ? "outline" : "secondary"}
-      className={cn(
-        "h-7 gap-1.5 rounded-md px-2 font-mono text-[11px] uppercase tracking-wide",
-        tone === "defined" && "bg-muted/40 text-white",
-        tone === "capture" && "border-emerald-400/70 bg-emerald-500/20 text-emerald-100",
-        tone === "example" && "border-border/50 bg-muted/30 text-muted-foreground opacity-70"
-      )}
+    <SettingsBadge
+      tone={pending ? "pending" : tone === "defined" ? "default" : tone}
+      icon={icon}
     >
-      {icon}
       {labelForShortcutPart(part)}
-    </Badge>
+    </SettingsBadge>
   );
 }
 

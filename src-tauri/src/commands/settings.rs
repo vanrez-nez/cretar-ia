@@ -1,5 +1,6 @@
 use crate::commands::settings_service::SettingsService;
 use crate::config::AppConfig;
+use crate::permissions::PermissionsStatus;
 use crate::runtime::control;
 use serde_json::Value;
 use tauri::State;
@@ -60,6 +61,21 @@ pub async fn update_settings(
         .map_err(SettingsService::command_error)?;
     notify_runtime_reload();
     Ok(())
+}
+
+#[tauri::command]
+pub async fn check_permissions() -> Result<PermissionsStatus, String> {
+    Ok(crate::permissions::check_permissions())
+}
+
+#[tauri::command]
+pub async fn request_microphone_permission() -> Result<crate::permissions::PermissionState, String> {
+    Ok(crate::permissions::request_microphone_permission())
+}
+
+#[tauri::command]
+pub async fn request_accessibility_permission() -> Result<crate::permissions::PermissionState, String> {
+    Ok(crate::permissions::request_accessibility_permission())
 }
 
 pub fn build_settings_state() -> Result<SettingsState, String> {

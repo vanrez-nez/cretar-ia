@@ -2,6 +2,19 @@ export type InteractionMode = "push_to_talk" | "toggle";
 
 export type OutputMode = "clipboard_only" | "clipboard_paste";
 
+export type PermissionState =
+  | "granted"
+  | "denied"
+  | "not_determined"
+  | "restricted"
+  | "unsupported"
+  | "unknown";
+
+export interface PermissionsStatus {
+  microphone: PermissionState;
+  accessibility: PermissionState;
+}
+
 export interface OpenRouterConfig {
   api_key: string;
   model: string;

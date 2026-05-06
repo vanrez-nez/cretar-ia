@@ -56,6 +56,7 @@ mod tray_impl {
     pub struct TrayController {
         event_loop: EventLoop<TrayEvent>,
         handle: TrayHandle,
+        #[allow(dead_code)]
         title: String,
         tooltip: String,
         tx: UnboundedSender<RuntimeControlEvent>,
@@ -78,6 +79,7 @@ mod tray_impl {
             state_name: &'static str,
         },
         PulseRecording,
+        #[allow(dead_code)]
         Quit,
     }
 

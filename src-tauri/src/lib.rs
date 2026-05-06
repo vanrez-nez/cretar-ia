@@ -6,6 +6,8 @@ pub mod contracts;
 mod hotkey;
 mod inject;
 mod openrouter;
+#[cfg(feature = "settings-ui")]
+mod permissions;
 mod runtime;
 mod recording;
 mod tray;

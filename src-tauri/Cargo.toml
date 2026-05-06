@@ -26,6 +26,12 @@ tao = { version = "0.35", optional = true }
 resvg = { version = "0.47", optional = true }
 tauri = { version = "2", optional = true , features = [] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+block = "0.1"
+core-foundation = "0.10"
+core-graphics = "0.25"
+objc = "0.2"
+
 [features]
 tray = ["tray-item", "tray-icon", "tao", "resvg"]
 settings-ui = ["tauri"]
