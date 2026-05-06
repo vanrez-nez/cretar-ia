@@ -11,7 +11,7 @@ pub struct SettingsState {
 #[tauri::command]
 pub async fn load_config(state: State<'_, SettingsState>) -> Result<AppConfig, String> {
     let raw = std::fs::read_to_string(&state.config_path).map_err(|err| err.to_string())?;
-    serde_json::from_str::<AppConfig>(&raw).map_err(|err| err.to_string())
+    AppConfig::parse(&raw).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -20,6 +20,7 @@ pub async fn save_config(
     state: State<'_, SettingsState>,
 ) -> Result<(), String> {
     let config = serde_json::from_value::<AppConfig>(config).map_err(|err| err.to_string())?;
+    config.validate().map_err(|err| err.to_string())?;
     let payload = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
     std::fs::write(&state.config_path, payload).map_err(|err| err.to_string())?;
     Ok(())
@@ -46,6 +47,7 @@ pub async fn update_settings(
     state: State<'_, SettingsState>,
     config: AppConfig,
 ) -> Result<(), String> {
+    config.validate().map_err(|err| err.to_string())?;
     let payload = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
     std::fs::write(&state.config_path, payload).map_err(|err| err.to_string())?;
     Ok(())

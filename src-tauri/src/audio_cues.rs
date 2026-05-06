@@ -1,12 +1,14 @@
 use crate::config::{AudioCueConfig, AppConfig};
+use crate::contracts::events::PipelinePhase;
+use crate::contracts::status::SessionStatus;
 use rodio::Source;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::sync::mpsc;
 use std::thread;
 
-#[derive(Clone, Copy)]
-enum CueKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CueKind {
     Start,
     Stop,
     Error,
@@ -60,6 +62,29 @@ impl CuePlayer {
     pub fn play_error(&self) {
         log::debug!("queue error cue");
         let _ = self.sender.send(CueKind::Error);
+    }
+
+    pub fn status_to_cue(status: &SessionStatus) -> Option<CueKind> {
+        if status.source == "start_requested" {
+            return Some(CueKind::Start);
+        }
+
+        if matches!(
+            status.source.as_str(),
+            "push_release_stop" | "toggle_press_stop"
+        ) {
+            return Some(CueKind::Stop);
+        }
+
+        if status.state == PipelinePhase::Error {
+            return Some(CueKind::Error);
+        }
+
+        if status.source.contains("failed") || status.source.contains("queue_saturated") {
+            return Some(CueKind::Error);
+        }
+
+        None
     }
 }
 

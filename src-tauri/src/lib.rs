@@ -2,10 +2,12 @@ mod audio;
 mod audio_cues;
 mod config;
 mod domain;
+pub mod contracts;
 mod hotkey;
 mod inject;
 mod openrouter;
 mod runtime;
+mod recording;
 mod tray;
 #[cfg(feature = "settings-ui")]
 mod commands;
@@ -29,6 +31,7 @@ pub fn run() -> Result<()> {
     }
 
     let cfg = AppConfig::load_or_create()?;
+    cfg.validate().map_err(|err| anyhow::anyhow!("{err}"))?;
     init_logging(&cfg)?;
 
     log::info!(

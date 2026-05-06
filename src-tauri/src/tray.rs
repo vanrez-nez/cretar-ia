@@ -1,17 +1,38 @@
+use crate::contracts::events::PipelinePhase;
+use crate::contracts::status::SessionStatus;
+
+const ICON_STATE_IDLE: &str = "idle";
+const ICON_STATE_RECORDING: &str = "recording";
+const ICON_STATE_SENDING: &str = "sending";
+const ICON_STATE_ERROR: &str = "error";
+const ICON_STATE_DONE: &str = "done";
+const ICON_STATE_SHUTDOWN: &str = "shutdown";
+
+pub fn status_to_icon(status: &SessionStatus) -> &'static str {
+    match status.state {
+        PipelinePhase::Idle => {
+            if status.source == "processing_completed" {
+                ICON_STATE_DONE
+            } else {
+                ICON_STATE_IDLE
+            }
+        }
+        PipelinePhase::Starting => ICON_STATE_RECORDING,
+        PipelinePhase::Recording => ICON_STATE_RECORDING,
+        PipelinePhase::Stopping => ICON_STATE_SENDING,
+        PipelinePhase::Processing => ICON_STATE_SENDING,
+        PipelinePhase::Recovering => ICON_STATE_ERROR,
+        PipelinePhase::Error => ICON_STATE_ERROR,
+    }
+}
+
 #[cfg(feature = "tray")]
 mod tray_impl {
     use super::open_settings_file;
-    use crate::domain::{AppEvent, AppRuntimeStatus};
+    use crate::domain::AppEvent;
     use anyhow::Result;
     use tokio::sync::mpsc::UnboundedSender;
     use tray_item::{IconSource, TrayItem};
-
-    const ICON_STATE_IDLE: &str = "idle";
-    const ICON_STATE_RECORDING: &str = "recording";
-    const ICON_STATE_SENDING: &str = "sending";
-    const ICON_STATE_ERROR: &str = "error";
-    const ICON_STATE_DONE: &str = "done";
-    const ICON_STATE_SHUTDOWN: &str = "shutdown";
 
     pub struct TrayController {
         item: TrayItem,
@@ -54,8 +75,7 @@ mod tray_impl {
         pub fn run(self) {}
 
         #[cfg_attr(target_os = "macos", allow(dead_code))]
-        pub fn set_status(&mut self, text: String, state: AppRuntimeStatus) {
-            let state_name = state.icon_state();
+        pub fn set_status(&mut self, text: String, state_name: &'static str) {
             log::info!("tray status ({state_name}): {text}");
             self.recording_pulse = matches!(state_name, ICON_STATE_RECORDING);
             if let Err(err) = self.item.set_icon(icon_for_state(state_name)) {
@@ -229,8 +249,6 @@ fn open_path_with_default_app(path: &str) -> std::io::Result<()> {
 mod tray_impl {
     use anyhow::Result;
     use crate::domain::AppEvent;
-    #[cfg(not(target_os = "macos"))]
-    use crate::domain::AppRuntimeStatus;
     use tokio::sync::mpsc::UnboundedSender;
 
     pub struct TrayController {
@@ -251,7 +269,7 @@ mod tray_impl {
         pub fn run(self) {}
 
         #[cfg(not(target_os = "macos"))]
-        pub fn set_status(&mut self, text: String, _state: AppRuntimeStatus) {
+        pub fn set_status(&mut self, text: String, _state_name: &'static str) {
             log::info!("tray status: {text}");
         }
 

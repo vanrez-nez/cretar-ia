@@ -1,4 +1,5 @@
 mod engine;
+mod compat;
 
 #[cfg(not(target_os = "macos"))]
 pub use engine::run_non_macos;

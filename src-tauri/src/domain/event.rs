@@ -1,11 +1,21 @@
+/// Legacy runtime status and event types are kept only for compatibility.
+/// New runtime behavior must be driven by orchestrator snapshot and command channels.
+#[allow(deprecated)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[deprecated(
+    note = "Legacy phase-centric API is retained only for compatibility. Use `contracts::SessionStatus` and command/event contracts instead."
+)]
 pub enum AppPhase {
     Idle,
     Recording,
     Sending,
 }
 
+#[allow(deprecated)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(
+    note = "Legacy runtime event API is retained only for compatibility. Use contract event and command inputs instead."
+)]
 pub enum AppEvent {
     Start,
     Stop,
@@ -19,7 +29,11 @@ pub enum WorkEvent {
     Failed(String),
 }
 
+#[allow(deprecated)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[deprecated(
+    note = "Legacy runtime status is retained only for compatibility. Prefer `contracts::SessionStatus`."
+)]
 pub enum AppRuntimeStatus {
     Idle,
     Recording,
@@ -30,6 +44,9 @@ pub enum AppRuntimeStatus {
 }
 
 #[derive(Debug, Clone)]
+#[deprecated(
+    note = "Legacy runtime state is retained only for compatibility. Use `contracts::SessionStatus` as source of truth."
+)]
 pub struct RuntimeSessionState {
     pub phase: AppPhase,
     pub status: AppRuntimeStatus,
