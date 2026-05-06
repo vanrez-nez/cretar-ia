@@ -2,10 +2,7 @@ use crate::config::{AudioCaptureConfig, OutputConfig, OutputMode};
 use crate::domain::TextInjectionStep;
 use anyhow::{anyhow, Result};
 use arboard::Clipboard;
-#[cfg(not(target_os = "macos"))]
 use rdev::{simulate, EventType, Key};
-#[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub async fn deliver_text(_audio_cfg: &AudioCaptureConfig, cfg: &OutputConfig, text: &str) -> Result<()> {
@@ -66,7 +63,7 @@ async fn press_paste_combo() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        return press_paste_combo_macos().await;
+        return press_paste_combo_rdev().await;
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -75,31 +72,31 @@ async fn press_paste_combo() -> Result<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
-async fn press_paste_combo_macos() -> Result<()> {
-    log::debug!("paste combo: using macOS System Events");
-    let status = Command::new("osascript")
-        .args([
-            "-e",
-            r#"tell application "System Events" to keystroke "v" using command down"#,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .status()?;
-
-    if status.success() {
-        return Ok(());
-    }
-
-    Err(anyhow!("osascript paste shortcut failed with status {status}"))
-}
-
-#[cfg(not(target_os = "macos"))]
 async fn press_paste_combo_rdev() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let modifiers = [Key::MetaLeft, Key::MetaRight];
+
     #[cfg(not(target_os = "macos"))]
     let modifiers = [Key::ControlLeft, Key::ControlRight];
 
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    for attempt in 1..=2 {
+        let result = press_paste_combo_with_modifiers(&modifiers).await;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < 2 => {
+                log::warn!("paste combo attempt {attempt} failed: {err}; retrying");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(())
+}
+
+async fn press_paste_combo_with_modifiers(modifiers: &[Key]) -> Result<()> {
     let mut modifier = None;
     for candidate in modifiers.iter() {
         if simulate(&EventType::KeyPress(*candidate)).is_ok() {
@@ -108,15 +105,10 @@ async fn press_paste_combo_rdev() -> Result<()> {
         }
         log::warn!("paste modifier failed: {:?}", candidate);
     }
-    let modifier = match modifier {
-        Some(modifier) => modifier,
-        None => {
-            return Err(anyhow!("no paste modifier key worked"));
-        }
-    };
+    let modifier = modifier.ok_or_else(|| anyhow!("no paste modifier key worked"))?;
 
     log::debug!("paste combo: modifier selected {:?}", modifier);
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     log::trace!("paste combo: press V");
     if let Err(err) = simulate(&EventType::KeyPress(Key::KeyV)) {
@@ -124,7 +116,7 @@ async fn press_paste_combo_rdev() -> Result<()> {
         let _ = simulate(&EventType::KeyRelease(modifier));
         return Err(err.into());
     }
-    tokio::time::sleep(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     log::trace!("paste combo: release V");
     if let Err(err) = simulate(&EventType::KeyRelease(Key::KeyV)) {
@@ -132,13 +124,14 @@ async fn press_paste_combo_rdev() -> Result<()> {
         let _ = simulate(&EventType::KeyRelease(modifier));
         return Err(err.into());
     }
-    tokio::time::sleep(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     log::trace!("paste combo: release modifier");
     if let Err(err) = simulate(&EventType::KeyRelease(modifier)) {
         log::warn!("failed to release paste modifier: {err:?}");
         return Err(err.into());
     }
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     Ok(())
 }
