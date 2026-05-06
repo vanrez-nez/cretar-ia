@@ -637,12 +637,15 @@ fn transition_error(
         | RecordedEvent::Hotkey(HotkeyEvent::Pressed) => {
             *next = state.clone()
                 .next_seq()
-                .with_error("start requested while audio is unavailable".to_string(), state.recovery_hint);
+                .next_session()
+                .with_phase(PipelinePhase::Starting)
+                .with_recovery_hint(RecoveryHint::NoRecovery)
+                .with_reason(None);
             TransitionResult::StateChange {
                 from: PipelinePhase::Error,
-                to: PipelinePhase::Error,
-                why: "start_requested_while_error",
-                command: None,
+                to: PipelinePhase::Starting,
+                why: "start_requested",
+                command: Some(RecordingCommand::StartRecording),
             }
         }
         RecordedEvent::Worker(_)

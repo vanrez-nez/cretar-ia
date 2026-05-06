@@ -8,32 +8,18 @@ mod inject;
 mod openrouter;
 #[cfg(feature = "settings-ui")]
 mod permissions;
+#[cfg(feature = "settings-ui")]
+mod app_host;
 mod runtime;
 mod recording;
 mod tray;
 #[cfg(feature = "settings-ui")]
 mod commands;
-#[cfg(feature = "settings-ui")]
-mod settings_control;
-#[cfg(feature = "settings-ui")]
-mod settings_ui;
 
 use anyhow::Result;
 use config::AppConfig;
-#[cfg(not(target_os = "macos"))]
-use runtime::run_non_macos as start_runtime;
-#[cfg(target_os = "macos")]
-use runtime::run_macos as start_runtime;
 
 pub fn run() -> Result<()> {
-    if is_settings_mode() {
-        #[cfg(feature = "settings-ui")]
-        return settings_ui::run();
-
-        #[cfg(not(feature = "settings-ui"))]
-        return Ok(());
-    }
-
     let cfg = AppConfig::load_or_create()?;
     cfg.validate().map_err(|err| anyhow::anyhow!("{err}"))?;
     init_logging(&cfg)?;
@@ -46,11 +32,16 @@ pub fn run() -> Result<()> {
     );
     log::info!("config path: {}", AppConfig::config_path().display());
 
-    return start_runtime(cfg);
-}
+    #[cfg(feature = "settings-ui")]
+    {
+        return app_host::run(cfg);
+    }
 
-fn is_settings_mode() -> bool {
-    std::env::args().any(|arg| arg == "--settings")
+    #[cfg(not(feature = "settings-ui"))]
+    {
+        let _ = cfg;
+        Ok(())
+    }
 }
 
 fn init_logging(cfg: &AppConfig) -> Result<()> {

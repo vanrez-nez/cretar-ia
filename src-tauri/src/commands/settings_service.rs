@@ -30,10 +30,11 @@ impl SettingsService {
         AppConfig::load_from_path(&self.config_path)
     }
 
-    pub fn save_value(&self, config: Value) -> Result<()> {
+    pub fn save_value(&self, config: Value) -> Result<AppConfig> {
         let config = serde_json::from_value::<AppConfig>(config)
             .with_context(|| "invalid config schema")?;
-        self.save(config)
+        self.save(config.clone())?;
+        Ok(config)
     }
 
     pub fn save(&self, config: AppConfig) -> Result<()> {

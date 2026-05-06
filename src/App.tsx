@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,12 +24,64 @@ export default function App() {
   const isReady = useSettingsStore((s) => s.isReady);
   const saveSettings = useSettingsStore((s) => s.updateSettings);
   const [draftConfig, setDraftConfig] = useState<AppConfig | null>(null);
+  const [permissions, setPermissions] = useState<PermissionsStatus | null>(null);
+  const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
   const hasHydrated = useRef(false);
   const skipNextAutosave = useRef(true);
+
+  const checkPermissions = useCallback(async () => {
+    if (!isTauri()) {
+      setPermissions({
+        microphone: "unsupported",
+        accessibility: "unsupported",
+      });
+      return;
+    }
+
+    setPermissions(await tauriInvoke<PermissionsStatus>("check_permissions"));
+  }, []);
+
+  const refreshPermissions = useCallback(async () => {
+    setIsRefreshingPermissions(true);
+    setPermissionError(null);
+
+    try {
+      if (!isTauri()) {
+        setPermissions({
+          microphone: "unsupported",
+          accessibility: "unsupported",
+        });
+        return;
+      }
+
+      const current = await tauriInvoke<PermissionsStatus>("check_permissions");
+
+      if (current.microphone !== "granted") {
+        await tauriInvoke<PermissionState>("request_microphone_permission");
+      }
+
+      if (current.accessibility !== "granted") {
+        await tauriInvoke<PermissionState>("request_accessibility_permission");
+      }
+
+      setPermissions(await tauriInvoke<PermissionsStatus>("check_permissions"));
+    } catch (error) {
+      setPermissionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsRefreshingPermissions(false);
+    }
+  }, []);
 
   useEffect(() => {
     void fetchSettings();
   }, []);
+
+  useEffect(() => {
+    void checkPermissions().catch((error) => {
+      setPermissionError(error instanceof Error ? error.message : String(error));
+    });
+  }, [checkPermissions]);
 
   useEffect(() => {
     if (!config) {
@@ -100,7 +152,15 @@ export default function App() {
             </TabsContent>
 
             <TabsContent value="recording" className="mt-4">
-              <RecordingPane draft={draft} updateDraft={updateDraft} disabled={!isReady} />
+              <RecordingPane
+                draft={draft}
+                updateDraft={updateDraft}
+                disabled={!isReady}
+                permissions={permissions}
+                isRefreshingPermissions={isRefreshingPermissions}
+                permissionError={permissionError}
+                refreshPermissions={refreshPermissions}
+              />
             </TabsContent>
 
             <TabsContent value="models" className="mt-4">
@@ -172,45 +232,24 @@ function SystemPane({ draft, updateDraft }: PaneProps) {
   );
 }
 
-function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled: boolean }) {
+function RecordingPane({
+  draft,
+  updateDraft,
+  disabled,
+  permissions,
+  isRefreshingPermissions,
+  permissionError,
+  refreshPermissions,
+}: PaneProps & {
+  disabled: boolean;
+  permissions: PermissionsStatus | null;
+  isRefreshingPermissions: boolean;
+  permissionError: string | null;
+  refreshPermissions: () => Promise<void>;
+}) {
   const startEnabled = draft.audio_cues.start_sound !== null;
   const stopEnabled = draft.audio_cues.stop_sound !== null;
   const errorEnabled = draft.audio_cues.error_sound !== null;
-  const [permissions, setPermissions] = useState<PermissionsStatus | null>(null);
-  const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false);
-  const [permissionError, setPermissionError] = useState<string | null>(null);
-
-  const refreshPermissions = async () => {
-    setIsRefreshingPermissions(true);
-    setPermissionError(null);
-
-    try {
-      if (!isTauri()) {
-        setPermissions({
-          microphone: "unsupported",
-          accessibility: "unsupported",
-        });
-        return;
-      }
-
-      const current = await tauriInvoke<PermissionsStatus>("check_permissions");
-      const next = { ...current };
-
-      if (current.microphone !== "granted") {
-        next.microphone = await tauriInvoke<PermissionState>("request_microphone_permission");
-      }
-
-      if (current.accessibility !== "granted") {
-        next.accessibility = await tauriInvoke<PermissionState>("request_accessibility_permission");
-      }
-
-      setPermissions(next);
-    } catch (error) {
-      setPermissionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsRefreshingPermissions(false);
-    }
-  };
 
   return (
     <div className="grid gap-4">
@@ -228,7 +267,7 @@ function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled:
             variant="outline"
             size="sm"
             disabled={isRefreshingPermissions}
-            onClick={refreshPermissions}
+            onClick={() => void refreshPermissions()}
           >
             {isRefreshingPermissions ? "Refreshing..." : "Refresh"}
           </Button>
@@ -384,9 +423,10 @@ function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled:
 function PermissionBadge({ label, state }: { label: string; state?: PermissionState }) {
   const isGranted = state === "granted";
   const Icon = isGranted ? ShieldCheck : ShieldX;
+  const tone = state === undefined ? "default" : isGranted ? "success" : "danger";
 
   return (
-    <SettingsBadge tone={isGranted ? "success" : "danger"} icon={<Icon className="size-3" aria-hidden="true" />}>
+    <SettingsBadge tone={tone} icon={<Icon className="size-3" aria-hidden="true" />}>
       {label}
     </SettingsBadge>
   );

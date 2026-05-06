@@ -10,7 +10,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TARGET_PEAK: f32 = 0.2;
 const MAX_NORMALIZE_GAIN: f32 = 64.0;
@@ -65,8 +65,10 @@ pub(crate) fn input_device_ready(config: &AudioCaptureConfig) -> bool {
 }
 
 pub struct Recorder {
-    stream: Stream,
+    stream: Option<Stream>,
     state: Arc<Mutex<RecorderState>>,
+    stop_requested: Arc<AtomicBool>,
+    callback_drained: Arc<AtomicBool>,
     sample_rate: u32,
     channels: u16,
     out_path: PathBuf,
@@ -127,6 +129,8 @@ impl Recorder {
 
         let fallback: StreamConfig = supported.clone().into();
         let stream_error_reported = Arc::new(AtomicBool::new(false));
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let callback_drained = Arc::new(AtomicBool::new(false));
 
         let (stream_cfg, stream) = match build_input_stream_for_format(
             &device,
@@ -135,6 +139,8 @@ impl Recorder {
             Arc::clone(&state),
             event_tx.clone(),
             Arc::clone(&stream_error_reported),
+            Arc::clone(&stop_requested),
+            Arc::clone(&callback_drained),
         ) {
             Ok(stream) => (requested, stream),
             Err(err) => {
@@ -152,6 +158,8 @@ impl Recorder {
                         Arc::clone(&state),
                         event_tx.clone(),
                         Arc::clone(&stream_error_reported),
+                        Arc::clone(&stop_requested),
+                        Arc::clone(&callback_drained),
                     )?,
                 )
             }
@@ -168,16 +176,18 @@ impl Recorder {
         stream.play().context("starting audio stream")?;
 
         Ok(Self {
-            stream,
+            stream: Some(stream),
             state,
+            stop_requested,
+            callback_drained,
             sample_rate: stream_cfg.sample_rate.0,
             channels: stream_cfg.channels,
             out_path,
         })
     }
 
-    pub fn stop(self) -> Result<PathBuf> {
-        drop(self.stream);
+    pub fn stop(mut self) -> Result<PathBuf> {
+        self.stop_audio_stream();
         let mut state = self
             .state
             .lock()
@@ -241,7 +251,45 @@ impl Recorder {
             state.persistence_checkpoints
         );
 
-        Ok(self.out_path)
+        Ok(self.out_path.clone())
+    }
+
+    fn stop_audio_stream(&mut self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+
+        let drain_start = Instant::now();
+        while !self.callback_drained.load(Ordering::SeqCst)
+            && drain_start.elapsed() < Duration::from_millis(200)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        if self.callback_drained.load(Ordering::SeqCst) {
+            log::info!("audio callback drain completed before stream shutdown");
+        } else {
+            log::warn!(
+                "audio callback drain timed out after {}ms; pausing stream anyway",
+                drain_start.elapsed().as_millis()
+            );
+        }
+
+        let Some(stream) = self.stream.take() else {
+            return;
+        };
+
+        if let Err(err) = stream.pause() {
+            log::warn!("failed to pause audio input stream before drop: {err}");
+        }
+        drop(stream);
+        log::info!("audio input stream paused and dropped");
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        if self.stream.is_some() {
+            self.stop_audio_stream();
+        }
     }
 }
 
@@ -524,15 +572,23 @@ fn build_input_stream_for_format(
     state: Arc<Mutex<RecorderState>>,
     event_tx: CommandBusTx,
     stream_error_reported: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
+    callback_drained: Arc<AtomicBool>,
 ) -> Result<Stream> {
     match sample_format {
         SampleFormat::F32 => {
             let state = Arc::clone(&state);
             let event_tx = event_tx.clone();
             let stream_error_reported = Arc::clone(&stream_error_reported);
+            let stop_requested = Arc::clone(&stop_requested);
+            let callback_drained = Arc::clone(&callback_drained);
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[f32], _| {
+                    if stop_requested.load(Ordering::SeqCst) {
+                        callback_drained.store(true, Ordering::SeqCst);
+                        return;
+                    }
                     if let Ok(mut state) = state.lock() {
                         for sample in data.iter() {
                             push_sample(&mut state, *sample);
@@ -547,9 +603,15 @@ fn build_input_stream_for_format(
             let state = Arc::clone(&state);
             let event_tx = event_tx.clone();
             let stream_error_reported = Arc::clone(&stream_error_reported);
+            let stop_requested = Arc::clone(&stop_requested);
+            let callback_drained = Arc::clone(&callback_drained);
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[i16], _| {
+                    if stop_requested.load(Ordering::SeqCst) {
+                        callback_drained.store(true, Ordering::SeqCst);
+                        return;
+                    }
                     if let Ok(mut state) = state.lock() {
                         for sample in data.iter() {
                             push_sample(&mut state, to_f32(*sample));
@@ -564,9 +626,15 @@ fn build_input_stream_for_format(
             let state = Arc::clone(&state);
             let event_tx = event_tx.clone();
             let stream_error_reported = Arc::clone(&stream_error_reported);
+            let stop_requested = Arc::clone(&stop_requested);
+            let callback_drained = Arc::clone(&callback_drained);
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[u16], _| {
+                    if stop_requested.load(Ordering::SeqCst) {
+                        callback_drained.store(true, Ordering::SeqCst);
+                        return;
+                    }
                     if let Ok(mut state) = state.lock() {
                         for sample in data.iter() {
                             let centered = to_f32_u16(*sample) * 2.0;

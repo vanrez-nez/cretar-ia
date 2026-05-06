@@ -1,9 +1,8 @@
 use crate::commands::settings_service::SettingsService;
 use crate::config::AppConfig;
 use crate::permissions::PermissionsStatus;
-use crate::runtime::control;
 use serde_json::Value;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[derive(Clone)]
 pub struct SettingsState {
@@ -21,13 +20,15 @@ pub async fn load_config(state: State<'_, SettingsState>) -> Result<AppConfig, S
 #[tauri::command]
 pub async fn save_config(
     config: Value,
+    app: AppHandle,
     state: State<'_, SettingsState>,
 ) -> Result<(), String> {
-    state
+    let config = state
         .service()
         .save_value(config)
         .map_err(SettingsService::command_error)?;
-    notify_runtime_reload();
+    crate::app_host::restart_runtime(&app, config)
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -52,30 +53,32 @@ pub async fn get_settings(state: State<'_, SettingsState>) -> Result<AppConfig, 
 
 #[tauri::command]
 pub async fn update_settings(
+    app: AppHandle,
     state: State<'_, SettingsState>,
     config: AppConfig,
 ) -> Result<(), String> {
     state
         .service()
-        .save(config)
+        .save(config.clone())
         .map_err(SettingsService::command_error)?;
-    notify_runtime_reload();
+    crate::app_host::restart_runtime(&app, config)
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn check_permissions() -> Result<PermissionsStatus, String> {
-    Ok(crate::permissions::check_permissions())
+    Ok(crate::permissions::check_permissions().await)
 }
 
 #[tauri::command]
 pub async fn request_microphone_permission() -> Result<crate::permissions::PermissionState, String> {
-    Ok(crate::permissions::request_microphone_permission())
+    Ok(crate::permissions::request_microphone_permission().await)
 }
 
 #[tauri::command]
 pub async fn request_accessibility_permission() -> Result<crate::permissions::PermissionState, String> {
-    Ok(crate::permissions::request_accessibility_permission())
+    Ok(crate::permissions::request_accessibility_permission().await)
 }
 
 pub fn build_settings_state() -> Result<SettingsState, String> {
@@ -89,11 +92,5 @@ pub fn build_settings_state() -> Result<SettingsState, String> {
 impl SettingsState {
     fn service(&self) -> SettingsService {
         SettingsService::new(&self.config_path)
-    }
-}
-
-fn notify_runtime_reload() {
-    if let Err(err) = control::notify_runtime_reload() {
-        log::debug!("runtime reload notification skipped: {err}");
     }
 }

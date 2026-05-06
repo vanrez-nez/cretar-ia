@@ -5,11 +5,6 @@ use serde::Serialize;
 pub enum PermissionState {
     Granted,
     Denied,
-    NotDetermined,
-    Restricted,
-    #[allow(dead_code)]
-    Unsupported,
-    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -18,163 +13,108 @@ pub struct PermissionsStatus {
     pub accessibility: PermissionState,
 }
 
-pub fn check_permissions() -> PermissionsStatus {
+pub async fn check_permissions() -> PermissionsStatus {
     PermissionsStatus {
-        microphone: check_microphone_permission(),
-        accessibility: check_accessibility_permission(),
+        microphone: check_microphone_permission().await,
+        accessibility: check_accessibility_permission().await,
     }
 }
 
-pub fn request_microphone_permission() -> PermissionState {
-    platform::request_microphone_permission()
+pub async fn request_microphone_permission() -> PermissionState {
+    platform::request_microphone_permission().await
 }
 
-pub fn request_accessibility_permission() -> PermissionState {
-    platform::request_accessibility_permission()
+pub async fn request_accessibility_permission() -> PermissionState {
+    platform::request_accessibility_permission().await
 }
 
-fn check_microphone_permission() -> PermissionState {
-    platform::check_microphone_permission()
+async fn check_microphone_permission() -> PermissionState {
+    platform::check_microphone_permission().await
 }
 
-fn check_accessibility_permission() -> PermissionState {
-    platform::check_accessibility_permission()
+async fn check_accessibility_permission() -> PermissionState {
+    platform::check_accessibility_permission().await
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
     use super::PermissionState;
 
-    pub fn check_microphone_permission() -> PermissionState {
-        PermissionState::Unsupported
+    pub async fn check_microphone_permission() -> PermissionState {
+        PermissionState::Granted
     }
 
-    pub fn request_microphone_permission() -> PermissionState {
-        PermissionState::Unsupported
+    pub async fn request_microphone_permission() -> PermissionState {
+        PermissionState::Granted
     }
 
-    pub fn check_accessibility_permission() -> PermissionState {
-        PermissionState::Unsupported
+    pub async fn check_accessibility_permission() -> PermissionState {
+        PermissionState::Granted
     }
 
-    pub fn request_accessibility_permission() -> PermissionState {
-        PermissionState::Unsupported
+    pub async fn request_accessibility_permission() -> PermissionState {
+        PermissionState::Granted
     }
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unexpected_cfgs)]
 mod platform {
     use super::PermissionState;
-    use block::ConcreteBlock;
-    use core_foundation::base::TCFType;
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-    use core_foundation::string::{CFString, CFStringRef};
-    use objc::class;
-    use objc::msg_send;
-    use objc::runtime::{Object, BOOL};
-    use objc::sel;
-    use objc::sel_impl;
-    use std::sync::mpsc;
-    use std::time::Duration;
+    use tokio::time::{sleep, Duration};
 
-    const AV_AUTHORIZATION_STATUS_NOT_DETERMINED: i64 = 0;
-    const AV_AUTHORIZATION_STATUS_RESTRICTED: i64 = 1;
-    const AV_AUTHORIZATION_STATUS_DENIED: i64 = 2;
-    const AV_AUTHORIZATION_STATUS_AUTHORIZED: i64 = 3;
-    const AV_MEDIA_TYPE_AUDIO: &[u8] = b"soun\0";
+    const MAX_ATTEMPTS: u8 = 3;
+    const RETRY_DELAY: Duration = Duration::from_millis(200);
+    const REQUEST_SETTLE_DELAY: Duration = Duration::from_millis(500);
 
-    #[link(name = "AVFoundation", kind = "framework")]
-    extern "C" {}
-
-    #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
-        static kAXTrustedCheckOptionPrompt: CFStringRef;
-        fn AXIsProcessTrusted() -> bool;
-        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
-    }
-
-    pub fn check_microphone_permission() -> PermissionState {
-        let media_type = audio_media_type();
-        microphone_authorization_status(media_type)
-    }
-
-    pub fn request_microphone_permission() -> PermissionState {
-        let media_type = audio_media_type();
-        match microphone_authorization_status(media_type) {
-            PermissionState::NotDetermined => request_microphone_access(media_type),
-            status => status,
-        }
-    }
-
-    pub fn check_accessibility_permission() -> PermissionState {
-        accessibility_permission(false)
-    }
-
-    pub fn request_accessibility_permission() -> PermissionState {
-        accessibility_permission(true)
-    }
-
-    fn accessibility_permission(request_prompt: bool) -> PermissionState {
-        let trusted = unsafe {
-            if request_prompt {
-                let prompt_key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt);
-                let prompt_value = CFBoolean::true_value();
-                let options = CFDictionary::from_CFType_pairs(&[(prompt_key, prompt_value)]);
-                AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef())
-            } else {
-                AXIsProcessTrusted()
-            }
-        };
-
-        if trusted {
-            PermissionState::Granted
-        } else {
-            PermissionState::Denied
-        }
-    }
-
-    fn audio_media_type() -> *mut Object {
-        unsafe { msg_send![class!(NSString), stringWithUTF8String: AV_MEDIA_TYPE_AUDIO.as_ptr()] }
-    }
-
-    fn microphone_authorization_status(media_type: *mut Object) -> PermissionState {
-        let status: i64 = unsafe {
-            msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: media_type]
-        };
-        microphone_state_from_status(status)
-    }
-
-    fn request_microphone_access(media_type: *mut Object) -> PermissionState {
-        let (tx, rx) = mpsc::channel::<bool>();
-        let callback = ConcreteBlock::new(move |granted: BOOL| {
-            let _ = tx.send(granted);
+    pub async fn check_microphone_permission() -> PermissionState {
+        check_with_retry(|| async {
+            tauri_plugin_macos_permissions::check_microphone_permission().await
         })
-        .copy();
-
-        unsafe {
-            let _: () = msg_send![
-                class!(AVCaptureDevice),
-                requestAccessForMediaType: media_type
-                completionHandler: &*callback
-            ];
-        }
-
-        match rx.recv_timeout(Duration::from_secs(30)) {
-            Ok(true) => PermissionState::Granted,
-            Ok(false) => PermissionState::Denied,
-            Err(_) => microphone_authorization_status(media_type),
-        }
+        .await
     }
 
-    fn microphone_state_from_status(status: i64) -> PermissionState {
-        match status {
-            AV_AUTHORIZATION_STATUS_NOT_DETERMINED => PermissionState::NotDetermined,
-            AV_AUTHORIZATION_STATUS_RESTRICTED => PermissionState::Restricted,
-            AV_AUTHORIZATION_STATUS_DENIED => PermissionState::Denied,
-            AV_AUTHORIZATION_STATUS_AUTHORIZED => PermissionState::Granted,
-            _ => PermissionState::Unknown,
+    pub async fn request_microphone_permission() -> PermissionState {
+        if matches!(check_microphone_permission().await, PermissionState::Granted) {
+            return PermissionState::Granted;
         }
+
+        let _ = tauri_plugin_macos_permissions::request_microphone_permission().await;
+        sleep(REQUEST_SETTLE_DELAY).await;
+        check_microphone_permission().await
+    }
+
+    pub async fn check_accessibility_permission() -> PermissionState {
+        check_with_retry(|| async {
+            tauri_plugin_macos_permissions::check_accessibility_permission().await
+        })
+        .await
+    }
+
+    pub async fn request_accessibility_permission() -> PermissionState {
+        if matches!(check_accessibility_permission().await, PermissionState::Granted) {
+            return PermissionState::Granted;
+        }
+
+        tauri_plugin_macos_permissions::request_accessibility_permission().await;
+        sleep(REQUEST_SETTLE_DELAY).await;
+        check_accessibility_permission().await
+    }
+
+    async fn check_with_retry<F, Fut>(mut check: F) -> PermissionState
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        for attempt in 1..=MAX_ATTEMPTS {
+            if check().await {
+                return PermissionState::Granted;
+            }
+
+            if attempt < MAX_ATTEMPTS {
+                sleep(RETRY_DELAY).await;
+            }
+        }
+
+        PermissionState::Denied
     }
 }
