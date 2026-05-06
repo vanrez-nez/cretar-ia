@@ -88,6 +88,20 @@ pub fn run(cfg: AppConfig) -> Result<()> {
         .on_menu_event(|app, event| {
             handle_menu_event(app, event.id().as_ref());
         })
+        .on_window_event(|window, event| {
+            if window.label() != SETTINGS_WINDOW_LABEL {
+                return;
+            }
+
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Err(err) = window.hide() {
+                    log::warn!("failed to hide settings window on close: {err}");
+                } else {
+                    log::info!("settings window hidden instead of closed");
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .map_err(|err| anyhow!(err.to_string()))?;
 
