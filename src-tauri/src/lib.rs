@@ -12,6 +12,8 @@ mod tray;
 #[cfg(feature = "settings-ui")]
 mod commands;
 #[cfg(feature = "settings-ui")]
+mod settings_control;
+#[cfg(feature = "settings-ui")]
 mod settings_ui;
 
 use anyhow::Result;

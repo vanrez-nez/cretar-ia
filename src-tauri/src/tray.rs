@@ -601,6 +601,10 @@ mod tray_impl {
 fn open_settings_file(path: &str) -> std::io::Result<()> {
     #[cfg(feature = "settings-ui")]
     {
+        if crate::settings_control::notify_settings_focus().is_ok() {
+            return Ok(());
+        }
+
         let exe = std::env::current_exe()?;
         let mut command = std::process::Command::new(exe);
         command.arg("--settings");

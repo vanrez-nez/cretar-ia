@@ -1,4 +1,5 @@
 use crate::commands::settings;
+use crate::settings_control;
 use anyhow::{Result, anyhow};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
@@ -32,7 +33,14 @@ pub fn run() -> Result<()> {
             .background_color(SETTINGS_BACKGROUND)
             .build()
             .map_err(|err| anyhow!(err.to_string()))?;
+            let _settings_control = settings_control::spawn_settings_control_server(app.handle().clone())
+                .map_err(|err| anyhow!(err.to_string()))?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "settings" && matches!(event, tauri::WindowEvent::Destroyed) {
+                settings_control::cleanup_settings_control_endpoint();
+            }
         })
         .run(tauri::generate_context!())
         .map_err(|err| anyhow!(err.to_string()))?;
