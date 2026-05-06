@@ -1,5 +1,7 @@
 use crate::commands::settings;
 use anyhow::{Result, anyhow};
+use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
 
 pub fn run() -> Result<()> {
     let state = settings::build_settings_state().map_err(anyhow::Error::msg)?;
@@ -18,7 +20,7 @@ pub fn run() -> Result<()> {
             let _window = tauri::WebviewWindowBuilder::new(
                 app,
                 "settings",
-                tauri::WebviewUrl::App("index.html".into()),
+                settings_url(),
             )
             .title("Cretar IA Settings")
             .inner_size(880.0, 680.0)
@@ -31,4 +33,23 @@ pub fn run() -> Result<()> {
         .map_err(|err| anyhow!(err.to_string()))?;
 
     Ok(())
+}
+
+fn settings_url() -> tauri::WebviewUrl {
+    #[cfg(debug_assertions)]
+    {
+        if dev_server_is_available() {
+            if let Ok(url) = "http://localhost:5173".parse() {
+                return tauri::WebviewUrl::External(url);
+            }
+        }
+    }
+
+    tauri::WebviewUrl::App("index.html".into())
+}
+
+#[cfg(debug_assertions)]
+fn dev_server_is_available() -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], 5173));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
 }

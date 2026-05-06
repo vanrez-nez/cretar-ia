@@ -21,10 +21,13 @@ arboard = "3.4"
 rdev = "0.5"
 rodio = "0.17"
 tray-item = { version = "0.10", optional = true }
+tray-icon = { version = "0.23", optional = true }
+tao = { version = "0.35", optional = true }
+resvg = { version = "0.47", optional = true }
 tauri = { version = "2", optional = true , features = [] }
 
 [features]
-tray = ["tray-item"]
+tray = ["tray-item", "tray-icon", "tao", "resvg"]
 settings-ui = ["tauri"]
 default = []
 
