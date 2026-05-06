@@ -1,7 +1,7 @@
 use crate::config::{AudioCueConfig, AppConfig};
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
-use rodio::Source;
+use rodio::{OutputStream, OutputStreamHandle, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -38,6 +38,7 @@ impl CuePlayer {
                 start_sound,
                 stop_sound,
                 error_sound,
+                output: CueOutput::new(),
             };
 
             while let Ok(kind) = rx.recv() {
@@ -79,7 +80,7 @@ impl CuePlayer {
     }
 
     pub fn status_to_cue(status: &SessionStatus) -> Option<CueKind> {
-        if status.source == "audio_started" {
+        if status.source == "start_requested" {
             return Some(CueKind::Start);
         }
 
@@ -102,13 +103,18 @@ impl CuePlayer {
     }
 }
 
-#[derive(Clone)]
 struct SerializedCuePlayer {
     enabled: bool,
     volume: f32,
     start_sound: Option<PathBuf>,
     stop_sound: Option<PathBuf>,
     error_sound: Option<PathBuf>,
+    output: Option<CueOutput>,
+}
+
+struct CueOutput {
+    _stream: OutputStream,
+    handle: OutputStreamHandle,
 }
 
 impl SerializedCuePlayer {
@@ -130,18 +136,16 @@ impl SerializedCuePlayer {
         if let Some(path) = path {
             log::debug!("audio cue opening file {}", path.display());
             match File::open(&path) {
-                Ok(file) => match rodio::OutputStream::try_default() {
-                    Ok((stream, handle)) => {
-                        log::debug!("audio cue output stream created for {}", path.display());
+                Ok(file) => match self.output.as_ref() {
+                    Some(output) => {
                         match rodio::Decoder::new(BufReader::new(file)) {
-                            Ok(decoder) => match rodio::Sink::try_new(&handle) {
+                            Ok(decoder) => match rodio::Sink::try_new(&output.handle) {
                                 Ok(sink) => {
                             log::debug!("playing cue {}", path.display());
                             sink.set_volume(self.volume);
                             sink.append(decoder);
                             sink.sleep_until_end();
                                     log::debug!("audio cue completed {}", path.display());
-                            drop(stream);
                             return;
                         }
                                 Err(err) => {
@@ -149,22 +153,20 @@ impl SerializedCuePlayer {
                                         "failed to create cue sink for {}: {err}",
                                         path.display()
                                     );
-                                    drop(stream);
                                     fallback_tone(fallback_hz, self.volume);
                                     return;
                                 }
                             },
                             Err(err) => {
                                 log::warn!("failed to decode cue {}: {err}", path.display());
-                                drop(stream);
                                 fallback_tone(fallback_hz, self.volume);
                                 return;
                             }
                         }
                     }
-                    Err(err) => {
+                    None => {
                         log::warn!(
-                            "failed to open output stream for {}: {err}",
+                            "audio cue output stream unavailable for {}",
                             path.display()
                         );
                         fallback_tone(fallback_hz, self.volume);
@@ -206,6 +208,24 @@ fn fallback_tone(freq: u32, volume: f32) {
         }
         Err(err) => {
             log::warn!("failed to open output stream for fallback cue tone: {err}");
+        }
+    }
+}
+
+impl CueOutput {
+    fn new() -> Option<Self> {
+        match OutputStream::try_default() {
+            Ok((stream, handle)) => {
+                log::info!("audio cue output stream initialized");
+                Some(Self {
+                    _stream: stream,
+                    handle,
+                })
+            }
+            Err(err) => {
+                log::warn!("failed to initialize audio cue output stream: {err}");
+                None
+            }
         }
     }
 }
