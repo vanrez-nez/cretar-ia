@@ -4,8 +4,12 @@ use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::recording::command_bus::CommandBusTx;
 use std::path::PathBuf;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
+use tokio::time::{timeout, Duration};
+
+const AUDIO_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 enum AudioWorkerCommand {
@@ -15,6 +19,9 @@ enum AudioWorkerCommand {
     },
     Stop,
     ForceStop,
+    Shutdown {
+        ack: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Clone)]
@@ -39,8 +46,19 @@ impl AudioWorker {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let tx = bus_tx.clone();
 
-        let handle = tokio::spawn(async move {
-            worker_loop(command_rx, tx).await;
+        let handle = tokio::task::spawn_blocking(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    log::error!("failed to start audio worker runtime: {err}");
+                    return;
+                }
+            };
+
+            runtime.block_on(worker_loop(command_rx, tx));
         });
 
         Self {
@@ -70,8 +88,15 @@ impl AudioWorker {
     }
 
     pub async fn shutdown(self) {
-        self.request_force_stop();
-        let _ = self.handle.await;
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(AudioWorkerCommand::Shutdown { ack: ack_tx })
+            .is_ok()
+        {
+            let _ = timeout(AUDIO_WORKER_SHUTDOWN_TIMEOUT, ack_rx).await;
+        }
+        let _ = timeout(AUDIO_WORKER_SHUTDOWN_TIMEOUT, self.handle).await;
     }
 }
 
@@ -96,14 +121,14 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
                     continue;
                 }
 
-                match tokio::task::spawn_blocking(move || Recorder::start(&cfg, record_base)).await {
-                    Ok(Ok(recorder)) => {
+                match Recorder::start(&cfg, record_base) {
+                    Ok(recorder) => {
                         active_recorder = Some(recorder);
                         if tx.send_worker(RecordingEvent::AudioStarted).is_some() {
                             log::warn!("audio started event dropped because worker queue was full");
                         }
                     }
-                    Ok(Err(err)) => {
+                    Err(err) => {
                         if tx
                             .send_worker(RecordingEvent::AudioStartFailed {
                                 code: RecordingErrorCode::AudioInit,
@@ -114,38 +139,33 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
                             log::warn!("audio start failure event dropped because worker queue was full");
                         }
                     }
-                    Err(err) => {
-                        if tx
-                            .send_worker(RecordingEvent::AudioStartFailed {
-                                code: RecordingErrorCode::Unknown,
-                                reason: format!("audio start worker failed: {err}"),
-                            })
-                            .is_some()
-                        {
-                            log::warn!("audio start failure event dropped because worker queue was full");
-                        }
-                    }
                 }
             }
 
             AudioWorkerCommand::Stop => {
-                active_recorder = stop_active_recorder(active_recorder.take(), tx.clone()).await;
+                active_recorder = stop_active_recorder(active_recorder.take(), tx.clone());
             }
 
             AudioWorkerCommand::ForceStop => {
-                active_recorder = stop_active_recorder(active_recorder.take(), tx.clone()).await;
+                active_recorder = stop_active_recorder(active_recorder.take(), tx.clone());
+            }
+
+            AudioWorkerCommand::Shutdown { ack } => {
+                let _ = stop_active_recorder(active_recorder.take(), tx.clone());
+                let _ = ack.send(());
+                break;
             }
         }
     }
 }
 
-async fn stop_active_recorder(recorder: Option<Recorder>, tx: CommandBusTx) -> Option<Recorder> {
+fn stop_active_recorder(recorder: Option<Recorder>, tx: CommandBusTx) -> Option<Recorder> {
     let Some(recorder) = recorder else {
         return None;
     };
 
-    match tokio::task::spawn_blocking(move || recorder.stop()).await {
-        Ok(Ok(path)) => {
+    match recorder.stop() {
+        Ok(path) => {
             if tx
                 .send_worker(RecordingEvent::AudioStopped { path })
                 .is_some()
@@ -154,23 +174,11 @@ async fn stop_active_recorder(recorder: Option<Recorder>, tx: CommandBusTx) -> O
             }
             None
         }
-        Ok(Err(err)) => {
+        Err(err) => {
             if tx
                 .send_worker(RecordingEvent::AudioStopFailed {
                     code: RecordingErrorCode::AudioStop,
                     reason: format!("stop recorder failed: {err}"),
-                })
-                .is_some()
-            {
-                log::warn!("audio stop failure event dropped because worker queue was full");
-            }
-            None
-        }
-        Err(err) => {
-            if tx
-                .send_worker(RecordingEvent::AudioStopFailed {
-                    code: RecordingErrorCode::Unknown,
-                    reason: format!("stop worker failed: {err}"),
                 })
                 .is_some()
             {

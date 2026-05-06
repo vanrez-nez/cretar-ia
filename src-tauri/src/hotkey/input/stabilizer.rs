@@ -96,16 +96,13 @@ impl HotkeyInputAdapter {
 
     fn handle_push_press(&mut self) -> Option<HotkeyEdgeEvent> {
         if !self.state.trigger_pressed {
-            if self.should_emit(&mut self.state.last_press, "press") && self.mods_match() {
+            if Self::should_emit(self.debounce, &mut self.state.last_press, "press") && self.mods_match() {
                 self.state.trigger_pressed = true;
                 return Some(HotkeyEdgeEvent::Pressed);
             }
             return Some(HotkeyEdgeEvent::Ignored);
         }
 
-        if self.should_emit(&mut self.state.last_press, "repeat") {
-            return Some(HotkeyEdgeEvent::Repeat);
-        }
         Some(HotkeyEdgeEvent::Ignored)
     }
 
@@ -114,7 +111,7 @@ impl HotkeyInputAdapter {
             return Some(HotkeyEdgeEvent::Ignored);
         }
 
-        if self.should_emit(&mut self.state.last_release, "release") {
+        if Self::should_emit(self.debounce, &mut self.state.last_release, "release") {
             self.state.trigger_pressed = false;
             return Some(HotkeyEdgeEvent::Released);
         }
@@ -127,7 +124,7 @@ impl HotkeyInputAdapter {
             return Some(HotkeyEdgeEvent::Repeat);
         }
 
-        if self.should_emit(&mut self.state.last_toggle, "toggle") && self.mods_match() {
+        if Self::should_emit(self.debounce, &mut self.state.last_toggle, "toggle") && self.mods_match() {
             self.state.trigger_pressed = true;
             return Some(HotkeyEdgeEvent::TogglePressed);
         }
@@ -143,10 +140,10 @@ impl HotkeyInputAdapter {
         Some(HotkeyEdgeEvent::Ignored)
     }
 
-    fn should_emit(&mut self, last: &mut Option<Instant>, label: &str) -> bool {
+    fn should_emit(debounce: Duration, last: &mut Option<Instant>, label: &str) -> bool {
         let now = Instant::now();
         let allowed = match last {
-            Some(prev) => now.duration_since(*prev) >= self.debounce,
+            Some(prev) => now.duration_since(*prev) >= debounce,
             None => true,
         };
 

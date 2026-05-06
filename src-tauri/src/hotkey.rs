@@ -1,11 +1,11 @@
 mod input;
 
-pub use input::listener::start_listener;
-pub use input::traits::{HotkeyEdgeEvent, HotkeyInputCoordinator, HotkeyInputListener, HotkeyInputProvider};
+pub(crate) use input::validate_shortcut;
 
 use crate::config::InteractionConfig;
 use crate::recording::command_bus::CommandBusTx;
 use anyhow::Result;
+use input::traits::HotkeyInputListener;
 
 pub fn spawn_listener(
     cfg: InteractionConfig,

@@ -1,6 +1,21 @@
 //! Domain-level primitives shared across runtime + platform modules.
 
-pub mod event;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextInjectionStep {
+    ClipboardWrite,
+    PasteShortcut,
+    ClipboardOnlyFallback,
+}
+
+impl TextInjectionStep {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClipboardWrite => "clipboard_write",
+            Self::PasteShortcut => "paste_shortcut",
+            Self::ClipboardOnlyFallback => "clipboard_only_fallback",
+        }
+    }
+}
 
 #[allow(unused_imports)]
 pub use crate::contracts::{
@@ -14,5 +29,3 @@ pub use crate::contracts::{
     RecoveryHint,
     SessionStatus,
 };
-#[allow(unused_imports)]
-pub use event::{AppEvent, AppPhase, AppRuntimeStatus, RuntimeSessionState, WorkEvent};

@@ -59,6 +59,33 @@ impl CommandBus {
     pub fn sender(&self) -> CommandBusTx {
         self.tx.clone()
     }
+
+    pub fn close_and_drain(&mut self) -> DrainedCommandBus {
+        self.hotkey_rx.close();
+        self.worker_rx.close();
+        self.command_rx.close();
+
+        DrainedCommandBus {
+            hotkey: drain_receiver(&mut self.hotkey_rx),
+            worker: drain_receiver(&mut self.worker_rx),
+            command: drain_receiver(&mut self.command_rx),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrainedCommandBus {
+    pub hotkey: usize,
+    pub worker: usize,
+    pub command: usize,
+}
+
+fn drain_receiver<T>(rx: &mut Receiver<T>) -> usize {
+    let mut drained = 0usize;
+    while rx.try_recv().is_ok() {
+        drained = drained.saturating_add(1);
+    }
+    drained
 }
 
 fn normalized_capacity(configured: u32, fallback: usize) -> usize {

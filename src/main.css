@@ -41,11 +41,68 @@ h1 {
   font-size: 18px;
 }
 
+h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 .card {
   background: var(--panel);
   border: 1px solid #2f3845;
   border-radius: 12px;
   padding: 12px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field,
+.toggle-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field span,
+.toggle-field span {
+  font-weight: 600;
+}
+
+.field small {
+  color: var(--muted);
+}
+
+.toggle-field {
+  flex-direction: row;
+  align-items: center;
+}
+
+input[type="number"],
+input[type="text"] {
+  width: 100%;
+  border: 1px solid #2f3845;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+input[type="range"] {
+  width: 100%;
 }
 
 textarea {
@@ -96,4 +153,10 @@ textarea {
   margin: 6px 0 0;
   color: var(--danger);
   font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
 }

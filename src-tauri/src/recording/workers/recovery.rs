@@ -9,7 +9,6 @@ enum RecoveryCommand {
     Recover,
 }
 
-#[derive(Clone)]
 pub struct RecoveryWorker {
     command_tx: UnboundedSender<RecoveryCommand>,
     handle: JoinHandle<()>,
@@ -50,35 +49,28 @@ async fn worker_loop(
     audio_worker: AudioWorkerHandle,
     processor_worker: ProcessorWorkerHandle,
 ) {
-    let mut in_progress = false;
-
     while let Some(command) = command_rx.recv().await {
-        if let RecoveryCommand::Recover = command {
-            if in_progress {
-                continue;
-            }
-            in_progress = true;
-
-            let audio_stopped = audio_worker.request_force_stop();
-            let processor_aborted = processor_worker.request_cancel();
-            if !audio_stopped || !processor_aborted {
-                if tx
-                    .send_worker(RecordingEvent::RecoveryFailed {
-                        code: RecordingErrorCode::Unknown,
-                        reason: "recovery dispatch failed".to_string(),
-                    })
-                    .is_some()
-                {
-                    log::warn!("recovery failure event dropped because worker queue was full");
+        match command {
+            RecoveryCommand::Recover => {
+                let audio_stopped = audio_worker.request_force_stop();
+                let processor_aborted = processor_worker.request_cancel();
+                if !audio_stopped || !processor_aborted {
+                    if tx
+                        .send_worker(RecordingEvent::RecoveryFailed {
+                            code: RecordingErrorCode::Unknown,
+                            reason: "recovery dispatch failed".to_string(),
+                        })
+                        .is_some()
+                    {
+                        log::warn!("recovery failure event dropped because worker queue was full");
+                    }
+                    continue;
                 }
-                in_progress = false;
-                continue;
-            }
 
-            if tx.send_worker(RecordingEvent::RecoveryCompleted).is_some() {
-                log::warn!("recovery completion event dropped because worker queue was full");
+                if tx.send_worker(RecordingEvent::RecoveryCompleted).is_some() {
+                    log::warn!("recovery completion event dropped because worker queue was full");
+                }
             }
-            in_progress = false;
         }
     }
 }

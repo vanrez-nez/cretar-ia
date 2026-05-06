@@ -31,9 +31,28 @@ export interface AudioCueConfig {
   volume: number;
 }
 
+export interface RecoveryStrategyConfig {
+  retry_start_timeout: boolean;
+  retry_stop_timeout: boolean;
+  retry_processing_timeout: boolean;
+  retry_queue_saturation: boolean;
+}
+
+export interface PipelineConfig {
+  debounce_ms?: number | null;
+  settle_timeout_ms?: number | null;
+  hotkey_queue_capacity?: number | null;
+  worker_queue_capacity?: number | null;
+  queue_saturation_policy?: "retry" | "error_only" | null;
+  recovery?: RecoveryStrategyConfig | null;
+  max_recording_duration_secs?: number | null;
+}
+
 export interface OutputConfig {
   mode: OutputMode;
   paste_delay_ms: number;
+  cleanup_recording_after_processing: boolean;
+  processing_timeout_ms: number;
 }
 
 export interface TrayTooltipConfig {
@@ -57,6 +76,7 @@ export interface AppConfig {
     shortcut: string;
     repeat_debounce_ms: number;
   };
+  pipeline: PipelineConfig;
   audio: AudioCaptureConfig;
   audio_cues: AudioCueConfig;
   output: OutputConfig;
@@ -79,6 +99,15 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
     shortcut: "ctrl+shift+space",
     repeat_debounce_ms: 120,
   },
+  pipeline: {
+    debounce_ms: null,
+    settle_timeout_ms: null,
+    hotkey_queue_capacity: null,
+    worker_queue_capacity: null,
+    queue_saturation_policy: null,
+    recovery: null,
+    max_recording_duration_secs: null,
+  },
   audio: {
     sample_rate: 0,
     channels: 0,
@@ -96,6 +125,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   output: {
     mode: "clipboard_paste",
     paste_delay_ms: 40,
+    cleanup_recording_after_processing: false,
+    processing_timeout_ms: 30000,
   },
   tray: {
     title: "Cretar IA",

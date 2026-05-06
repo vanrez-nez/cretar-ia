@@ -2,8 +2,10 @@ use crate::audio_cues::CuePlayer;
 use crate::config::{AppConfig, QueueSaturationPolicy};
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
-use crate::contracts::events::{HotkeyEvent, PipelineMode, PipelinePhase, RecordingEvent};
-use crate::contracts::status::SessionStatus;
+use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingEvent};
+use crate::contracts::status::{
+    bounded_status_channel, SessionStatusReceiver, SessionStatusSender, SESSION_STATUS_QUEUE_CAPACITY,
+};
 use crate::openrouter::OpenRouterClient;
 use crate::recording::command_bus::{CommandBus, CommandBusTx};
 use crate::recording::fsm::{transition, NoopReason, RecordedEvent, Transition, TransitionResult};
@@ -16,9 +18,9 @@ use crate::recording::state::RecordingState;
 use crate::recording::telemetry;
 use anyhow::Result;
 use std::path::PathBuf;
+use std::time::Instant;
 use tokio::task::JoinHandle;
-use tokio::sync::mpsc;
-use tokio::time::{self, Duration, Instant};
+use tokio::time::{self, Duration};
 
 pub fn start(
     cfg: AppConfig,
@@ -26,12 +28,12 @@ pub fn start(
     openrouter: Option<OpenRouterClient>,
 ) -> (
     CommandBusTx,
-    mpsc::UnboundedReceiver<SessionStatus>,
+    SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
     let bus = CommandBus::new(&cfg);
     let tx = bus.sender();
-    let (status_tx, status_rx) = mpsc::unbounded_channel();
+    let (status_tx, status_rx) = bounded_status_channel(SESSION_STATUS_QUEUE_CAPACITY);
     let runner_tx = tx.clone();
     let initial_mode = cfg.interaction.pipeline_mode();
 
@@ -49,13 +51,15 @@ pub fn start(
             openrouter,
             bus,
             tx: runner_tx,
-            audio_worker,
-            processor_worker,
-            recovery_worker,
+            audio_worker: Some(audio_worker),
+            processor_worker: Some(processor_worker),
+            recovery_worker: Some(recovery_worker),
             status_tx,
             state: RecordingState::new(initial_mode, 0),
             pending_recording: None,
             settling: None,
+            stop_in_flight: false,
+            shutdown_started: false,
             max_recording_limit_triggered: false,
             status_seq: 0,
             phase_started_at: Instant::now(),
@@ -71,13 +75,15 @@ struct Orchestrator {
     openrouter: Option<OpenRouterClient>,
     bus: CommandBus,
     tx: CommandBusTx,
-    audio_worker: AudioWorker,
-    processor_worker: ProcessorWorker,
-    recovery_worker: RecoveryWorker,
-    status_tx: mpsc::UnboundedSender<SessionStatus>,
+    audio_worker: Option<AudioWorker>,
+    processor_worker: Option<ProcessorWorker>,
+    recovery_worker: Option<RecoveryWorker>,
+    status_tx: SessionStatusSender,
     state: RecordingState,
     pending_recording: Option<PathBuf>,
     settling: Option<(PipelinePhase, Instant)>,
+    stop_in_flight: bool,
+    shutdown_started: bool,
     max_recording_limit_triggered: bool,
     status_seq: u64,
     phase_started_at: Instant,
@@ -116,10 +122,19 @@ impl Orchestrator {
             self.cfg.interaction.set_mode(mode);
         }
 
-        if let RecordedEvent::Worker(RecordingEvent::AudioStopped { path }) = &event
-            && matches!(self.state.phase, PipelinePhase::Stopping)
-        {
-            self.pending_recording = Some(path.clone());
+        if let RecordedEvent::Worker(RecordingEvent::AudioStopped { path }) = &event {
+            if matches!(self.state.phase, PipelinePhase::Stopping) {
+                self.pending_recording = Some(path.clone());
+            }
+        }
+
+        if matches!(
+            &event,
+            RecordedEvent::Worker(
+                RecordingEvent::AudioStopped { .. } | RecordingEvent::AudioStopFailed { .. }
+            )
+        ) {
+            self.stop_in_flight = false;
         }
 
         if matches!(
@@ -162,6 +177,7 @@ impl Orchestrator {
     fn apply_transition(&mut self, transition: Transition, triggering_event: RecordedEvent) {
         match transition.result {
             TransitionResult::StateChange {
+                from: _,
                 to: _,
                 why,
                 command,
@@ -242,10 +258,6 @@ impl Orchestrator {
                 PipelinePhase::Stopping,
                 Instant::now() + Duration::from_millis(settle_timeout_ms),
             )),
-            PipelinePhase::Processing if self.cfg.recovery_strategy().retry_processing_timeout && settle_timeout_ms > 0 => Some((
-                PipelinePhase::Processing,
-                Instant::now() + Duration::from_millis(settle_timeout_ms),
-            )),
             _ => None,
         };
     }
@@ -306,7 +318,16 @@ impl Orchestrator {
     async fn handle_start(&mut self) -> Result<()> {
         let config = self.cfg.audio.clone();
         let record_base = self.cfg.recordings_path();
-        if !self.audio_worker.request_start(config, record_base) {
+        let Some(audio_worker) = self.audio_worker.as_ref() else {
+            self.publish_status(
+                "audio_start_after_shutdown_ignored",
+                Some(RecordingErrorCode::AudioInit),
+                RecoveryHint::Manual,
+            );
+            return Ok(());
+        };
+
+        if !audio_worker.request_start(config, record_base) {
             self.publish_status(
                 "audio_start_command_failed",
                 Some(RecordingErrorCode::AudioInit),
@@ -317,12 +338,27 @@ impl Orchestrator {
     }
 
     async fn handle_stop(&mut self) -> Result<()> {
-        if !self.audio_worker.request_stop() {
+        if self.stop_in_flight {
+            return Ok(());
+        }
+
+        let Some(audio_worker) = self.audio_worker.as_ref() else {
+            self.publish_status(
+                "audio_stop_after_shutdown_ignored",
+                Some(RecordingErrorCode::AudioStop),
+                RecoveryHint::Manual,
+            );
+            return Ok(());
+        };
+
+        if !audio_worker.request_stop() {
             self.publish_status(
                 "audio_stop_command_failed",
                 Some(RecordingErrorCode::AudioStop),
                 RecoveryHint::RetryStop,
             );
+        } else {
+            self.stop_in_flight = true;
         }
         Ok(())
     }
@@ -342,10 +378,16 @@ impl Orchestrator {
         let audio_cfg = self.cfg.audio.clone();
         let output_cfg = self.cfg.output.clone();
         let openrouter = self.openrouter.clone();
-        if !self
-            .processor_worker
-            .request_run(audio_cfg, output_cfg, recording_path, openrouter)
-        {
+        let Some(processor_worker) = self.processor_worker.as_ref() else {
+            self.publish_status(
+                "processing_after_shutdown_ignored",
+                Some(RecordingErrorCode::Processing),
+                RecoveryHint::Manual,
+            );
+            return Ok(());
+        };
+
+        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, openrouter) {
             self.publish_status(
                 "processing_start_command_failed",
                 Some(RecordingErrorCode::Processing),
@@ -358,7 +400,11 @@ impl Orchestrator {
 
     fn handle_cancel_processing(&mut self) {
         self.pending_recording = None;
-        if !self.processor_worker.request_cancel() {
+        let Some(processor_worker) = self.processor_worker.as_ref() else {
+            return;
+        };
+
+        if !processor_worker.request_cancel() {
             let event = RecordingEvent::RecoveryFailed {
                 code: RecordingErrorCode::Processing,
                 reason: "failed to cancel processing".to_string(),
@@ -369,7 +415,11 @@ impl Orchestrator {
             return;
         }
 
-        if !self.recovery_worker.request_recovery() {
+        let Some(recovery_worker) = self.recovery_worker.as_ref() else {
+            return;
+        };
+
+        if !recovery_worker.request_recovery() {
             let event = RecordingEvent::RecoveryFailed {
                 code: RecordingErrorCode::Unknown,
                 reason: "failed to start recovery".to_string(),
@@ -381,7 +431,16 @@ impl Orchestrator {
     }
 
     async fn handle_force_stop(&mut self) -> Result<()> {
-        if !self.audio_worker.request_force_stop() {
+        let Some(audio_worker) = self.audio_worker.as_ref() else {
+            self.publish_status(
+                "force_stop_after_shutdown_ignored",
+                Some(RecordingErrorCode::AudioStop),
+                RecoveryHint::Manual,
+            );
+            return Ok(());
+        };
+
+        if !audio_worker.request_force_stop() {
             self.publish_status(
                 "force_stop_command_failed",
                 Some(RecordingErrorCode::AudioStop),
@@ -397,10 +456,16 @@ impl Orchestrator {
                 }
             }
             return Ok(());
+        } else {
+            self.stop_in_flight = true;
         }
 
         if self.state.phase == PipelinePhase::Recovering {
-            if !self.recovery_worker.request_recovery() {
+            let Some(recovery_worker) = self.recovery_worker.as_ref() else {
+                return Ok(());
+            };
+
+            if !recovery_worker.request_recovery() {
                 let event = RecordingEvent::RecoveryFailed {
                     code: RecordingErrorCode::Unknown,
                     reason: "failed to start recovery".to_string(),
@@ -414,11 +479,28 @@ impl Orchestrator {
     }
 
     async fn handle_shutdown(&mut self) -> Result<()> {
-        self.audio_worker.request_force_stop();
-        self.processor_worker.request_cancel();
-        self.audio_worker.shutdown().await;
-        self.processor_worker.shutdown().await;
-        self.recovery_worker.shutdown().await;
+        if self.shutdown_started {
+            return Ok(());
+        }
+        self.shutdown_started = true;
+
+        let drained = self.bus.close_and_drain();
+        log::debug!(
+            "orchestrator command bus closed for shutdown; drained hotkey={} worker={} command={}",
+            drained.hotkey,
+            drained.worker,
+            drained.command
+        );
+
+        if let Some(audio_worker) = self.audio_worker.take() {
+            audio_worker.shutdown().await;
+        }
+        if let Some(processor_worker) = self.processor_worker.take() {
+            processor_worker.shutdown().await;
+        }
+        if let Some(recovery_worker) = self.recovery_worker.take() {
+            recovery_worker.shutdown().await;
+        }
         Ok(())
     }
 
@@ -438,8 +520,17 @@ impl Orchestrator {
             error_hint,
             last_event,
         );
-        if let Err(err) = self.status_tx.send(status) {
-            log::warn!("orchestrator telemetry channel closed: {err}");
+        match self.status_tx.send(status) {
+            Ok(outcome) if outcome.dropped_oldest => {
+                log::warn!(
+                    "orchestrator telemetry channel full; dropped oldest status (total_dropped={})",
+                    outcome.dropped_total
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                log::warn!("orchestrator telemetry channel closed: {err:?}");
+            }
         }
     }
 }

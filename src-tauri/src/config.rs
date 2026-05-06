@@ -1,5 +1,5 @@
 use crate::contracts::events::PipelineMode;
-use crate::hotkey::input::stabilizer::validate_shortcut;
+use crate::hotkey::validate_shortcut;
 use anyhow::{anyhow, Context, Result};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ const DEFAULT_HOTKEY_QUEUE_CAPACITY: u32 = 64;
 const DEFAULT_WORKER_QUEUE_CAPACITY: u32 = 128;
 const DEFAULT_SETTLE_TIMEOUT_MS: u64 = 800;
 const DEFAULT_MAX_RECORDING_DURATION_SECS: u64 = 0;
+const DEFAULT_OPENROUTER_MAX_AUDIO_BYTES: u64 = 24 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -285,6 +286,8 @@ pub struct OpenRouterConfig {
     pub base_url: String,
     #[serde(default = "OpenRouterConfig::default_endpoint")]
     pub endpoint: String,
+    #[serde(default = "OpenRouterConfig::default_max_audio_bytes")]
+    pub max_audio_bytes: u64,
     #[serde(default)]
     pub prompt: Option<String>,
 }
@@ -297,6 +300,10 @@ impl OpenRouterConfig {
     fn default_endpoint() -> String {
         "audio/transcriptions".to_string()
     }
+
+    fn default_max_audio_bytes() -> u64 {
+        DEFAULT_OPENROUTER_MAX_AUDIO_BYTES
+    }
 }
 
 impl Default for OpenRouterConfig {
@@ -306,6 +313,7 @@ impl Default for OpenRouterConfig {
             model: "openai/whisper-1".to_string(),
             base_url: Self::default_base_url(),
             endpoint: Self::default_endpoint(),
+            max_audio_bytes: Self::default_max_audio_bytes(),
             prompt: None,
         }
     }
@@ -613,6 +621,12 @@ impl AppConfig {
             issues.push("output.processing_timeout_ms must be at most 600,000".to_string());
         }
 
+        if self.provider.openrouter.max_audio_bytes == 0 {
+            issues.push("provider.openrouter.max_audio_bytes must be greater than 0".to_string());
+        } else if self.provider.openrouter.max_audio_bytes > 512 * 1024 * 1024 {
+            issues.push("provider.openrouter.max_audio_bytes must be at most 536,870,912".to_string());
+        }
+
         if self.tray.refresh_ms < 100 {
             issues.push("tray.refresh_ms must be at least 100".to_string());
         }
@@ -633,15 +647,24 @@ impl AppConfig {
             for issue in issues {
                 out.push_str(&format!(" {issue};"));
             }
-            Err(anyhow!(out.trim_end_matches(';')))
+            Err(anyhow!("{}", out.trim_end_matches(';')))
         }
     }
 
     pub fn parse(raw: &str) -> Result<Self> {
         let migrated = migration::migrate(raw)?;
-        let cfg = serde_json::from_value(migrated).with_context(|| "invalid config schema")?;
+        let cfg: Self = serde_json::from_value(migrated).with_context(|| "invalid config schema")?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        if raw.trim().is_empty() {
+            return Err(anyhow!("{} is empty", path.display()));
+        }
+        Self::parse(&raw)
     }
 
     pub fn load_or_create() -> Result<Self> {
@@ -653,16 +676,11 @@ impl AppConfig {
         }
 
         if path.exists() {
-            let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-            if raw.trim().is_empty() {
-                return Err(anyhow!("{} is empty", path.display()));
-            }
-            return Self::parse(&raw);
+            return Self::load_from_path(&path);
         }
 
         let cfg = Self::default();
-        cfg.validate()?;
-        cfg.save_to(&path)?;
+        cfg.save_validated_to(&path)?;
         Ok(cfg)
     }
 
@@ -692,5 +710,10 @@ impl AppConfig {
         let payload = serde_json::to_string_pretty(self)?;
         fs::write(path, payload)?;
         Ok(())
+    }
+
+    pub fn save_validated_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        self.validate()?;
+        self.save_to(path)
     }
 }

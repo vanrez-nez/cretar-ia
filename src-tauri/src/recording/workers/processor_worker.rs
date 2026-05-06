@@ -8,9 +8,12 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Instant as StdInstant;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-use tokio::time;
+use tokio::time::{self, timeout};
+
+const PROCESSOR_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 enum ProcessorWorkerCommand {
     Run {
@@ -20,6 +23,9 @@ enum ProcessorWorkerCommand {
         openrouter: Option<OpenRouterClient>,
     },
     Cancel,
+    Shutdown {
+        ack: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Clone)]
@@ -79,8 +85,15 @@ impl ProcessorWorker {
     }
 
     pub async fn shutdown(self) {
-        self.request_cancel();
-        let _ = self.handle.await;
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(ProcessorWorkerCommand::Shutdown { ack: ack_tx })
+            .is_ok()
+        {
+            let _ = timeout(PROCESSOR_WORKER_SHUTDOWN_TIMEOUT, ack_rx).await;
+        }
+        let _ = timeout(PROCESSOR_WORKER_SHUTDOWN_TIMEOUT, self.handle).await;
     }
 }
 
@@ -118,11 +131,12 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                         processing_task = Some(tokio::spawn(async move {
                             let result =
                                 process_recording_work(audio_cfg, output_cfg, wav_file, openrouter).await;
+                            let success = result.is_ok();
                             let _ = result_tx.send(result);
                             log::debug!(
                                 "processing task completed in {:?}, success={}",
                                 start.elapsed(),
-                                result.is_ok()
+                                success
                             );
                         }));
                     }
@@ -130,6 +144,13 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                         if let Some(task) = processing_task.take() {
                             task.abort();
                         }
+                    }
+                    ProcessorWorkerCommand::Shutdown { ack } => {
+                        if let Some(task) = processing_task.take() {
+                            task.abort();
+                        }
+                        let _ = ack.send(());
+                        break;
                     }
                 }
             }
@@ -191,12 +212,13 @@ async fn process_recording_work(
             work,
         )
         .await
-    {
-        Ok(result) => result,
-        Err(_) => Err((
-            RecordingErrorCode::WorkerTimeout,
-            format!("processing timeout after {}ms", output_cfg.processing_timeout_ms),
-        )),
+        {
+            Ok(result) => result,
+            Err(_) => Err((
+                RecordingErrorCode::WorkerTimeout,
+                format!("processing timeout after {}ms", output_cfg.processing_timeout_ms),
+            )),
+        }
     };
 
     if result.is_ok() && output_cfg.cleanup_recording_after_processing {

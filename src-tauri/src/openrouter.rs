@@ -27,10 +27,8 @@ impl OpenRouterClient {
 
     pub async fn transcribe(&self, wav_file: &Path) -> Result<String> {
         let start = std::time::Instant::now();
+        let file_size = validate_audio_file(wav_file, self.cfg.max_audio_bytes)?;
         let file_bytes = fs::read(wav_file).context("reading audio file")?;
-        if file_bytes.is_empty() {
-            return Err(anyhow::anyhow!("audio file is empty: {}", wav_file.display()));
-        }
 
         let model = self.cfg.model.trim();
         if model.is_empty() {
@@ -40,7 +38,6 @@ impl OpenRouterClient {
         if api_key.is_empty() {
             return Err(anyhow::anyhow!("provider.openrouter.api_key missing or empty"));
         }
-        let file_size = file_bytes.len();
         let base_url = self.cfg.base_url.trim();
         if base_url.is_empty() {
             return Err(anyhow::anyhow!("provider.openrouter.base_url is empty"));
@@ -52,7 +49,7 @@ impl OpenRouterClient {
 
         let audio = AudioPayload {
             input_audio: InputAudio {
-                data: STANDARD.encode(file_bytes),
+                data: encode_base64_preallocated(&file_bytes),
                 format: "wav".to_string(),
             },
             model: model.to_string(),
@@ -60,10 +57,11 @@ impl OpenRouterClient {
         };
 
         log::info!(
-            "sending {} byte audio file as model {} to {}",
+            "sending {} byte audio file as model {} to {} (max_audio_bytes={})",
             file_size,
             model,
-            format!("{}/{}", base_url.trim_end_matches('/'), endpoint.trim_start_matches('/'))
+            format!("{}/{}", base_url.trim_end_matches('/'), endpoint.trim_start_matches('/')),
+            self.cfg.max_audio_bytes
         );
         log::debug!("transcribe payload preview: {}", audio_payload_preview(&audio));
 
@@ -133,6 +131,33 @@ impl OpenRouterClient {
         log::debug!("transcription completed; text_len={}", text.len());
         Ok(text)
     }
+}
+
+fn validate_audio_file(wav_file: &Path, max_audio_bytes: u64) -> Result<u64> {
+    let metadata = fs::metadata(wav_file)
+        .with_context(|| format!("reading audio file metadata: {}", wav_file.display()))?;
+    let file_size = metadata.len();
+    if file_size == 0 {
+        return Err(anyhow::anyhow!("audio file is empty: {}", wav_file.display()));
+    }
+
+    if file_size > max_audio_bytes {
+        return Err(anyhow::anyhow!(
+            "audio file too large for OpenRouter request: {} bytes exceeds provider.openrouter.max_audio_bytes={} for {}. Oversized recordings are not truncated or retried automatically; reduce recording duration or increase the configured limit if the provider accepts it.",
+            file_size,
+            max_audio_bytes,
+            wav_file.display()
+        ));
+    }
+
+    Ok(file_size)
+}
+
+fn encode_base64_preallocated(bytes: &[u8]) -> String {
+    let encoded_len = bytes.len().saturating_add(2) / 3 * 4;
+    let mut encoded = String::with_capacity(encoded_len);
+    STANDARD.encode_string(bytes, &mut encoded);
+    encoded
 }
 
 #[derive(Deserialize)]

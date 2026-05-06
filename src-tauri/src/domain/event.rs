@@ -1,5 +1,11 @@
+#![allow(deprecated)]
+
 /// Legacy runtime status and event types are kept only for compatibility.
-/// New runtime behavior must be driven by orchestrator snapshot and command channels.
+///
+/// This module is intentionally `pub(crate)` and must only be referenced from
+/// `runtime::compat`. New runtime behavior is driven by contract commands,
+/// hotkey events, and orchestrator `SessionStatus` snapshots.
+
 #[allow(deprecated)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[deprecated(
@@ -24,6 +30,9 @@ pub enum AppEvent {
 }
 
 #[derive(Debug)]
+#[deprecated(
+    note = "Legacy worker event API is retained only for compatibility. Use `contracts::RecordingEvent` instead."
+)]
 pub enum WorkEvent {
     Completed,
     Failed(String),

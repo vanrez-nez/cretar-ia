@@ -3,11 +3,12 @@ use crate::config::{AppConfig, PipelineConfig, QueueSaturationPolicy, RecoverySt
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
 use crate::contracts::events::{HotkeyEvent, PipelineMode, PipelinePhase, RecordingEvent};
+use crate::contracts::status::{
+    bounded_status_channel, SessionStatus, SessionStatusReceiver,
+};
 use crate::recording::command_bus::CommandBusTx;
 use crate::recording::orchestrator;
-use crate::contracts::status::SessionStatus;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
 fn harness_config() -> AppConfig {
@@ -35,7 +36,7 @@ async fn start_runtime(
     cfg: AppConfig,
 ) -> (
     CommandBusTx,
-    mpsc::UnboundedReceiver<SessionStatus>,
+    SessionStatusReceiver,
     tokio::task::JoinHandle<anyhow::Result<()>>,
 ) {
     let cue = CuePlayer::new(&cfg.audio_cues, &cfg);
@@ -45,14 +46,18 @@ async fn start_runtime(
 
 async fn shutdown_runtime(
     command_tx: CommandBusTx,
-    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+    mut handle: tokio::task::JoinHandle<anyhow::Result<()>>,
 ) {
     let _ = command_tx.send_command(RecordingCommand::Shutdown);
-    let _ = timeout(Duration::from_secs(2), handle).await;
+    if timeout(Duration::from_secs(2), &mut handle).await.is_err() {
+        handle.abort();
+        let _ = handle.await;
+        panic!("orchestrator did not shut down within timeout");
+    }
 }
 
 async fn wait_for_status<F>(
-    status_rx: &mut mpsc::UnboundedReceiver<SessionStatus>,
+    status_rx: &mut SessionStatusReceiver,
     matcher: F,
 ) -> SessionStatus
 where
@@ -67,6 +72,49 @@ where
             return status;
         }
     }
+}
+
+#[tokio::test]
+async fn bounded_status_channel_drops_oldest_and_keeps_latest_ordered_state() {
+    let (status_tx, mut status_rx) = bounded_status_channel(2);
+
+    let first = SessionStatus::with_defaults(
+        PipelinePhase::Idle,
+        PipelineMode::PushToTalk,
+        7,
+        1,
+        "first".to_string(),
+    );
+    let second = SessionStatus::with_defaults(
+        PipelinePhase::Starting,
+        PipelineMode::PushToTalk,
+        7,
+        2,
+        "second".to_string(),
+    );
+    let third = SessionStatus::with_defaults(
+        PipelinePhase::Recording,
+        PipelineMode::PushToTalk,
+        7,
+        3,
+        "third".to_string(),
+    );
+
+    assert!(!status_tx.send(first).unwrap().dropped_oldest);
+    assert!(!status_tx.send(second).unwrap().dropped_oldest);
+    let overflow = status_tx.send(third).unwrap();
+
+    assert!(overflow.dropped_oldest);
+    assert_eq!(overflow.dropped_total, 1);
+
+    let kept_second = status_rx.recv().await.expect("second status retained");
+    let kept_third = status_rx.recv().await.expect("latest status retained");
+
+    assert_eq!(kept_second.seq, 2);
+    assert_eq!(kept_second.source, "second");
+    assert_eq!(kept_third.seq, 3);
+    assert_eq!(kept_third.state, PipelinePhase::Recording);
+    assert_eq!(kept_third.source, "third");
 }
 
 #[tokio::test]
@@ -101,7 +149,7 @@ async fn cancel_during_recording_moves_to_recovering() {
     let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
     let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
 
-    let recording = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Recording).await;
+    let _recording = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Recording).await;
     let _ = bus_tx.send_hotkey(HotkeyEvent::CancelPressed);
     let recovering = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Recovering).await;
     assert_eq!(recovering.error_hint, RecoveryHint::RetryStop);

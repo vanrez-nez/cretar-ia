@@ -2,6 +2,8 @@ use crate::config::AudioCaptureConfig;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, SampleRate, Stream, StreamConfig};
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TARGET_PEAK: f32 = 0.2;
 const MAX_NORMALIZE_GAIN: f32 = 64.0;
 const NOISY_EPS: f32 = 1e-7;
+const DEFAULT_CAPTURE_BUFFER_SAMPLES: usize = 1_048_576;
+const MIN_CAPTURE_BUFFER_SAMPLES: usize = 4_096;
+const MAX_CAPTURE_BUFFER_SAMPLES: usize = 4_194_304;
+const CAPTURE_BUFFER_ENV: &str = "CRETAR_IA_RECORDING_BUFFER_SAMPLES";
 
 pub struct Recorder {
     stream: Stream,
@@ -37,7 +43,23 @@ impl Recorder {
             supported.channels()
         );
 
-        let state = Arc::new(Mutex::new(RecorderState::default()));
+        std::fs::create_dir_all(&base_dir).context("creating recording directory")?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|v| v.as_millis())
+            .unwrap_or(0);
+        let out_path = base_dir.join(format!("recording-{ts}.wav"));
+        let spool_path = base_dir.join(format!("recording-{ts}.raw-f32.tmp"));
+        let checkpoint_samples = capture_buffer_sample_limit();
+
+        log::debug!(
+            "audio capture buffer limit: {checkpoint_samples} samples before persistence checkpoint"
+        );
+
+        let state = Arc::new(Mutex::new(RecorderState::new(
+            spool_path.clone(),
+            checkpoint_samples,
+        )?));
 
         let requested = StreamConfig {
             sample_rate: SampleRate(if config.sample_rate == 0 {
@@ -92,13 +114,6 @@ impl Recorder {
 
         stream.play().context("starting audio stream")?;
 
-        std::fs::create_dir_all(&base_dir).context("creating recording directory")?;
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|v| v.as_millis())
-            .unwrap_or(0);
-        let out_path = base_dir.join(format!("recording-{ts}.wav"));
-
         Ok(Self {
             stream,
             state,
@@ -110,12 +125,24 @@ impl Recorder {
 
     pub fn stop(self) -> Result<PathBuf> {
         drop(self.stream);
-        let state = self
+        let mut state = self
             .state
             .lock()
             .map_err(|err| anyhow::anyhow!("audio sample lock error: {err}"))?;
 
-        let state = state;
+        if let Some(err) = state.flush_error.take() {
+            state.close_spool()?;
+            let _ = std::fs::remove_file(&state.spool_path);
+            return Err(anyhow::anyhow!(
+                "audio capture persistence failed before stop; memory was bounded by dropping buffered samples: {err}"
+            ));
+        }
+
+        state
+            .flush_buffer()
+            .context("flushing final audio capture buffer")?;
+        state.close_spool().context("closing audio capture spool")?;
+
         if state.sample_count == 0 {
             log::warn!("recording has no samples; verify microphone permissions and selected input device");
         } else if state.non_zero_samples == 0 {
@@ -142,20 +169,23 @@ impl Recorder {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let mut writer = hound::WavWriter::create(&self.out_path, spec)?;
-        for sample in state.samples.iter() {
-            let sample = sample * normalize_gain;
-            writer.write_sample(quantize_i16(sample))?;
-        }
-        writer.finalize()?;
+        write_spooled_wav(
+            &state.spool_path,
+            &self.out_path,
+            spec,
+            normalize_gain,
+            state.sample_count,
+        )?;
+        let _ = std::fs::remove_file(&state.spool_path);
 
         log::info!(
-            "recording completed: samples={} non_zero={} raw_peak={:.8} sample_rate={} channels={}",
+            "recording completed: samples={} non_zero={} raw_peak={:.8} sample_rate={} channels={} checkpoints={}",
             state.sample_count,
             state.non_zero_samples,
             state.max_abs,
             self.sample_rate,
-            self.channels
+            self.channels,
+            state.persistence_checkpoints
         );
 
         Ok(self.out_path)
@@ -191,12 +221,58 @@ fn report_runtime_context() {
 #[cfg(not(target_os = "macos"))]
 fn report_runtime_context() {}
 
-#[derive(Debug, Default)]
 struct RecorderState {
-    samples: Vec<f32>,
+    buffer: Vec<f32>,
     sample_count: usize,
     non_zero_samples: usize,
     max_abs: f32,
+    checkpoint_samples: usize,
+    persistence_checkpoints: usize,
+    spool_path: PathBuf,
+    spool_writer: Option<BufWriter<File>>,
+    flush_error: Option<String>,
+}
+
+impl RecorderState {
+    fn new(spool_path: PathBuf, checkpoint_samples: usize) -> Result<Self> {
+        let spool = File::create(&spool_path)
+            .with_context(|| format!("creating audio capture spool {:?}", spool_path))?;
+        Ok(Self {
+            buffer: Vec::with_capacity(checkpoint_samples.min(65_536)),
+            sample_count: 0,
+            non_zero_samples: 0,
+            max_abs: 0.0,
+            checkpoint_samples,
+            persistence_checkpoints: 0,
+            spool_path,
+            spool_writer: Some(BufWriter::new(spool)),
+            flush_error: None,
+        })
+    }
+
+    fn flush_buffer(&mut self) -> Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        let Some(writer) = self.spool_writer.as_mut() else {
+            return Err(anyhow::anyhow!("audio capture spool is already closed"));
+        };
+
+        for sample in self.buffer.drain(..) {
+            writer.write_all(&sample.to_le_bytes())?;
+        }
+        writer.flush()?;
+        self.persistence_checkpoints += 1;
+        Ok(())
+    }
+
+    fn close_spool(&mut self) -> Result<()> {
+        if let Some(mut writer) = self.spool_writer.take() {
+            writer.flush()?;
+        }
+        Ok(())
+    }
 }
 
 #[inline]
@@ -293,12 +369,60 @@ fn quantize_i16(sample: f32) -> i16 {
 }
 
 fn push_sample(state: &mut RecorderState, sample: f32) {
-    state.samples.push(sample);
+    if state.flush_error.is_some() {
+        return;
+    }
+
+    state.buffer.push(sample);
     state.sample_count += 1;
     if sample.abs() > 1e-8 {
         state.non_zero_samples += 1;
         state.max_abs = state.max_abs.max(sample.abs());
     }
+
+    if state.buffer.len() >= state.checkpoint_samples {
+        if let Err(err) = state.flush_buffer() {
+            state.flush_error = Some(err.to_string());
+            state.buffer.clear();
+            log::warn!(
+                "audio capture persistence failed; dropping subsequent samples to keep memory bounded: {err}"
+            );
+        }
+    }
+}
+
+fn capture_buffer_sample_limit() -> usize {
+    std::env::var(CAPTURE_BUFFER_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_CAPTURE_BUFFER_SAMPLES)
+        .clamp(MIN_CAPTURE_BUFFER_SAMPLES, MAX_CAPTURE_BUFFER_SAMPLES)
+}
+
+fn write_spooled_wav(
+    spool_path: &PathBuf,
+    out_path: &PathBuf,
+    spec: hound::WavSpec,
+    normalize_gain: f32,
+    sample_count: usize,
+) -> Result<()> {
+    let mut reader = BufReader::new(
+        File::open(spool_path)
+            .with_context(|| format!("opening audio capture spool {:?}", spool_path))?,
+    );
+    let mut writer = hound::WavWriter::create(out_path, spec)?;
+    let mut bytes = [0u8; 4];
+
+    for _ in 0..sample_count {
+        reader
+            .read_exact(&mut bytes)
+            .context("reading audio capture sample from spool")?;
+        let sample = f32::from_le_bytes(bytes) * normalize_gain;
+        writer.write_sample(quantize_i16(sample))?;
+    }
+
+    writer.finalize()?;
+    Ok(())
 }
 
 fn build_input_stream_for_format(

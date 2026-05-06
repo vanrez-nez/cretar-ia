@@ -94,9 +94,12 @@ fn processing_recovery_and_error_toggle_press_is_noop() {
     );
     let stopping = transition(
         &recording.next,
+        RecordedEvent::Hotkey(HotkeyEvent::TogglePressed),
+    );
+    let processing = transition(
+        &stopping.next,
         RecordedEvent::Worker(RecordingEvent::AudioStopped { path: "test.wav".into() }),
     );
-    let processing = transition(&stopping.next, RecordedEvent::Worker(RecordingEvent::ProcessCompleted));
 
     let processing_noop = transition(
         &processing.next,
@@ -109,7 +112,7 @@ fn processing_recovery_and_error_toggle_press_is_noop() {
 
     let recovering = transition(
         &processing.next,
-        RecordedEvent::Worker(RecordingEvent::RecoveryCompleted),
+        RecordedEvent::Hotkey(HotkeyEvent::CancelPressed),
     );
     let recovering_noop = transition(
         &recovering.next,
@@ -121,9 +124,9 @@ fn processing_recovery_and_error_toggle_press_is_noop() {
     ));
 
     let error = transition(
-        &recovering.next,
-        RecordedEvent::Worker(RecordingEvent::RecoveryFailed {
-            code: RecordingErrorCode::AudioStop,
+        &processing.next,
+        RecordedEvent::Worker(RecordingEvent::ProcessFailed {
+            code: RecordingErrorCode::Processing,
             reason: "boom".to_string(),
         }),
     );
@@ -300,7 +303,7 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
 
     let stopping = transition(
         &recording.next,
-        RecordedEvent::Worker(RecordingEvent::AudioStopped { path: "test.wav".into() }),
+        RecordedEvent::Hotkey(HotkeyEvent::Released),
     );
     let stopping_cancel = transition(
         &stopping.next,
@@ -316,7 +319,10 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
         }
     );
 
-    let processing = transition(&stopping.next, RecordedEvent::Worker(RecordingEvent::ProcessCompleted));
+    let processing = transition(
+        &stopping.next,
+        RecordedEvent::Worker(RecordingEvent::AudioStopped { path: "test.wav".into() }),
+    );
     let processing_cancel = transition(
         &processing.next,
         RecordedEvent::Hotkey(HotkeyEvent::CancelPressed),
@@ -332,10 +338,10 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
     );
 
     let recording_error = transition(
-        &recording.next,
-        RecordedEvent::Worker(RecordingEvent::AudioStopFailed {
-            code: crate::contracts::errors::RecordingErrorCode::AudioStop,
-            reason: "audio stop failed".to_string(),
+        &processing.next,
+        RecordedEvent::Worker(RecordingEvent::ProcessFailed {
+            code: crate::contracts::errors::RecordingErrorCode::Processing,
+            reason: "processing failed".to_string(),
         }),
     );
     let error_cancel = transition(

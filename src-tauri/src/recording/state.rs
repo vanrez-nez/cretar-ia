@@ -59,11 +59,6 @@ impl RecordingState {
         self
     }
 
-    pub const fn with_session(mut self, session_id: u64) -> Self {
-        self.session_id = session_id;
-        self
-    }
-
     pub fn with_error(mut self, reason: impl Into<String>, hint: RecoveryHint) -> Self {
         self.phase = PipelinePhase::Error;
         self.last_reason = Some(reason.into());

@@ -18,10 +18,9 @@ pub enum NoopReason {
     TogglePressIgnored,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransitionResult {
     Noop(NoopReason),
-    EmitCommand(RecordingCommand),
     StateChange {
         from: PipelinePhase,
         to: PipelinePhase,
@@ -30,7 +29,7 @@ pub enum TransitionResult {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum RecordedEvent {
     Hotkey(HotkeyEvent),
     Worker(RecordingEvent),
@@ -74,7 +73,7 @@ fn transition_idle(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Hotkey(HotkeyEvent::Pressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .next_session()
                 .with_phase(PipelinePhase::Starting)
@@ -88,7 +87,7 @@ fn transition_idle(
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::TogglePressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .next_session()
                 .with_phase(PipelinePhase::Starting)
@@ -105,7 +104,7 @@ fn transition_idle(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Idle,
                     to: PipelinePhase::Idle,
@@ -118,7 +117,6 @@ fn transition_idle(
             TransitionResult::Noop(NoopReason::QueueSaturated { source, dropped })
         }
         RecordedEvent::Worker(_)
-        | RecordedEvent::Hotkey(HotkeyEvent::Pressed)
         | RecordedEvent::Hotkey(HotkeyEvent::Released)
         | RecordedEvent::Hotkey(HotkeyEvent::Repeat)
         | RecordedEvent::Hotkey(HotkeyEvent::CancelPressed)
@@ -139,7 +137,7 @@ fn transition_starting(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Worker(RecordingEvent::AudioStarted) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_phase(PipelinePhase::Recording)
                 .with_recovery_hint(RecoveryHint::NoRecovery)
@@ -152,7 +150,7 @@ fn transition_starting(
             }
         }
         RecordedEvent::Worker(RecordingEvent::AudioStartFailed { code, reason }) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error(reason, recovery_hint_for_start(code));
             TransitionResult::StateChange {
@@ -163,7 +161,7 @@ fn transition_starting(
             }
         }
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error("starting timeout".to_string(), RecoveryHint::RetryWorker);
             TransitionResult::StateChange {
@@ -177,7 +175,7 @@ fn transition_starting(
             TransitionResult::Noop(NoopReason::QueueSaturated { source, dropped })
         }
         RecordedEvent::Hotkey(HotkeyEvent::CancelPressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_recovery("cancel_pressed".to_string(), RecoveryHint::RetryWorker);
             TransitionResult::StateChange {
@@ -191,7 +189,7 @@ fn transition_starting(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Starting,
                     to: PipelinePhase::Starting,
@@ -200,7 +198,8 @@ fn transition_starting(
                 }
             }
         }
-        RecordedEvent::Hotkey(HotkeyEvent::Pressed)
+        RecordedEvent::Worker(_)
+        | RecordedEvent::Hotkey(HotkeyEvent::Pressed)
         | RecordedEvent::Hotkey(HotkeyEvent::Released)
         | RecordedEvent::Hotkey(HotkeyEvent::Repeat)
         | RecordedEvent::Hotkey(HotkeyEvent::TogglePressed)
@@ -221,7 +220,7 @@ fn transition_recording(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Hotkey(HotkeyEvent::Released) if state.mode == PipelineMode::PushToTalk => {
-            *next = state.next_seq().with_phase(PipelinePhase::Stopping);
+            *next = state.clone().next_seq().with_phase(PipelinePhase::Stopping);
             TransitionResult::StateChange {
                 from: PipelinePhase::Recording,
                 to: PipelinePhase::Stopping,
@@ -230,7 +229,7 @@ fn transition_recording(
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::TogglePressed) => {
-            *next = state.next_seq().with_phase(PipelinePhase::Stopping);
+            *next = state.clone().next_seq().with_phase(PipelinePhase::Stopping);
             TransitionResult::StateChange {
                 from: PipelinePhase::Recording,
                 to: PipelinePhase::Stopping,
@@ -239,7 +238,7 @@ fn transition_recording(
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::Pressed) if state.mode == PipelineMode::Toggle => {
-            *next = state.next_seq().with_phase(PipelinePhase::Stopping);
+            *next = state.clone().next_seq().with_phase(PipelinePhase::Stopping);
             TransitionResult::StateChange {
                 from: PipelinePhase::Recording,
                 to: PipelinePhase::Stopping,
@@ -251,7 +250,7 @@ fn transition_recording(
             TransitionResult::Noop(NoopReason::ToggleReleaseIgnored)
         }
         RecordedEvent::Hotkey(HotkeyEvent::CancelPressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_recovery("cancel_pressed".to_string(), RecoveryHint::RetryStop);
             TransitionResult::StateChange {
@@ -265,7 +264,7 @@ fn transition_recording(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Recording,
                     to: PipelinePhase::Recording,
@@ -275,7 +274,7 @@ fn transition_recording(
             }
         }
         RecordedEvent::Worker(RecordingEvent::AudioStopped { .. }) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error("unexpected audio stopped".to_string(), RecoveryHint::RetryWorker);
             TransitionResult::StateChange {
@@ -286,7 +285,7 @@ fn transition_recording(
             }
         }
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error("recording timeout".to_string(), RecoveryHint::RetryWorker);
             TransitionResult::StateChange {
@@ -319,7 +318,7 @@ fn transition_stopping(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Worker(RecordingEvent::AudioStopped { .. }) => {
-            *next = state.next_seq().with_phase(PipelinePhase::Processing);
+            *next = state.clone().next_seq().with_phase(PipelinePhase::Processing);
             TransitionResult::StateChange {
                 from: PipelinePhase::Stopping,
                 to: PipelinePhase::Processing,
@@ -328,7 +327,7 @@ fn transition_stopping(
             }
         }
         RecordedEvent::Worker(RecordingEvent::AudioStopFailed { code, reason }) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error(reason, recovery_hint_for_stop(code));
             TransitionResult::StateChange {
@@ -339,7 +338,7 @@ fn transition_stopping(
             }
         }
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error("stopping timeout".to_string(), RecoveryHint::RetryWorker);
             TransitionResult::StateChange {
@@ -353,7 +352,7 @@ fn transition_stopping(
             TransitionResult::Noop(NoopReason::QueueSaturated { source, dropped })
         }
         RecordedEvent::Hotkey(HotkeyEvent::CancelPressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_recovery("cancel_pressed".to_string(), RecoveryHint::RetryStop);
             TransitionResult::StateChange {
@@ -367,7 +366,7 @@ fn transition_stopping(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Stopping,
                     to: PipelinePhase::Stopping,
@@ -375,6 +374,9 @@ fn transition_stopping(
                     command: None,
                 }
             }
+        }
+        RecordedEvent::Hotkey(HotkeyEvent::Released) if state.mode == PipelineMode::Toggle => {
+            TransitionResult::Noop(NoopReason::ToggleReleaseIgnored)
         }
         RecordedEvent::Hotkey(HotkeyEvent::Pressed)
         | RecordedEvent::Hotkey(HotkeyEvent::Released)
@@ -401,7 +403,7 @@ fn transition_processing(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Worker(RecordingEvent::ProcessCompleted) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_phase(PipelinePhase::Idle)
                 .with_recovery_hint(RecoveryHint::NoRecovery)
@@ -414,9 +416,14 @@ fn transition_processing(
             }
         }
         RecordedEvent::Worker(RecordingEvent::ProcessFailed { code, reason }) => {
-            *next = state
+            let recovery_hint = if is_output_injection_error(&reason) {
+                RecoveryHint::Manual
+            } else {
+                recovery_hint_for_processing(code)
+            };
+            *next = state.clone()
                 .next_seq()
-                .with_error(reason, recovery_hint_for_processing(code));
+                .with_error(reason, recovery_hint);
             TransitionResult::StateChange {
                 from: PipelinePhase::Processing,
                 to: PipelinePhase::Error,
@@ -425,7 +432,7 @@ fn transition_processing(
             }
         }
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error("processing timeout".to_string(), RecoveryHint::RetryWorker);
             TransitionResult::StateChange {
@@ -439,7 +446,7 @@ fn transition_processing(
             TransitionResult::Noop(NoopReason::QueueSaturated { source, dropped })
         }
         RecordedEvent::Hotkey(HotkeyEvent::CancelPressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_recovery("cancel_processing".to_string(), RecoveryHint::RetryProcessing);
             TransitionResult::StateChange {
@@ -453,7 +460,7 @@ fn transition_processing(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Processing,
                     to: PipelinePhase::Processing,
@@ -489,7 +496,7 @@ fn transition_recovering(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Worker(RecordingEvent::RecoveryCompleted) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_phase(PipelinePhase::Idle)
                 .with_recovery_hint(RecoveryHint::NoRecovery)
@@ -502,7 +509,7 @@ fn transition_recovering(
             }
         }
         RecordedEvent::Worker(RecordingEvent::RecoveryFailed { code, reason }) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error(reason, recovery_hint_for_error(code));
             TransitionResult::StateChange {
@@ -519,7 +526,7 @@ fn transition_recovering(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Recovering,
                     to: PipelinePhase::Recovering,
@@ -554,7 +561,7 @@ fn transition_error(
 ) -> TransitionResult {
     match event {
         RecordedEvent::Worker(RecordingEvent::RecoveryCompleted) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_phase(PipelinePhase::Idle)
                 .with_recovery_hint(RecoveryHint::NoRecovery)
@@ -567,7 +574,7 @@ fn transition_error(
             }
         }
         RecordedEvent::Worker(RecordingEvent::RecoveryFailed { code, reason }) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_error(reason, recovery_hint_for_error(code));
             TransitionResult::StateChange {
@@ -578,7 +585,7 @@ fn transition_error(
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::CancelPressed) => {
-            *next = state
+            *next = state.clone()
                 .next_seq()
                 .with_recovery("cancel_pressed".to_string(), state.recovery_hint);
             TransitionResult::StateChange {
@@ -595,7 +602,7 @@ fn transition_error(
             if state.mode == mode {
                 TransitionResult::Noop(NoopReason::ModeNoChange)
             } else {
-                *next = state.with_mode(mode);
+                *next = state.clone().with_mode(mode);
                 TransitionResult::StateChange {
                     from: PipelinePhase::Error,
                     to: PipelinePhase::Error,
@@ -644,6 +651,10 @@ fn recorded_event_name(event: &RecordedEvent) -> &'static str {
         RecordedEvent::Worker(RecordingEvent::RecoveryCompleted) => "recovery_completed",
         RecordedEvent::Worker(RecordingEvent::RecoveryFailed { .. }) => "recovery_failed",
     }
+}
+
+fn is_output_injection_error(reason: &str) -> bool {
+    reason.starts_with("inject error:")
 }
 
 fn recovery_hint_for_start(code: RecordingErrorCode) -> RecoveryHint {

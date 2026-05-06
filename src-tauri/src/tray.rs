@@ -28,8 +28,11 @@ pub fn status_to_icon(status: &SessionStatus) -> &'static str {
 
 #[cfg(feature = "tray")]
 mod tray_impl {
-    use super::open_settings_file;
-    use crate::domain::AppEvent;
+    use super::{
+        open_settings_file, ICON_STATE_DONE, ICON_STATE_ERROR, ICON_STATE_IDLE,
+        ICON_STATE_RECORDING, ICON_STATE_SENDING, ICON_STATE_SHUTDOWN,
+    };
+    use crate::runtime::compat::RuntimeControlEvent;
     use anyhow::Result;
     use tokio::sync::mpsc::UnboundedSender;
     use tray_item::{IconSource, TrayItem};
@@ -43,7 +46,7 @@ mod tray_impl {
         pub fn new(
             title: String,
             _tooltip: String,
-            tx: UnboundedSender<AppEvent>,
+            tx: UnboundedSender<RuntimeControlEvent>,
             config_path: String,
         ) -> Result<Self> {
             let mut item = TrayItem::new(&title, icon_for_state(ICON_STATE_IDLE))?;
@@ -56,7 +59,7 @@ mod tray_impl {
                 }
             });
             let _ = item.add_menu_item("Quit", move || {
-                let _ = tx.send(AppEvent::Quit);
+                let _ = tx.send(RuntimeControlEvent::Quit);
                 std::process::exit(0);
             });
             Ok(Self {
@@ -248,7 +251,7 @@ fn open_path_with_default_app(path: &str) -> std::io::Result<()> {
 #[cfg(not(feature = "tray"))]
 mod tray_impl {
     use anyhow::Result;
-    use crate::domain::AppEvent;
+    use crate::runtime::compat::RuntimeControlEvent;
     use tokio::sync::mpsc::UnboundedSender;
 
     pub struct TrayController {
@@ -259,7 +262,7 @@ mod tray_impl {
         pub fn new(
             _title: String,
             tooltip: String,
-            _tx: UnboundedSender<AppEvent>,
+            _tx: UnboundedSender<RuntimeControlEvent>,
             _config_path: String,
         ) -> Result<Self> {
             log::info!("tray disabled; status: {}", tooltip);

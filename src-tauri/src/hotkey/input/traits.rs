@@ -10,7 +10,6 @@ pub enum HotkeyEdgeEvent {
     TogglePressed,
     Released,
     Repeat,
-    CancelPressed,
     Ignored,
 }
 
@@ -37,7 +36,6 @@ impl HotkeyInputProvider for HotkeyInputCoordinator {
             HotkeyEdgeEvent::TogglePressed => Some(HotkeyEvent::TogglePressed),
             HotkeyEdgeEvent::Released => Some(HotkeyEvent::Released),
             HotkeyEdgeEvent::Repeat => None,
-            HotkeyEdgeEvent::CancelPressed => Some(HotkeyEvent::CancelPressed),
             HotkeyEdgeEvent::Ignored => None,
         }
     }
