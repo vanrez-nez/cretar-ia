@@ -1,59 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSettingsStore } from "./stores/settingsStore";
-import type { AppConfig } from "./lib/types";
+import type { AppConfig, InteractionMode } from "./lib/types";
 
-function formatStatus({
-  ready,
-  isLoading,
-  isSaving,
-  error,
-  runtimeStatus,
-}: {
-  ready: boolean;
-  isLoading: boolean;
-  isSaving: boolean;
-  error: string | null;
-  runtimeStatus: string;
-}) {
-  if (!isTauri()) {
-    return "Running in browser mode: Tauri bridge is unavailable.";
-  }
-  if (error) {
-    return `Error: ${error}`;
-  }
-  if (runtimeStatus === "loading" || isLoading) {
-    return "Loading settings...";
-  }
-  if (runtimeStatus === "sending") {
-    return "Saving settings...";
-  }
-  if (isSaving) {
-    return "Saving settings...";
-  }
-  if (isLoading) {
-    return "Loading settings...";
-  }
-  if (ready) {
-    return "Settings loaded.";
-  }
-  return "Initializing...";
-}
+const AUTOSAVE_DELAY_MS = 500;
+const APP_VERSION = "0.1.0";
 
 export default function App() {
   const fetchSettings = useSettingsStore((s) => s.fetchSettings);
   const config = useSettingsStore((s) => s.config);
-  const isLoading = useSettingsStore((s) => s.isLoading);
-  const isSaving = useSettingsStore((s) => s.isSaving);
   const isReady = useSettingsStore((s) => s.isReady);
-  const appState = useSettingsStore((s) => s.appState);
   const saveSettings = useSettingsStore((s) => s.updateSettings);
-  const loadError = useSettingsStore((s) => s.error);
-  const [configText, setConfigText] = useState("");
   const [draftConfig, setDraftConfig] = useState<AppConfig | null>(null);
-  const [message, setMessage] = useState("Loading settings...");
-  const [editorError, setEditorError] = useState<string | null>(null);
+  const hasHydrated = useRef(false);
+  const skipNextAutosave = useRef(true);
 
   useEffect(() => {
     void fetchSettings();
@@ -64,290 +33,423 @@ export default function App() {
       return;
     }
     setDraftConfig(config);
-    setConfigText(JSON.stringify(config, null, 2));
+    skipNextAutosave.current = true;
+    hasHydrated.current = true;
   }, [config]);
 
   useEffect(() => {
-    setMessage(
-      formatStatus({
-        ready: isReady,
-        isLoading,
-        isSaving,
-        error: loadError,
-        runtimeStatus: appState.status,
-      })
-    );
-  }, [isReady, isLoading, isSaving, loadError, appState.status]);
-
-  const saveConfig = async () => {
-    if (!isTauri()) {
-      setMessage("Running in browser mode: Tauri bridge is unavailable.");
+    if (!draftConfig || !hasHydrated.current) {
+      return;
+    }
+    if (skipNextAutosave.current) {
+      skipNextAutosave.current = false;
       return;
     }
 
-    try {
-      const parsed = draftConfig ?? (JSON.parse(configText) as AppConfig);
-      await saveSettings(parsed);
-      setMessage("Saved.");
-      setEditorError(null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setEditorError(message);
-      setMessage(`Error saving settings: ${message}`);
-    }
-  };
+    const timeout = window.setTimeout(() => {
+      void saveSettings(draftConfig).catch((error) => {
+        console.error("failed to autosave settings", error);
+      });
+    }, AUTOSAVE_DELAY_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [draftConfig, saveSettings]);
 
   const updateDraft = (updater: (config: AppConfig) => AppConfig) => {
-    const source = draftConfig ?? config;
-    if (!source) {
-      return;
-    }
-
-    const next = updater(source);
-    setDraftConfig(next);
-    setConfigText(JSON.stringify(next, null, 2));
-    setEditorError(null);
-  };
-
-  const updateFromJson = (value: string) => {
-    setConfigText(value);
-    try {
-      setDraftConfig(JSON.parse(value) as AppConfig);
-      setEditorError(null);
-    } catch {
-      setDraftConfig(null);
-    }
-  };
-
-  const numberOrNull = (value: string): number | null => {
-    if (value.trim() === "") {
-      return null;
-    }
-    return Number(value);
+    setDraftConfig((current) => {
+      if (!current) {
+        return current;
+      }
+      return updater(current);
+    });
   };
 
   const draft = draftConfig;
 
-  const cancelSettings = async () => {
-    try {
-      const window = getCurrentWindow();
-      await window.close();
-    } catch {
-      // no-op if called outside Tauri context
-    }
-  };
-
   return (
-    <main className="container">
-      <h1>Settings</h1>
+    <main className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 p-5">
+        <header className="flex flex-col gap-1">
+          <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+          <p className="text-sm text-muted-foreground">
+            Changes are saved automatically.
+          </p>
+        </header>
 
-      {draft ? (
-        <section className="settings-grid">
-          <section className="card settings-panel">
-            <h2>Timeouts</h2>
-            <label className="field">
-              <span>OpenRouter processing timeout</span>
-              <input
-                type="number"
-                min="0"
-                max="600000"
-                step="1000"
-                value={draft.output.processing_timeout_ms}
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    output: {
-                      ...config.output,
-                      processing_timeout_ms: Number(event.currentTarget.value),
-                    },
-                  }))
-                }
-              />
-              <small>Applies to transcription and text delivery. Use 0 to disable.</small>
-            </label>
+        {!draft ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Loading settings</CardTitle>
+              <CardDescription>
+                {isTauri() ? "Reading local configuration..." : "Browser preview uses default settings."}
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : (
+          <Tabs defaultValue="system" className="w-full">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="system">System</TabsTrigger>
+              <TabsTrigger value="recording">Recording</TabsTrigger>
+              <TabsTrigger value="models">Models</TabsTrigger>
+              <TabsTrigger value="about">About</TabsTrigger>
+            </TabsList>
 
-            <label className="field">
-              <span>Pipeline settle timeout</span>
-              <input
-                type="number"
-                min="100"
-                max="120000"
-                step="100"
-                value={draft.pipeline.settle_timeout_ms ?? ""}
-                placeholder="800"
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    pipeline: {
-                      ...config.pipeline,
-                      settle_timeout_ms: numberOrNull(event.currentTarget.value),
-                    },
-                  }))
-                }
-              />
-              <small>Applies only to local start/stop worker transitions.</small>
-            </label>
+            <TabsContent value="system" className="mt-4">
+              <SystemPane draft={draft} updateDraft={updateDraft} />
+            </TabsContent>
 
-            <label className="toggle-field">
-              <input
-                type="checkbox"
-                checked={draft.output.cleanup_recording_after_processing}
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    output: {
-                      ...config.output,
-                      cleanup_recording_after_processing: event.currentTarget.checked,
-                    },
-                  }))
-                }
-              />
-              <span>Delete recording after successful processing</span>
-            </label>
+            <TabsContent value="recording" className="mt-4">
+              <RecordingPane draft={draft} updateDraft={updateDraft} disabled={!isReady} />
+            </TabsContent>
 
-            <label className="toggle-field">
-              <input
-                type="checkbox"
-                checked={draft.audio.auto_switch_to_primary_device}
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio: {
-                      ...config.audio,
-                      auto_switch_to_primary_device: event.currentTarget.checked,
-                    },
-                  }))
-                }
-              />
-              <span>Auto-switch to primary input device when selected device is unavailable</span>
-            </label>
-          </section>
+            <TabsContent value="models" className="mt-4">
+              <ModelsPane draft={draft} />
+            </TabsContent>
 
-          <section className="card settings-panel">
-            <h2>Audio cues</h2>
-            <label className="toggle-field">
-              <input
-                type="checkbox"
-                checked={draft.audio_cues.enabled}
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      enabled: event.currentTarget.checked,
-                    },
-                  }))
-                }
-              />
-              <span>Play recording feedback sounds</span>
-            </label>
-
-            <label className="field">
-              <span>Volume</span>
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.05"
-                value={draft.audio_cues.volume}
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      volume: Number(event.currentTarget.value),
-                    },
-                  }))
-                }
-              />
-              <small>{Math.round(draft.audio_cues.volume * 100)}%</small>
-            </label>
-
-            <label className="field">
-              <span>Start sound</span>
-              <input
-                type="text"
-                value={draft.audio_cues.start_sound ?? ""}
-                placeholder="sounds/start.wav"
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      start_sound: event.currentTarget.value.trim() || null,
-                    },
-                  }))
-                }
-              />
-            </label>
-
-            <label className="field">
-              <span>Stop sound</span>
-              <input
-                type="text"
-                value={draft.audio_cues.stop_sound ?? ""}
-                placeholder="sounds/stop.wav"
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      stop_sound: event.currentTarget.value.trim() || null,
-                    },
-                  }))
-                }
-              />
-            </label>
-
-            <label className="field">
-              <span>Error sound</span>
-              <input
-                type="text"
-                value={draft.audio_cues.error_sound ?? ""}
-                placeholder="sounds/error_1.wav"
-                onChange={(event) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      error_sound: event.currentTarget.value.trim() || null,
-                    },
-                  }))
-                }
-              />
-            </label>
-          </section>
-        </section>
-      ) : null}
-
-      <section className="card">
-        <h2>Advanced JSON</h2>
-        <textarea
-          id="config"
-          value={configText}
-          placeholder="Loading settings file..."
-          onChange={(event) => updateFromJson(event.currentTarget.value)}
-        />
-      </section>
-
-      <p className="message" id="message">
-        {message}
-      </p>
-      {editorError ? <p className="error-message">{editorError}</p> : null}
-
-      <div className="toolbar">
-        <button
-          className="btn btn-primary"
-          type="button"
-          disabled={!isReady || isLoading || isSaving || !isTauri()}
-          onClick={saveConfig}
-        >
-          Save
-        </button>
-        <button className="btn btn-ghost" type="button" onClick={cancelSettings}>
-          Cancel
-        </button>
+            <TabsContent value="about" className="mt-4">
+              <AboutPane />
+            </TabsContent>
+          </Tabs>
+        )}
       </div>
     </main>
   );
+}
+
+type PaneProps = {
+  draft: AppConfig;
+  updateDraft: (updater: (config: AppConfig) => AppConfig) => void;
+};
+
+function SystemPane({ draft, updateDraft }: PaneProps) {
+  return (
+    <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
+      <Card>
+        <CardHeader>
+          <CardTitle>System</CardTitle>
+          <CardDescription>General app behavior and local storage.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <SettingRow title="Language" description="UI language support is not wired yet.">
+            <Input value="System default" disabled className="max-w-56" />
+          </SettingRow>
+          <SettingRow title="Launch at start" description="Startup integration is planned for a later phase.">
+            <Switch checked={false} disabled />
+          </SettingRow>
+          <SettingRow title="Save text history" description="Transcript history storage is planned for a later phase.">
+            <Switch checked={false} disabled />
+          </SettingRow>
+          <SettingRow title="Save input audio" description="Keep recordings after successful processing.">
+            <Switch
+              checked={!draft.output.cleanup_recording_after_processing}
+              onCheckedChange={(checked) =>
+                updateDraft((config) => ({
+                  ...config,
+                  output: {
+                    ...config.output,
+                    cleanup_recording_after_processing: !checked,
+                  },
+                }))
+              }
+            />
+          </SettingRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Overview Stats</CardTitle>
+          <CardDescription>Local usage counters are not available yet.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          <StatRow label="Transcripts Count" value="0" />
+          <StatRow label="Words Transcribed" value="0" />
+          <StatRow label="Minutes Recorded" value="0" />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function RecordingPane({ draft, updateDraft, disabled }: PaneProps & { disabled: boolean }) {
+  const startEnabled = draft.audio_cues.start_sound !== null;
+  const stopEnabled = draft.audio_cues.stop_sound !== null;
+  const errorEnabled = draft.audio_cues.error_sound !== null;
+
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Permissions</CardTitle>
+          <CardDescription>Permission refresh will be connected to native status checks later.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-3">
+          <Badge variant="secondary">Microphone</Badge>
+          <Badge variant="secondary">Accessibility</Badge>
+          <Button variant="outline" size="sm" disabled>
+            Refresh
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Recording</CardTitle>
+          <CardDescription>Capture mode, hotkey, microphone, and cues.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <SettingRow title="Mode" description="Choose how the hotkey controls recording.">
+            <Select
+              value={draft.interaction.mode}
+              disabled={disabled}
+              onValueChange={(value) =>
+                updateDraft((config) => ({
+                  ...config,
+                  interaction: {
+                    ...config.interaction,
+                    mode: value as InteractionMode,
+                  },
+                }))
+              }
+            >
+              <SelectTrigger className="w-52">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="push_to_talk">Push to Talk</SelectItem>
+                <SelectItem value="toggle">Toggle</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingRow>
+
+          <SettingRow title="Hotkey" description="Hotkey editing is planned for a later phase.">
+            <div className="flex items-center gap-2">
+              <Input value={draft.interaction.shortcut} readOnly className="w-52" />
+              <Button variant="outline" size="sm" disabled>
+                Edit
+              </Button>
+            </div>
+          </SettingRow>
+
+          <SettingRow title="Microphone" description="Native device picker is available from the tray for now.">
+            <Select disabled value="default">
+              <SelectTrigger className="w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Default</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingRow>
+
+          <Separator />
+
+          <SettingRow title="Sound Record Start" description="Enable or disable the configured start cue.">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={startEnabled}
+                onCheckedChange={(checked) =>
+                  updateDraft((config) => ({
+                    ...config,
+                    audio_cues: {
+                      ...config.audio_cues,
+                      start_sound: checked ? config.audio_cues.start_sound ?? "sounds/start.wav" : null,
+                    },
+                  }))
+                }
+              />
+              <Button variant="outline" size="sm" disabled>
+                Edit
+              </Button>
+            </div>
+          </SettingRow>
+
+          <SettingRow title="Sound Record End" description="Enable or disable the configured stop cue.">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={stopEnabled}
+                onCheckedChange={(checked) =>
+                  updateDraft((config) => ({
+                    ...config,
+                    audio_cues: {
+                      ...config.audio_cues,
+                      stop_sound: checked ? config.audio_cues.stop_sound ?? "sounds/stop.wav" : null,
+                    },
+                  }))
+                }
+              />
+              <Button variant="outline" size="sm" disabled>
+                Edit
+              </Button>
+            </div>
+          </SettingRow>
+
+          <SettingRow title="Sound Record Error" description="Enable or disable the configured error cue.">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={errorEnabled}
+                onCheckedChange={(checked) =>
+                  updateDraft((config) => ({
+                    ...config,
+                    audio_cues: {
+                      ...config.audio_cues,
+                      error_sound: checked ? config.audio_cues.error_sound ?? "sounds/error_1.wav" : null,
+                    },
+                  }))
+                }
+              />
+              <Button variant="outline" size="sm" disabled>
+                Edit
+              </Button>
+            </div>
+          </SettingRow>
+
+          <SettingRow title="Auto-switch to primary input device" description="Use the system default input when the selected device is unavailable.">
+            <Switch
+              checked={draft.audio.auto_switch_to_primary_device}
+              onCheckedChange={(checked) =>
+                updateDraft((config) => ({
+                  ...config,
+                  audio: {
+                    ...config.audio,
+                    auto_switch_to_primary_device: checked,
+                  },
+                }))
+              }
+            />
+          </SettingRow>
+
+          <SettingRow title="Pause media during recording" description="Media pause integration is planned for a later phase.">
+            <Switch checked={false} disabled />
+          </SettingRow>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function ModelsPane({ draft }: { draft: AppConfig }) {
+  const providerName = useMemo(() => providerLabel(draft.provider.provider), [draft.provider.provider]);
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>STT Model</CardTitle>
+          <CardDescription>Speech-to-text providers.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <ProviderItem
+            name={providerName}
+            detail={draft.provider.openrouter.model || "No model configured"}
+          />
+          <Button variant="outline" size="sm" disabled>
+            Add Provider
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Formatting Model</CardTitle>
+          <CardDescription>Formatting providers are planned for a later phase.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <ProviderItem name="No provider configured" detail="Unavailable" disabled />
+          <Button variant="outline" size="sm" disabled>
+            Add Provider
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function AboutPane() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>About</CardTitle>
+        <CardDescription>Application information and project links.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <SettingRow title="Version Info" description="Current app version.">
+          <Badge variant="outline">{APP_VERSION}</Badge>
+        </SettingRow>
+        <SettingRow title="Website" description="Product website link.">
+          <Button variant="link" size="sm" disabled>
+            Website
+          </Button>
+        </SettingRow>
+        <SettingRow title="GitHub Link" description="Repository link.">
+          <Button variant="link" size="sm" disabled>
+            GitHub
+          </Button>
+        </SettingRow>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SettingRow({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid gap-3 rounded-lg border border-border/70 bg-card/50 p-3 sm:grid-cols-[1fr_auto] sm:items-center">
+      <div className="space-y-1">
+        <Label className="text-sm font-medium">{title}</Label>
+        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+      </div>
+      <div className="flex justify-start sm:justify-end">{children}</div>
+    </div>
+  );
+}
+
+function StatRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-border/70 bg-card/50 px-3 py-2">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="text-lg font-semibold tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function ProviderItem({
+  name,
+  detail,
+  disabled = false,
+}: {
+  name: string;
+  detail: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-card/50 p-3 opacity-100 data-[disabled=true]:opacity-50" data-disabled={disabled}>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium">{name}</div>
+        <div className="truncate text-xs text-muted-foreground">{detail}</div>
+      </div>
+      <div className="flex shrink-0 gap-2">
+        <Button variant="outline" size="sm" disabled>
+          Edit
+        </Button>
+        <Button variant="ghost" size="sm" disabled>
+          Remove
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function providerLabel(provider: string) {
+  if (provider === "openrouter") {
+    return "OpenRouter";
+  }
+  return provider || "Provider";
 }
