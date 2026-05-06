@@ -8,7 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
 import { SettingsBadge } from "@/components/settings-badge";
 import { tauriInvoke } from "@/hooks/useTauriIPC";
@@ -122,15 +123,10 @@ export default function App() {
   const draft = draftConfig;
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 p-5">
-        <header className="flex flex-col gap-1">
-          <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-          <p className="text-sm text-muted-foreground">Changes are saved automatically.</p>
-        </header>
-
+    <main className="h-screen overflow-hidden bg-background text-foreground">
+      <div className="h-full w-full">
         {!draft ? (
-          <Card>
+          <Card className="m-5">
             <CardHeader>
               <CardTitle>Loading settings</CardTitle>
               <CardDescription>
@@ -139,19 +135,14 @@ export default function App() {
             </CardHeader>
           </Card>
         ) : (
-          <Tabs defaultValue="system" className="w-full">
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="system">System</TabsTrigger>
-              <TabsTrigger value="recording">Recording</TabsTrigger>
-              <TabsTrigger value="models">Models</TabsTrigger>
-              <TabsTrigger value="about">About</TabsTrigger>
-            </TabsList>
+          <Tabs defaultValue="system" orientation="vertical" className="h-full w-full gap-0">
+            <SettingsNavigation />
 
-            <TabsContent value="system" className="mt-4">
+            <TabsContent value="system" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
               <SystemPane draft={draft} updateDraft={updateDraft} />
             </TabsContent>
 
-            <TabsContent value="recording" className="mt-4">
+            <TabsContent value="recording" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
               <RecordingPane
                 draft={draft}
                 updateDraft={updateDraft}
@@ -163,11 +154,11 @@ export default function App() {
               />
             </TabsContent>
 
-            <TabsContent value="models" className="mt-4">
+            <TabsContent value="models" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
               <ModelsPane draft={draft} />
             </TabsContent>
 
-            <TabsContent value="about" className="mt-4">
+            <TabsContent value="about" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
               <AboutPane />
             </TabsContent>
           </Tabs>
