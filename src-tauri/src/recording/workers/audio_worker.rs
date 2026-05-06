@@ -121,7 +121,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
                     continue;
                 }
 
-                match Recorder::start(&cfg, record_base) {
+                match Recorder::start(&cfg, record_base, tx.clone()) {
                     Ok(recorder) => {
                         active_recorder = Some(recorder);
                         if tx.send_worker(RecordingEvent::AudioStarted).is_some() {
@@ -129,11 +129,20 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
                         }
                     }
                     Err(err) => {
-                        if tx
-                            .send_worker(RecordingEvent::AudioStartFailed {
+                        let reason = format!("audio start failed: {err}");
+                        let event = if is_audio_device_unavailable_error(&reason) {
+                            RecordingEvent::AudioDeviceUnavailable {
                                 code: RecordingErrorCode::AudioInit,
-                                reason: format!("audio start failed: {err}"),
-                            })
+                                reason,
+                            }
+                        } else {
+                            RecordingEvent::AudioStartFailed {
+                                code: RecordingErrorCode::AudioInit,
+                                reason,
+                            }
+                        };
+                        if tx
+                            .send_worker(event)
                             .is_some()
                         {
                             log::warn!("audio start failure event dropped because worker queue was full");
@@ -157,6 +166,12 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
             }
         }
     }
+}
+
+fn is_audio_device_unavailable_error(reason: &str) -> bool {
+    reason.contains("configured audio input device")
+        || reason.contains("no default input device found")
+        || reason.contains("device is no longer available")
 }
 
 fn stop_active_recorder(recorder: Option<Recorder>, tx: CommandBusTx) -> Option<Recorder> {

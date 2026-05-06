@@ -37,6 +37,7 @@ mod tray_impl {
     use crate::runtime::compat::RuntimeControlEvent;
     use anyhow::{Context, Result};
     use std::collections::HashMap;
+    use std::time::{Duration, Instant};
     use resvg::{tiny_skia, usvg};
     use tao::{
         event::{Event, StartCause},
@@ -62,6 +63,7 @@ mod tray_impl {
         icons: IconSet,
         device_names: Vec<String>,
         selected_device: Option<String>,
+        configured_device: Option<String>,
     }
 
     #[derive(Clone)]
@@ -100,6 +102,7 @@ mod tray_impl {
                 icons: IconSet::new()?,
                 device_names: available_input_device_names(),
                 selected_device: selected_input_device(),
+                configured_device: configured_input_device(),
             })
         }
 
@@ -115,57 +118,23 @@ mod tray_impl {
             let tx = self.tx.clone();
             let config_path = self.config_path.clone();
             let icons = self.icons.clone();
-            let device_names = self.device_names.clone();
-            let selected_device = self.selected_device.clone();
+            let mut device_names = self.device_names.clone();
+            let mut selected_device = self.selected_device.clone();
+            let mut configured_device = self.configured_device.clone();
             let mut device_menu_ids = HashMap::<String, String>::new();
+            let mut last_device_menu_refresh = Instant::now();
 
             self.event_loop.run(move |event, _, control_flow| {
                 *control_flow = ControlFlow::Wait;
 
                 match event {
                     Event::NewEvents(StartCause::Init) => {
-                        let menu = Menu::new();
-                        device_menu_ids.clear();
-                        let settings = MenuItem::with_id(MENU_SETTINGS, "Settings", true, None);
-                        let separator_after_settings = PredefinedMenuItem::separator();
-                        let separator_before_quit = PredefinedMenuItem::separator();
-                        let quit = MenuItem::with_id(MENU_QUIT, "Quit", true, None);
-
-                        if let Err(err) = menu.append(&settings) {
-                            log::warn!("failed to add settings menu item: {err}");
-                        }
-                        if let Err(err) = menu.append(&separator_after_settings) {
-                            log::warn!("failed to add menu separator: {err}");
-                        }
-
-                        if device_names.is_empty() {
-                            let empty = MenuItem::with_id("input-device:none", "No input devices found", false, None);
-                            if let Err(err) = menu.append(&empty) {
-                                log::warn!("failed to add empty input device menu item: {err}");
-                            }
-                        } else {
-                            for (idx, device_name) in device_names.iter().enumerate() {
-                                let id = format!("{MENU_DEVICE_PREFIX}{idx}");
-                                let checked = selected_device
-                                    .as_deref()
-                                    .is_some_and(|selected| selected == device_name);
-                                let item = CheckMenuItem::with_id(
-                                    id.clone(),
-                                    device_name,
-                                    true,
-                                    checked,
-                                    None,
-                                );
-                                if let Err(err) = menu.append(&item) {
-                                    log::warn!("failed to add input device menu item '{device_name}': {err}");
-                                }
-                                device_menu_ids.insert(id, device_name.clone());
-                            }
-                        }
-
-                        if let Err(err) = menu.append_items(&[&separator_before_quit, &quit]) {
-                            log::warn!("failed to build tray menu: {err}");
-                        }
+                        let menu = build_menu(
+                            &device_names,
+                            selected_device.as_deref(),
+                            configured_device.as_deref(),
+                            &mut device_menu_ids,
+                        );
 
                         match TrayIconBuilder::new()
                             .with_tooltip(latest_tooltip.clone())
@@ -215,6 +184,30 @@ mod tray_impl {
                         *control_flow = ControlFlow::Exit;
                     }
                     Event::MainEventsCleared => {
+                        if last_device_menu_refresh.elapsed() >= Duration::from_secs(2) {
+                            last_device_menu_refresh = Instant::now();
+                            let next_device_names = available_input_device_names();
+                            let next_selected_device = selected_input_device();
+                            let next_configured_device = configured_input_device();
+                            if next_device_names != device_names
+                                || next_selected_device != selected_device
+                                || next_configured_device != configured_device
+                            {
+                                device_names = next_device_names;
+                                selected_device = next_selected_device;
+                                configured_device = next_configured_device;
+                                if let Some(tray) = tray.as_ref() {
+                                    let menu = build_menu(
+                                        &device_names,
+                                        selected_device.as_deref(),
+                                        configured_device.as_deref(),
+                                        &mut device_menu_ids,
+                                    );
+                                    tray.set_menu(Some(Box::new(menu)));
+                                }
+                            }
+                        }
+
                         while let Ok(event) = MenuEvent::receiver().try_recv() {
                             if event.id() == MENU_SETTINGS {
                                 if let Err(err) = open_settings_file(&config_path) {
@@ -375,10 +368,17 @@ mod tray_impl {
     }
 
     fn selected_input_device() -> Option<String> {
-        let configured_name = AppConfig::load_or_create()
+        let config = AppConfig::load_or_create().ok()?;
+        effective_input_device_name(
+            config.audio.input_device.as_deref(),
+            config.audio.auto_switch_to_primary_device,
+        )
+    }
+
+    fn configured_input_device() -> Option<String> {
+        AppConfig::load_or_create()
             .ok()
-            .and_then(|config| config.audio.input_device);
-        effective_input_device_name(configured_name.as_deref())
+            .and_then(|config| config.audio.input_device)
     }
 
     fn save_selected_input_device(device_name: &str) -> Result<()> {
@@ -387,6 +387,72 @@ mod tray_impl {
         config
             .save_validated_to(AppConfig::config_path())
             .context("saving selected input device")
+    }
+
+    fn build_menu(
+        device_names: &[String],
+        selected_device: Option<&str>,
+        configured_device: Option<&str>,
+        device_menu_ids: &mut HashMap<String, String>,
+    ) -> Menu {
+        let menu = Menu::new();
+        device_menu_ids.clear();
+        let settings = MenuItem::with_id(MENU_SETTINGS, "Settings", true, None);
+        let separator_after_settings = PredefinedMenuItem::separator();
+        let separator_before_quit = PredefinedMenuItem::separator();
+        let quit = MenuItem::with_id(MENU_QUIT, "Quit", true, None);
+
+        if let Err(err) = menu.append(&settings) {
+            log::warn!("failed to add settings menu item: {err}");
+        }
+        if let Err(err) = menu.append(&separator_after_settings) {
+            log::warn!("failed to add menu separator: {err}");
+        }
+
+        if device_names.is_empty() {
+            let empty = MenuItem::with_id("input-device:none", "No input devices found", false, None);
+            if let Err(err) = menu.append(&empty) {
+                log::warn!("failed to add empty input device menu item: {err}");
+            }
+        } else {
+            for (idx, device_name) in device_names.iter().enumerate() {
+                let id = format!("{MENU_DEVICE_PREFIX}{idx}");
+                let checked = selected_device
+                    .is_some_and(|selected| selected == device_name);
+                let item = CheckMenuItem::with_id(
+                    id.clone(),
+                    device_name,
+                    true,
+                    checked,
+                    None,
+                );
+                if let Err(err) = menu.append(&item) {
+                    log::warn!("failed to add input device menu item '{device_name}': {err}");
+                }
+                device_menu_ids.insert(id, device_name.clone());
+            }
+        }
+
+        if let Some(configured) = configured_device {
+            let configured_available = device_names.iter().any(|name| name == configured);
+            if !configured_available {
+                let unavailable = MenuItem::with_id(
+                    "input-device:unavailable",
+                    format!("Selected unavailable: {configured}"),
+                    false,
+                    None,
+                );
+                if let Err(err) = menu.append(&unavailable) {
+                    log::warn!("failed to add unavailable input device menu item: {err}");
+                }
+            }
+        }
+
+        if let Err(err) = menu.append_items(&[&separator_before_quit, &quit]) {
+            log::warn!("failed to build tray menu: {err}");
+        }
+
+        menu
     }
 }
 

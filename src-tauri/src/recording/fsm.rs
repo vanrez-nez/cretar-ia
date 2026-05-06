@@ -160,6 +160,17 @@ fn transition_starting(
                 command: Some(RecordingCommand::ForceStop),
             }
         }
+        RecordedEvent::Worker(RecordingEvent::AudioDeviceUnavailable { code, reason }) => {
+            *next = state.clone()
+                .next_seq()
+                .with_error(reason, recovery_hint_for_start(code));
+            TransitionResult::StateChange {
+                from: PipelinePhase::Starting,
+                to: PipelinePhase::Error,
+                why: "audio_device_unavailable",
+                command: Some(RecordingCommand::ForceStop),
+            }
+        }
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => {
             *next = state.clone()
                 .next_seq()
@@ -281,6 +292,17 @@ fn transition_recording(
                 from: PipelinePhase::Recording,
                 to: PipelinePhase::Error,
                 why: "unexpected_audio_stopped",
+                command: Some(RecordingCommand::ForceStop),
+            }
+        }
+        RecordedEvent::Worker(RecordingEvent::AudioDeviceUnavailable { code, reason }) => {
+            *next = state.clone()
+                .next_seq()
+                .with_error(reason, recovery_hint_for_start(code));
+            TransitionResult::StateChange {
+                from: PipelinePhase::Recording,
+                to: PipelinePhase::Error,
+                why: "audio_device_unavailable",
                 command: Some(RecordingCommand::ForceStop),
             }
         }
@@ -611,14 +633,19 @@ fn transition_error(
                 }
             }
         }
-        RecordedEvent::Hotkey(HotkeyEvent::TogglePressed) => {
-            TransitionResult::Noop(NoopReason::TogglePressIgnored)
-        }
-        RecordedEvent::Hotkey(HotkeyEvent::Pressed) if state.mode == PipelineMode::Toggle => {
-            TransitionResult::Noop(NoopReason::TogglePressIgnored)
+        RecordedEvent::Hotkey(HotkeyEvent::TogglePressed)
+        | RecordedEvent::Hotkey(HotkeyEvent::Pressed) => {
+            *next = state.clone()
+                .next_seq()
+                .with_error("start requested while audio is unavailable".to_string(), state.recovery_hint);
+            TransitionResult::StateChange {
+                from: PipelinePhase::Error,
+                to: PipelinePhase::Error,
+                why: "start_requested_while_error",
+                command: None,
+            }
         }
         RecordedEvent::Worker(_)
-        | RecordedEvent::Hotkey(HotkeyEvent::Pressed)
         | RecordedEvent::Hotkey(HotkeyEvent::Released)
         | RecordedEvent::Hotkey(HotkeyEvent::Repeat)
         | RecordedEvent::Hotkey(HotkeyEvent::ShutdownRequested) => {
@@ -643,6 +670,7 @@ fn recorded_event_name(event: &RecordedEvent) -> &'static str {
         RecordedEvent::Worker(RecordingEvent::AudioStartFailed { .. }) => "audio_start_failed",
         RecordedEvent::Worker(RecordingEvent::AudioStopped { .. }) => "audio_stopped",
         RecordedEvent::Worker(RecordingEvent::AudioStopFailed { .. }) => "audio_stop_failed",
+        RecordedEvent::Worker(RecordingEvent::AudioDeviceUnavailable { .. }) => "audio_device_unavailable",
         RecordedEvent::Worker(RecordingEvent::ProcessStarted) => "process_started",
         RecordedEvent::Worker(RecordingEvent::ProcessCompleted) => "process_completed",
         RecordedEvent::Worker(RecordingEvent::ProcessFailed { .. }) => "process_failed",

@@ -341,12 +341,18 @@ pub struct AudioCaptureConfig {
     pub channels: u16,
     #[serde(default)]
     pub input_device: Option<String>,
+    #[serde(default = "AudioCaptureConfig::default_auto_switch_to_primary_device")]
+    pub auto_switch_to_primary_device: bool,
     #[serde(default = "AudioCaptureConfig::default_max_duration_secs")]
     pub max_duration_secs: u64,
     pub recording_dir: String,
 }
 
 impl AudioCaptureConfig {
+    fn default_auto_switch_to_primary_device() -> bool {
+        true
+    }
+
     fn default_max_duration_secs() -> u64 {
         DEFAULT_MAX_RECORDING_DURATION_SECS
     }
@@ -358,6 +364,7 @@ impl Default for AudioCaptureConfig {
             sample_rate: 0,
             channels: 0,
             input_device: None,
+            auto_switch_to_primary_device: Self::default_auto_switch_to_primary_device(),
             max_duration_secs: Self::default_max_duration_secs(),
             recording_dir: "recordings".to_string(),
         }

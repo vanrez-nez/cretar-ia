@@ -16,6 +16,7 @@ use crate::recording::workers::{
 };
 use crate::recording::state::RecordingState;
 use crate::recording::telemetry;
+use crate::audio;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -100,6 +101,7 @@ fn start_with_worker_mode(
             stop_in_flight: false,
             shutdown_started: false,
             max_recording_limit_triggered: false,
+            last_device_recovery_check: Instant::now(),
             status_seq: 0,
             phase_started_at: Instant::now(),
         };
@@ -124,6 +126,7 @@ struct Orchestrator {
     stop_in_flight: bool,
     shutdown_started: bool,
     max_recording_limit_triggered: bool,
+    last_device_recovery_check: Instant,
     status_seq: u64,
     phase_started_at: Instant,
 }
@@ -150,6 +153,7 @@ impl Orchestrator {
                 }
                 _ = settle_check.tick() => {
                     self.check_settling_timeout();
+                    self.check_audio_device_recovery();
                     self.check_max_recording_duration().await?;
                 }
             }
@@ -246,6 +250,7 @@ impl Orchestrator {
         match event {
             RecordedEvent::Worker(RecordingEvent::AudioStartFailed { code, .. })
             | RecordedEvent::Worker(RecordingEvent::AudioStopFailed { code, .. })
+            | RecordedEvent::Worker(RecordingEvent::AudioDeviceUnavailable { code, .. })
             | RecordedEvent::Worker(RecordingEvent::ProcessFailed { code, .. })
             | RecordedEvent::Worker(RecordingEvent::RecoveryFailed { code, .. }) => {
                 Some(*code)
@@ -325,6 +330,28 @@ impl Orchestrator {
                 );
             }
         }
+    }
+
+    fn check_audio_device_recovery(&mut self) {
+        if self.state.phase != PipelinePhase::Error {
+            return;
+        }
+        if self.last_device_recovery_check.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_device_recovery_check = Instant::now();
+
+        let Some(reason) = self.state.last_reason.as_deref() else {
+            return;
+        };
+        if !is_audio_device_unavailable_reason(reason) {
+            return;
+        }
+        if !audio::input_device_ready(&self.cfg.audio) {
+            return;
+        }
+
+        self.on_event(RecordedEvent::Worker(RecordingEvent::RecoveryCompleted));
     }
 
     async fn check_max_recording_duration(&mut self) -> Result<()> {
@@ -572,4 +599,11 @@ impl Orchestrator {
             }
         }
     }
+}
+
+fn is_audio_device_unavailable_reason(reason: &str) -> bool {
+    reason.contains("configured audio input device")
+        || reason.contains("no default input device found")
+        || reason.contains("device is no longer available")
+        || reason.contains("audio stream error")
 }

@@ -1,4 +1,7 @@
 use crate::config::AudioCaptureConfig;
+use crate::contracts::errors::RecordingErrorCode;
+use crate::contracts::events::RecordingEvent;
+use crate::recording::command_bus::CommandBusTx;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, SampleRate, Stream, StreamConfig};
@@ -6,6 +9,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TARGET_PEAK: f32 = 0.2;
@@ -34,12 +38,15 @@ pub(crate) fn available_input_device_names() -> Vec<String> {
     names
 }
 
-pub(crate) fn effective_input_device_name(configured_name: Option<&str>) -> Option<String> {
+pub(crate) fn effective_input_device_name(configured_name: Option<&str>, auto_switch: bool) -> Option<String> {
     let host = cpal::default_host();
 
     if let Some(name_hint) = configured_name.and_then(normalized_device_name) {
         if let Some(name) = exact_input_device_name(&host, &name_hint) {
             return Some(name);
+        }
+        if !auto_switch {
+            return None;
         }
         log::warn!(
             "configured audio input device '{name_hint}' not found for tray selection; showing default input"
@@ -47,6 +54,14 @@ pub(crate) fn effective_input_device_name(configured_name: Option<&str>) -> Opti
     }
 
     default_input_device_name(&host)
+}
+
+pub(crate) fn input_device_ready(config: &AudioCaptureConfig) -> bool {
+    effective_input_device_name(
+        config.input_device.as_deref(),
+        config.auto_switch_to_primary_device,
+    )
+    .is_some()
 }
 
 pub struct Recorder {
@@ -58,10 +73,10 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn start(config: &AudioCaptureConfig, base_dir: PathBuf) -> Result<Self> {
+    pub fn start(config: &AudioCaptureConfig, base_dir: PathBuf, event_tx: CommandBusTx) -> Result<Self> {
         report_runtime_context();
         let host = cpal::default_host();
-        let device = select_input_device(&host, config.input_device.as_deref())?;
+        let device = select_input_device(&host, config)?;
         let supported = device
             .default_input_config()
             .context("failed reading default input config")?;
@@ -111,12 +126,15 @@ impl Recorder {
         let requested_channels = requested.channels;
 
         let fallback: StreamConfig = supported.clone().into();
+        let stream_error_reported = Arc::new(AtomicBool::new(false));
 
         let (stream_cfg, stream) = match build_input_stream_for_format(
             &device,
             supported.sample_format(),
             &requested,
             Arc::clone(&state),
+            event_tx.clone(),
+            Arc::clone(&stream_error_reported),
         ) {
             Ok(stream) => (requested, stream),
             Err(err) => {
@@ -132,6 +150,8 @@ impl Recorder {
                         supported.sample_format(),
                         &fallback,
                         Arc::clone(&state),
+                        event_tx.clone(),
+                        Arc::clone(&stream_error_reported),
                     )?,
                 )
             }
@@ -339,11 +359,11 @@ fn log_available_input_devices(host: &cpal::Host) {
 
 fn select_input_device(
     host: &cpal::Host,
-    configured_name: Option<&str>,
+    config: &AudioCaptureConfig,
 ) -> Result<cpal::Device> {
     log_available_input_devices(host);
 
-    if let Some(name_hint) = configured_name {
+    if let Some(name_hint) = config.input_device.as_deref() {
         if let Some(name_hint) = normalized_device_name(name_hint) {
             let devices = host
                 .input_devices()
@@ -358,8 +378,13 @@ fn select_input_device(
                     return Ok(device);
                 }
             }
+            if !config.auto_switch_to_primary_device {
+                return Err(anyhow::anyhow!(
+                    "configured audio input device '{name_hint}' is not available and audio.auto_switch_to_primary_device is disabled"
+                ));
+            }
             log::warn!(
-                "configured audio input device '{name_hint}' not found; falling back to default input"
+                "configured audio input device '{name_hint}' not found; falling back to default input because audio.auto_switch_to_primary_device is enabled"
             );
         }
     }
@@ -436,6 +461,10 @@ fn push_sample(state: &mut RecorderState, sample: f32) {
         return;
     }
 
+    if state.spool_writer.is_none() {
+        return;
+    }
+
     state.buffer.push(sample);
     state.sample_count += 1;
     if sample.abs() > 1e-8 {
@@ -493,10 +522,14 @@ fn build_input_stream_for_format(
     sample_format: SampleFormat,
     stream_cfg: &StreamConfig,
     state: Arc<Mutex<RecorderState>>,
+    event_tx: CommandBusTx,
+    stream_error_reported: Arc<AtomicBool>,
 ) -> Result<Stream> {
     match sample_format {
         SampleFormat::F32 => {
             let state = Arc::clone(&state);
+            let event_tx = event_tx.clone();
+            let stream_error_reported = Arc::clone(&stream_error_reported);
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[f32], _| {
@@ -506,12 +539,14 @@ fn build_input_stream_for_format(
                         }
                     }
                 },
-                |err| log::warn!("audio stream error: {err}"),
+                move |err| report_audio_stream_error(err, &event_tx, &stream_error_reported),
                 None,
             )?)
         }
         SampleFormat::I16 => {
             let state = Arc::clone(&state);
+            let event_tx = event_tx.clone();
+            let stream_error_reported = Arc::clone(&stream_error_reported);
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[i16], _| {
@@ -521,12 +556,14 @@ fn build_input_stream_for_format(
                         }
                     }
                 },
-                |err| log::warn!("audio stream error: {err}"),
+                move |err| report_audio_stream_error(err, &event_tx, &stream_error_reported),
                 None,
             )?)
         }
         SampleFormat::U16 => {
             let state = Arc::clone(&state);
+            let event_tx = event_tx.clone();
+            let stream_error_reported = Arc::clone(&stream_error_reported);
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[u16], _| {
@@ -537,10 +574,29 @@ fn build_input_stream_for_format(
                         }
                     }
                 },
-                |err| log::warn!("audio stream error: {err}"),
+                move |err| report_audio_stream_error(err, &event_tx, &stream_error_reported),
                 None,
             )?)
         }
         _ => Err(anyhow::anyhow!("unsupported sample format")),
+    }
+}
+
+fn report_audio_stream_error(
+    err: cpal::StreamError,
+    event_tx: &CommandBusTx,
+    stream_error_reported: &AtomicBool,
+) {
+    log::warn!("audio stream error: {err}");
+    if stream_error_reported.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let event = RecordingEvent::AudioDeviceUnavailable {
+        code: RecordingErrorCode::AudioInit,
+        reason: format!("audio stream error: {err}"),
+    };
+    if event_tx.send_worker(event).is_some() {
+        log::warn!("audio device unavailable event dropped because worker queue was full");
     }
 }

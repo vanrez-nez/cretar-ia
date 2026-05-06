@@ -19,6 +19,7 @@ export interface AudioCaptureConfig {
   sample_rate: number;
   channels: number;
   input_device: string | null;
+  auto_switch_to_primary_device: boolean;
   max_duration_secs: number;
   recording_dir: string;
 }
@@ -112,6 +113,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
     sample_rate: 0,
     channels: 0,
     input_device: null,
+    auto_switch_to_primary_device: true,
     max_duration_secs: 120,
     recording_dir: "recordings",
   },

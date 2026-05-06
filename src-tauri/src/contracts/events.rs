@@ -90,6 +90,10 @@ pub enum RecordingEvent {
         code: RecordingErrorCode,
         reason: String,
     },
+    AudioDeviceUnavailable {
+        code: RecordingErrorCode,
+        reason: String,
+    },
     ProcessStarted,
     ProcessCompleted,
     ProcessFailed {
@@ -192,6 +196,9 @@ impl fmt::Display for RecordingEvent {
             Self::AudioStopped { .. } => "recording.audio_stopped",
             Self::AudioStopFailed { code, reason } => {
                 return write!(f, "recording.audio_stop_failed:{code}:{reason}");
+            }
+            Self::AudioDeviceUnavailable { code, reason } => {
+                return write!(f, "recording.audio_device_unavailable:{code}:{reason}");
             }
             Self::ProcessStarted => "recording.process_started",
             Self::ProcessCompleted => "recording.process_completed",

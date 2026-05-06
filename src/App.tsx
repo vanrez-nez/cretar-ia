@@ -204,6 +204,23 @@ export default function App() {
               />
               <span>Delete recording after successful processing</span>
             </label>
+
+            <label className="toggle-field">
+              <input
+                type="checkbox"
+                checked={draft.audio.auto_switch_to_primary_device}
+                onChange={(event) =>
+                  updateDraft((config) => ({
+                    ...config,
+                    audio: {
+                      ...config.audio,
+                      auto_switch_to_primary_device: event.currentTarget.checked,
+                    },
+                  }))
+                }
+              />
+              <span>Auto-switch to primary input device when selected device is unavailable</span>
+            </label>
           </section>
 
           <section className="card settings-panel">
