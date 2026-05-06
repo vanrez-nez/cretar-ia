@@ -1,22 +1,11 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   --bg: #111316;
   --panel: #171a1f;
   --text: #e9edf1;
   --muted: #97a1ab;
   --accent: #2f80ed;
   --danger: #eb5757;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f3f4f7;
-    --panel: #ffffff;
-    --text: #1f2430;
-    --muted: #596273;
-    --accent: #1d4ed8;
-    --danger: #b91c1c;
-  }
 }
 
 * {

@@ -2,6 +2,9 @@ use crate::commands::settings;
 use anyhow::{Result, anyhow};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
+use tauri::{Theme, utils::config::Color};
+
+const SETTINGS_BACKGROUND: Color = Color(17, 19, 22, 255);
 
 pub fn run() -> Result<()> {
     let state = settings::build_settings_state().map_err(anyhow::Error::msg)?;
@@ -25,6 +28,8 @@ pub fn run() -> Result<()> {
             .title("Cretar IA Settings")
             .inner_size(880.0, 680.0)
             .resizable(true)
+            .theme(Some(Theme::Dark))
+            .background_color(SETTINGS_BACKGROUND)
             .build()
             .map_err(|err| anyhow!(err.to_string()))?;
             Ok(())
