@@ -16,6 +16,39 @@ const MIN_CAPTURE_BUFFER_SAMPLES: usize = 4_096;
 const MAX_CAPTURE_BUFFER_SAMPLES: usize = 4_194_304;
 const CAPTURE_BUFFER_ENV: &str = "CRETAR_IA_RECORDING_BUFFER_SAMPLES";
 
+pub(crate) fn available_input_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+
+    let mut names = Vec::new();
+    for device in devices {
+        let Ok(name) = device.name() else {
+            continue;
+        };
+        if !names.iter().any(|existing| existing == &name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+pub(crate) fn effective_input_device_name(configured_name: Option<&str>) -> Option<String> {
+    let host = cpal::default_host();
+
+    if let Some(name_hint) = configured_name.and_then(normalized_device_name) {
+        if let Some(name) = exact_input_device_name(&host, &name_hint) {
+            return Some(name);
+        }
+        log::warn!(
+            "configured audio input device '{name_hint}' not found for tray selection; showing default input"
+        );
+    }
+
+    default_input_device_name(&host)
+}
+
 pub struct Recorder {
     stream: Stream,
     state: Arc<Mutex<RecorderState>>,
@@ -311,8 +344,7 @@ fn select_input_device(
     log_available_input_devices(host);
 
     if let Some(name_hint) = configured_name {
-        let name_hint = name_hint.trim().to_lowercase();
-        if !name_hint.is_empty() {
+        if let Some(name_hint) = normalized_device_name(name_hint) {
             let devices = host
                 .input_devices()
                 .context("unable to enumerate input devices for configured input_device")?;
@@ -320,7 +352,7 @@ fn select_input_device(
                 let Ok(name) = device.name() else {
                     continue;
                 };
-                if name.to_lowercase().contains(&name_hint) {
+                if device_names_match(&name, &name_hint) {
                     log::info!("using configured input device: {name}");
                     log_supported_configs(&device);
                     return Ok(device);
@@ -337,6 +369,37 @@ fn select_input_device(
         .context("no default input device found")?;
     log_supported_configs(&device);
     Ok(device)
+}
+
+fn exact_input_device_name(host: &cpal::Host, name_hint: &str) -> Option<String> {
+    let devices = host.input_devices().ok()?;
+    for device in devices {
+        let Ok(name) = device.name() else {
+            continue;
+        };
+        if device_names_match(&name, name_hint) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn default_input_device_name(host: &cpal::Host) -> Option<String> {
+    host.default_input_device()
+        .and_then(|device| device.name().ok())
+}
+
+fn normalized_device_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn device_names_match(actual: &str, expected: &str) -> bool {
+    actual.trim().eq_ignore_ascii_case(expected.trim())
 }
 
 fn log_supported_configs(device: &cpal::Device) {

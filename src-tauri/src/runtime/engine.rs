@@ -124,6 +124,10 @@ async fn run_core(
                             log::info!("runtime reload deferred until idle; current_phase={latest_phase:?}");
                         }
                     }
+                    Some(compat::RuntimeControlEvent::SwitchInputDevice) => {
+                        log::info!("runtime reload requested for input device switch; current_phase={latest_phase:?}");
+                        lifecycle.reload_runtime();
+                    }
                     None => {}
                 }
             }

@@ -32,8 +32,11 @@ mod tray_impl {
         open_settings_file, ICON_STATE_DONE, ICON_STATE_ERROR, ICON_STATE_IDLE,
         ICON_STATE_RECORDING, ICON_STATE_SENDING, ICON_STATE_SHUTDOWN,
     };
+    use crate::audio::{available_input_device_names, effective_input_device_name};
+    use crate::config::AppConfig;
     use crate::runtime::compat::RuntimeControlEvent;
     use anyhow::{Context, Result};
+    use std::collections::HashMap;
     use resvg::{tiny_skia, usvg};
     use tao::{
         event::{Event, StartCause},
@@ -41,10 +44,11 @@ mod tray_impl {
     };
     use tokio::sync::mpsc::UnboundedSender;
     use tray_icon::{
-        menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+        menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
         Icon, TrayIcon, TrayIconBuilder,
     };
 
+    const MENU_DEVICE_PREFIX: &str = "input-device:";
     const MENU_SETTINGS: &str = "settings";
     const MENU_QUIT: &str = "quit";
 
@@ -56,6 +60,8 @@ mod tray_impl {
         tx: UnboundedSender<RuntimeControlEvent>,
         config_path: String,
         icons: IconSet,
+        device_names: Vec<String>,
+        selected_device: Option<String>,
     }
 
     #[derive(Clone)]
@@ -92,6 +98,8 @@ mod tray_impl {
                 tx,
                 config_path,
                 icons: IconSet::new()?,
+                device_names: available_input_device_names(),
+                selected_device: selected_input_device(),
             })
         }
 
@@ -107,6 +115,9 @@ mod tray_impl {
             let tx = self.tx.clone();
             let config_path = self.config_path.clone();
             let icons = self.icons.clone();
+            let device_names = self.device_names.clone();
+            let selected_device = self.selected_device.clone();
+            let mut device_menu_ids = HashMap::<String, String>::new();
 
             self.event_loop.run(move |event, _, control_flow| {
                 *control_flow = ControlFlow::Wait;
@@ -114,10 +125,45 @@ mod tray_impl {
                 match event {
                     Event::NewEvents(StartCause::Init) => {
                         let menu = Menu::new();
+                        device_menu_ids.clear();
                         let settings = MenuItem::with_id(MENU_SETTINGS, "Settings", true, None);
-                        let separator = PredefinedMenuItem::separator();
+                        let separator_after_settings = PredefinedMenuItem::separator();
+                        let separator_before_quit = PredefinedMenuItem::separator();
                         let quit = MenuItem::with_id(MENU_QUIT, "Quit", true, None);
-                        if let Err(err) = menu.append_items(&[&settings, &separator, &quit]) {
+
+                        if let Err(err) = menu.append(&settings) {
+                            log::warn!("failed to add settings menu item: {err}");
+                        }
+                        if let Err(err) = menu.append(&separator_after_settings) {
+                            log::warn!("failed to add menu separator: {err}");
+                        }
+
+                        if device_names.is_empty() {
+                            let empty = MenuItem::with_id("input-device:none", "No input devices found", false, None);
+                            if let Err(err) = menu.append(&empty) {
+                                log::warn!("failed to add empty input device menu item: {err}");
+                            }
+                        } else {
+                            for (idx, device_name) in device_names.iter().enumerate() {
+                                let id = format!("{MENU_DEVICE_PREFIX}{idx}");
+                                let checked = selected_device
+                                    .as_deref()
+                                    .is_some_and(|selected| selected == device_name);
+                                let item = CheckMenuItem::with_id(
+                                    id.clone(),
+                                    device_name,
+                                    true,
+                                    checked,
+                                    None,
+                                );
+                                if let Err(err) = menu.append(&item) {
+                                    log::warn!("failed to add input device menu item '{device_name}': {err}");
+                                }
+                                device_menu_ids.insert(id, device_name.clone());
+                            }
+                        }
+
+                        if let Err(err) = menu.append_items(&[&separator_before_quit, &quit]) {
                             log::warn!("failed to build tray menu: {err}");
                         }
 
@@ -177,6 +223,17 @@ mod tray_impl {
                             } else if event.id() == MENU_QUIT {
                                 let _ = tx.send(RuntimeControlEvent::Quit);
                                 *control_flow = ControlFlow::Exit;
+                            } else if let Some(device_name) = device_menu_ids.get(event.id().as_ref()) {
+                                match save_selected_input_device(device_name) {
+                                    Ok(()) => {
+                                        log::info!("selected input device from tray: {device_name}");
+                                        let _ = tx.send(RuntimeControlEvent::SwitchInputDevice);
+                                        *control_flow = ControlFlow::Exit;
+                                    }
+                                    Err(err) => {
+                                        log::warn!("failed to save selected input device '{device_name}': {err}");
+                                    }
+                                }
                             }
                         }
                     }
@@ -315,6 +372,21 @@ mod tray_impl {
             .unwrap_or("")
             .trim()
             .eq_ignore_ascii_case("dark")
+    }
+
+    fn selected_input_device() -> Option<String> {
+        let configured_name = AppConfig::load_or_create()
+            .ok()
+            .and_then(|config| config.audio.input_device);
+        effective_input_device_name(configured_name.as_deref())
+    }
+
+    fn save_selected_input_device(device_name: &str) -> Result<()> {
+        let mut config = AppConfig::load_or_create().context("loading config for input device selection")?;
+        config.audio.input_device = Some(device_name.to_string());
+        config
+            .save_validated_to(AppConfig::config_path())
+            .context("saving selected input device")
     }
 }
 

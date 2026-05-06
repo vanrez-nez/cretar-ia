@@ -29,6 +29,7 @@ struct RuntimeControlMessage {
 #[serde(rename_all = "snake_case")]
 enum RuntimeControlMessageKind {
     ReloadRuntime,
+    SwitchInputDevice,
 }
 
 pub fn spawn_runtime_control_server(
@@ -61,10 +62,18 @@ pub fn spawn_runtime_control_server(
 }
 
 pub fn notify_runtime_reload() -> Result<()> {
+    notify_runtime_control(RuntimeControlMessageKind::ReloadRuntime)
+}
+
+pub fn notify_input_device_switch() -> Result<()> {
+    notify_runtime_control(RuntimeControlMessageKind::SwitchInputDevice)
+}
+
+fn notify_runtime_control(event: RuntimeControlMessageKind) -> Result<()> {
     let endpoint = read_endpoint()?;
     let message = RuntimeControlMessage {
         token: endpoint.token,
-        event: RuntimeControlMessageKind::ReloadRuntime,
+        event,
     };
     let payload = serde_json::to_vec(&message).context("serializing runtime reload message")?;
     let mut stream = TcpStream::connect(&endpoint.address)
@@ -103,6 +112,10 @@ fn handle_stream(
         RuntimeControlMessageKind::ReloadRuntime => {
             log::info!("runtime reload requested by settings");
             let _ = tx.send(RuntimeControlEvent::ReloadRuntime);
+        }
+        RuntimeControlMessageKind::SwitchInputDevice => {
+            log::info!("runtime input device switch requested");
+            let _ = tx.send(RuntimeControlEvent::SwitchInputDevice);
         }
     }
 }
