@@ -55,19 +55,19 @@ impl HotkeyInputAdapter {
         match key {
             k if is_ctrl(k) => {
                 self.state.ctrl_down = pressed;
-                return None;
+                return self.release_trigger_if_modifier_released(pressed);
             }
             k if is_alt(k) => {
                 self.state.alt_down = pressed;
-                return None;
+                return self.release_trigger_if_modifier_released(pressed);
             }
             k if is_shift(k) => {
                 self.state.shift_down = pressed;
-                return None;
+                return self.release_trigger_if_modifier_released(pressed);
             }
             k if is_meta(k) => {
                 self.state.meta_down = pressed;
-                return None;
+                return self.release_trigger_if_modifier_released(pressed);
             }
             _ => {}
         }
@@ -94,13 +94,38 @@ impl HotkeyInputAdapter {
         }
     }
 
+    fn release_trigger_if_modifier_released(&mut self, pressed: bool) -> Option<HotkeyEdgeEvent> {
+        if pressed || !self.state.trigger_pressed {
+            return None;
+        }
+
+        log::debug!("hotkey trigger released by modifier release");
+        self.state.trigger_pressed = false;
+        self.state.last_press = None;
+        self.state.last_toggle = None;
+        self.state.last_release = Some(Instant::now());
+        if matches!(self.mode, InteractionMode::PushToTalk) {
+            return Some(HotkeyEdgeEvent::Released);
+        }
+        None
+    }
+
     fn handle_push_press(&mut self) -> Option<HotkeyEdgeEvent> {
         if !self.state.trigger_pressed {
-            if Self::should_emit(self.debounce, &mut self.state.last_press, "press") && self.mods_match() {
-                self.state.trigger_pressed = true;
-                return Some(HotkeyEdgeEvent::Pressed);
+            if !self.mods_match() {
+                log::trace!(
+                    "hotkey press ignored: modifiers not matched ctrl={} alt={} shift={} meta={}",
+                    self.state.ctrl_down,
+                    self.state.alt_down,
+                    self.state.shift_down,
+                    self.state.meta_down
+                );
+                return Some(HotkeyEdgeEvent::Ignored);
             }
-            return Some(HotkeyEdgeEvent::Ignored);
+
+            self.state.trigger_pressed = true;
+            self.state.last_press = Some(Instant::now());
+            return Some(HotkeyEdgeEvent::Pressed);
         }
 
         Some(HotkeyEdgeEvent::Ignored)
@@ -108,15 +133,14 @@ impl HotkeyInputAdapter {
 
     fn handle_push_release(&mut self) -> Option<HotkeyEdgeEvent> {
         if !self.state.trigger_pressed {
+            log::trace!("hotkey release ignored: trigger not marked pressed");
             return Some(HotkeyEdgeEvent::Ignored);
         }
 
-        if Self::should_emit(self.debounce, &mut self.state.last_release, "release") {
-            self.state.trigger_pressed = false;
-            return Some(HotkeyEdgeEvent::Released);
-        }
-
-        Some(HotkeyEdgeEvent::Ignored)
+        self.state.trigger_pressed = false;
+        self.state.last_press = None;
+        self.state.last_release = Some(Instant::now());
+        Some(HotkeyEdgeEvent::Released)
     }
 
     fn handle_toggle_press(&mut self) -> Option<HotkeyEdgeEvent> {
@@ -124,7 +148,18 @@ impl HotkeyInputAdapter {
             return Some(HotkeyEdgeEvent::Repeat);
         }
 
-        if Self::should_emit(self.debounce, &mut self.state.last_toggle, "toggle") && self.mods_match() {
+        if !self.mods_match() {
+            log::trace!(
+                "hotkey toggle ignored: modifiers not matched ctrl={} alt={} shift={} meta={}",
+                self.state.ctrl_down,
+                self.state.alt_down,
+                self.state.shift_down,
+                self.state.meta_down
+            );
+            return Some(HotkeyEdgeEvent::Ignored);
+        }
+
+        if Self::should_emit(self.debounce, &mut self.state.last_toggle, "toggle") {
             self.state.trigger_pressed = true;
             return Some(HotkeyEdgeEvent::TogglePressed);
         }
@@ -134,6 +169,7 @@ impl HotkeyInputAdapter {
     fn handle_toggle_release(&mut self) -> Option<HotkeyEdgeEvent> {
         if self.state.trigger_pressed {
             self.state.trigger_pressed = false;
+            self.state.last_toggle = None;
             self.state.last_release = None;
             return Some(HotkeyEdgeEvent::Ignored);
         }
@@ -264,4 +300,83 @@ fn is_shift(k: Key) -> bool {
 
 fn is_meta(k: Key) -> bool {
     matches!(k, Key::MetaLeft | Key::MetaRight)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_adapter() -> HotkeyInputAdapter {
+        HotkeyInputAdapter::new(InteractionConfig {
+            mode: InteractionMode::PushToTalk,
+            shortcut: "ctrl+shift+t".to_string(),
+            repeat_debounce_ms: 500,
+            hotkey_queue_capacity: 0,
+            worker_queue_capacity: 0,
+        })
+        .expect("valid hotkey config")
+    }
+
+    #[test]
+    fn unmatched_modifier_press_does_not_poison_debounce() {
+        let mut adapter = push_adapter();
+
+        assert_eq!(
+            adapter.ingest(Key::KeyT, true),
+            Some(HotkeyEdgeEvent::Ignored)
+        );
+
+        assert_eq!(adapter.ingest(Key::ControlLeft, true), None);
+        assert_eq!(adapter.ingest(Key::ShiftLeft, true), None);
+        assert_eq!(
+            adapter.ingest(Key::KeyT, true),
+            Some(HotkeyEdgeEvent::Pressed)
+        );
+    }
+
+    #[test]
+    fn push_to_talk_release_resets_press_debounce_for_next_cycle() {
+        let mut adapter = push_adapter();
+
+        assert_eq!(adapter.ingest(Key::ControlLeft, true), None);
+        assert_eq!(adapter.ingest(Key::ShiftLeft, true), None);
+        assert_eq!(
+            adapter.ingest(Key::KeyT, true),
+            Some(HotkeyEdgeEvent::Pressed)
+        );
+        assert_eq!(
+            adapter.ingest(Key::KeyT, false),
+            Some(HotkeyEdgeEvent::Released)
+        );
+        assert_eq!(
+            adapter.ingest(Key::KeyT, true),
+            Some(HotkeyEdgeEvent::Pressed)
+        );
+    }
+
+    #[test]
+    fn modifier_release_stops_push_to_talk_and_allows_next_cycle() {
+        let mut adapter = push_adapter();
+
+        assert_eq!(adapter.ingest(Key::ControlLeft, true), None);
+        assert_eq!(adapter.ingest(Key::ShiftLeft, true), None);
+        assert_eq!(
+            adapter.ingest(Key::KeyT, true),
+            Some(HotkeyEdgeEvent::Pressed)
+        );
+        assert_eq!(
+            adapter.ingest(Key::ShiftLeft, false),
+            Some(HotkeyEdgeEvent::Released)
+        );
+        assert_eq!(
+            adapter.ingest(Key::KeyT, false),
+            Some(HotkeyEdgeEvent::Ignored)
+        );
+
+        assert_eq!(adapter.ingest(Key::ShiftLeft, true), None);
+        assert_eq!(
+            adapter.ingest(Key::KeyT, true),
+            Some(HotkeyEdgeEvent::Pressed)
+        );
+    }
 }

@@ -2,7 +2,10 @@ use crate::config::{AudioCaptureConfig, OutputConfig, OutputMode};
 use crate::domain::TextInjectionStep;
 use anyhow::{anyhow, Result};
 use arboard::Clipboard;
+#[cfg(not(target_os = "macos"))]
 use rdev::{simulate, EventType, Key};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub async fn deliver_text(_audio_cfg: &AudioCaptureConfig, cfg: &OutputConfig, text: &str) -> Result<()> {
@@ -61,10 +64,41 @@ fn describe_plan(plan: &[TextInjectionStep]) -> String {
 async fn press_paste_combo() -> Result<()> {
     log::debug!("delivery step: {}", TextInjectionStep::PasteShortcut.as_str());
 
+    #[cfg(target_os = "macos")]
+    {
+        return press_paste_combo_macos().await;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        press_paste_combo_rdev().await
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn press_paste_combo_macos() -> Result<()> {
+    log::debug!("paste combo: using macOS System Events");
+    let status = Command::new("osascript")
+        .args([
+            "-e",
+            r#"tell application "System Events" to keystroke "v" using command down"#,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(anyhow!("osascript paste shortcut failed with status {status}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn press_paste_combo_rdev() -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     let modifiers = [Key::ControlLeft, Key::ControlRight];
-    #[cfg(target_os = "macos")]
-    let modifiers = [Key::MetaLeft, Key::MetaRight];
 
     let mut modifier = None;
     for candidate in modifiers.iter() {
