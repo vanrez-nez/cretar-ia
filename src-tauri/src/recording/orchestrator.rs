@@ -182,7 +182,11 @@ impl Orchestrator {
 
         if matches!(
             &event,
-            RecordedEvent::Worker(RecordingEvent::ProcessCompleted)
+            RecordedEvent::Worker(
+                RecordingEvent::ProcessCompleted
+                    | RecordingEvent::AudioStartFailed { .. }
+                    | RecordingEvent::AudioDeviceUnavailable { .. }
+            )
         ) {
             self.pending_recording = None;
         }

@@ -1,6 +1,6 @@
 use crate::audio_cues;
 use crate::commands::settings;
-use crate::config::{AppConfig, InteractionMode};
+use crate::config::AppConfig;
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
@@ -324,7 +324,6 @@ fn runtime_fingerprint(cfg: &AppConfig) -> String {
         "start_sound": cfg.audio_cues.start_sound,
         "stop_sound": cfg.audio_cues.stop_sound,
         "error_sound": cfg.audio_cues.error_sound,
-        "pause_media": cfg.pipeline.pause_media,
     })
     .to_string()
 }
@@ -354,20 +353,20 @@ fn handle_global_shortcut(
         return;
     }
 
-    let hotkey = match cfg.interaction.mode {
-        InteractionMode::Toggle if event.state() == ShortcutState::Pressed => {
-            Some(HotkeyEvent::TogglePressed)
-        }
-        InteractionMode::PushToTalk if event.state() == ShortcutState::Pressed => {
-            Some(HotkeyEvent::Pressed)
-        }
-        InteractionMode::PushToTalk if event.state() == ShortcutState::Released => {
-            Some(HotkeyEvent::Released)
-        }
+    let hotkey = match event.state() {
+        ShortcutState::Pressed => Some(HotkeyEvent::Pressed),
+        ShortcutState::Released => Some(HotkeyEvent::Released),
         _ => None,
     };
 
     if let Some(hotkey) = hotkey {
+        log::debug!(
+            "global shortcut event mode={:?} shortcut={:?} state={:?} hotkey={}",
+            cfg.interaction.mode,
+            shortcut,
+            event.state(),
+            hotkey
+        );
         if let Some(worker_event) = bus_tx.send_hotkey(hotkey) {
             let _ = bus_tx.send_worker(worker_event);
         }
@@ -401,8 +400,7 @@ fn spawn_status_task(
                     if let Some(cue_kind) = render.cue {
                         if Some(status.source.as_str()) != last_cued_event.as_deref() {
                             match cue_kind {
-                                audio_cues::CueKind::Start if !cfg.pipeline.pause_media => cue.play_start(),
-                                audio_cues::CueKind::Start => {}
+                                audio_cues::CueKind::Start => cue.play_start(),
                                 audio_cues::CueKind::Stop => cue.play_stop(),
                                 audio_cues::CueKind::Error => cue.play_error(),
                             }

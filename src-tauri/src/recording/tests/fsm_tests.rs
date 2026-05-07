@@ -57,16 +57,50 @@ fn push_mode_press_release_stops_recording_once() {
 }
 
 #[test]
+fn push_mode_release_during_starting_stops_after_audio_started() {
+    let state = RecordingState::new(PipelineMode::PushToTalk, 0);
+    let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
+    let pending_stop = transition(&starting.next, RecordedEvent::Hotkey(HotkeyEvent::Released));
+
+    assert_eq!(
+        pending_stop.result,
+        TransitionResult::StateChange {
+            from: PipelinePhase::Starting,
+            to: PipelinePhase::Starting,
+            why: "push_release_during_start",
+            command: None,
+        }
+    );
+    assert!(pending_stop.next.stop_requested_after_start);
+
+    let stopping = transition(
+        &pending_stop.next,
+        RecordedEvent::Worker(RecordingEvent::AudioStarted),
+    );
+
+    assert_eq!(
+        stopping.result,
+        TransitionResult::StateChange {
+            from: PipelinePhase::Starting,
+            to: PipelinePhase::Stopping,
+            why: "audio_started_stop_requested",
+            command: Some(RecordingCommand::StopRecording),
+        }
+    );
+    assert!(!stopping.next.stop_requested_after_start);
+}
+
+#[test]
 fn toggle_mode_press_toggles_start_and_stop() {
     let state = RecordingState::new(PipelineMode::Toggle, 0);
 
-    let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
+    let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
     let recording = transition(
         &starting.next,
         RecordedEvent::Worker(RecordingEvent::AudioStarted),
     );
 
-    let stopping = transition(&recording.next, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
+    let stopping = transition(&recording.next, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
     assert_eq!(
         stopping.result,
         TransitionResult::StateChange {
@@ -508,7 +542,7 @@ fn push_press_repeat_is_suppressed_as_autorepeat_noop() {
 #[test]
 fn toggle_double_press_is_press_toggle_stop_and_ignored() {
     let state = RecordingState::new(PipelineMode::Toggle, 0);
-    let started = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
+    let started = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
     let running = transition(
         &started.next,
         RecordedEvent::Worker(RecordingEvent::AudioStarted),
@@ -523,7 +557,7 @@ fn toggle_double_press_is_press_toggle_stop_and_ignored() {
         }
     );
 
-    let second_press = transition(&running.next, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
+    let second_press = transition(&running.next, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
     assert_eq!(
         second_press.result,
         TransitionResult::StateChange {

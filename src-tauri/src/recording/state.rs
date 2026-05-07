@@ -12,6 +12,8 @@ pub struct RecordingState {
     pub seq: u64,
     pub recovery_hint: RecoveryHint,
     pub last_reason: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub stop_requested_after_start: bool,
 }
 
 impl Default for RecordingState {
@@ -23,6 +25,7 @@ impl Default for RecordingState {
             seq: 0,
             recovery_hint: RecoveryHint::NoRecovery,
             last_reason: None,
+            stop_requested_after_start: false,
         }
     }
 }
@@ -36,6 +39,7 @@ impl RecordingState {
             seq: 0,
             recovery_hint: RecoveryHint::NoRecovery,
             last_reason: None,
+            stop_requested_after_start: false,
         }
     }
 
@@ -59,10 +63,20 @@ impl RecordingState {
         self
     }
 
+    pub const fn with_stop_requested_after_start(mut self, requested: bool) -> Self {
+        self.stop_requested_after_start = requested;
+        self
+    }
+
+    pub const fn clear_stop_requested_after_start(self) -> Self {
+        self.with_stop_requested_after_start(false)
+    }
+
     pub fn with_error(mut self, reason: impl Into<String>, hint: RecoveryHint) -> Self {
         self.phase = PipelinePhase::Error;
         self.last_reason = Some(reason.into());
         self.recovery_hint = hint;
+        self.stop_requested_after_start = false;
         self
     }
 
@@ -70,6 +84,7 @@ impl RecordingState {
         self.phase = PipelinePhase::Recovering;
         self.last_reason = Some(reason.into());
         self.recovery_hint = hint;
+        self.stop_requested_after_start = false;
         self
     }
 

@@ -87,7 +87,7 @@ impl CuePlayer {
 
         if matches!(
             status.source.as_str(),
-            "push_release_stop" | "toggle_press_stop"
+            "push_release_stop" | "toggle_press_stop" | "audio_started_stop_requested"
         ) {
             return Some(CueKind::Stop);
         }
