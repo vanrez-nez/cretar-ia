@@ -5,33 +5,21 @@ use serde_json::Value;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
-pub async fn load_config(storage: State<'_, SettingsDb>) -> Result<AppConfig, String> {
-    storage.load_config().await.map_err(command_error)
-}
-
-#[tauri::command]
-pub async fn save_config(
-    config: Value,
+pub async fn apply_settings(
     save_id: Option<u64>,
     app: AppHandle,
     storage: State<'_, SettingsDb>,
-) -> Result<AppConfig, String> {
-    let previous = storage.load_config().await.ok();
+) -> Result<(), String> {
+    let previous = crate::app_host::current_config(&app);
+    let settings = storage.load_settings().await.map_err(command_error)?;
+    let config = crate::settings_schema::runtime_config_from_settings(&settings).map_err(command_error)?;
+
     log::info!(
-        "settings save received save_id={:?} fingerprint={}",
+        "settings apply requested save_id={:?} fingerprint={}",
         save_id,
-        config_value_fingerprint(&config)
+        settings_fingerprint(&settings)
     );
-    let config = serde_json::from_value::<AppConfig>(config)
-        .map_err(|err| format!("invalid config schema: {err}"))?;
-    let config = storage.save_config(config).await.map_err(command_error)?;
-    log::info!(
-        "settings save persisted save_id={:?} fingerprint={}",
-        save_id,
-        config_fingerprint(&config)
-    );
-    apply_saved_config(&app, previous.as_ref(), &config, save_id)?;
-    Ok(config)
+    apply_saved_config(&app, previous.as_ref(), &config, save_id)
 }
 
 #[tauri::command]
@@ -43,31 +31,6 @@ pub async fn get_config_path(storage: State<'_, SettingsDb>) -> Result<String, S
 pub async fn open_config_file(storage: State<'_, SettingsDb>) -> Result<(), String> {
     tauri_plugin_opener::open_path(storage.db_path(), None::<&str>)
         .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-pub async fn get_settings(storage: State<'_, SettingsDb>) -> Result<AppConfig, String> {
-    storage.load_config().await.map_err(command_error)
-}
-
-#[tauri::command]
-pub async fn update_settings(
-    app: AppHandle,
-    storage: State<'_, SettingsDb>,
-    config: AppConfig,
-) -> Result<(), String> {
-    let previous = storage.load_config().await.ok();
-    log::info!(
-        "settings typed update received fingerprint={}",
-        config_fingerprint(&config)
-    );
-    let config = storage.save_config(config).await.map_err(command_error)?;
-    log::info!(
-        "settings typed update persisted fingerprint={}",
-        config_fingerprint(&config)
-    );
-    apply_saved_config(&app, previous.as_ref(), &config, None)?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -140,30 +103,30 @@ fn runtime_config_value(config: &AppConfig) -> Value {
     })
 }
 
-fn config_value_fingerprint(config: &Value) -> String {
+fn settings_fingerprint(settings: &Value) -> String {
     serde_json::json!({
-        "language": config.pointer("/ui/language"),
-        "mode": config.pointer("/interaction/mode"),
-        "shortcut": config.pointer("/interaction/shortcut"),
-        "input_device": config.pointer("/audio/input_device"),
-        "auto_switch_input": config.pointer("/audio/auto_switch_to_primary_device"),
-        "start_sound": config.pointer("/audio_cues/start_sound"),
-        "stop_sound": config.pointer("/audio_cues/stop_sound"),
-        "error_sound": config.pointer("/audio_cues/error_sound"),
+        "system.language": settings.get("system.language"),
+        "recording.mode": settings.get("recording.mode"),
+        "recording.hotkey": settings.get("recording.hotkey"),
+        "recording.microphone.input_device": settings.get("recording.microphone.input_device"),
+        "recording.microphone.auto_switch_to_primary": settings.get("recording.microphone.auto_switch_to_primary"),
+        "recording.sounds.start": settings.get("recording.sounds.start"),
+        "recording.sounds.stop": settings.get("recording.sounds.stop"),
+        "recording.sounds.error": settings.get("recording.sounds.error"),
     })
     .to_string()
 }
 
 fn config_fingerprint(config: &AppConfig) -> String {
     serde_json::json!({
-        "language": config.ui.language,
-        "mode": config.interaction.mode,
-        "shortcut": config.interaction.shortcut,
-        "input_device": config.audio.input_device,
-        "auto_switch_input": config.audio.auto_switch_to_primary_device,
-        "start_sound": config.audio_cues.start_sound,
-        "stop_sound": config.audio_cues.stop_sound,
-        "error_sound": config.audio_cues.error_sound,
+        "system.language": config.ui.language,
+        "recording.mode": config.interaction.mode,
+        "recording.hotkey": config.interaction.shortcut,
+        "recording.microphone.input_device": config.audio.input_device,
+        "recording.microphone.auto_switch_to_primary": config.audio.auto_switch_to_primary_device,
+        "recording.sounds.start": config.audio_cues.start_sound,
+        "recording.sounds.stop": config.audio_cues.stop_sound,
+        "recording.sounds.error": config.audio_cues.error_sound,
     })
     .to_string()
 }

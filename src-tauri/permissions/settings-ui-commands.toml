@@ -3,11 +3,8 @@ identifier = "settings-ui-commands"
 description = "Allows settings UI configuration commands."
 commands.allow = [
   "get_config_path",
-  "load_config",
-  "save_config",
+  "apply_settings",
   "open_config_file",
-  "get_settings",
-  "update_settings",
   "check_permissions",
   "request_microphone_permission",
   "request_accessibility_permission",

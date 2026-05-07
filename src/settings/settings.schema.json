@@ -1,0 +1,295 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cretaria.local/settings.schema.json",
+  "title": "Cretar IA Settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "system.language",
+    "system.launch_at_start",
+    "system.save_text_history",
+    "system.save_input_audio",
+    "recording.mode",
+    "recording.hotkey",
+    "recording.hotkey_repeat_debounce_ms",
+    "recording.microphone.input_device",
+    "recording.microphone.auto_switch_to_primary",
+    "recording.microphone.sample_rate",
+    "recording.microphone.channels",
+    "recording.microphone.max_duration_secs",
+    "recording.storage.recording_dir",
+    "recording.sounds.enabled",
+    "recording.sounds.start",
+    "recording.sounds.stop",
+    "recording.sounds.error",
+    "recording.sounds.volume",
+    "recording.pause_media",
+    "recording.processing.debounce_ms",
+    "recording.processing.settle_timeout_ms",
+    "recording.processing.hotkey_queue_capacity",
+    "recording.processing.worker_queue_capacity",
+    "recording.processing.queue_saturation_policy",
+    "recording.processing.max_recording_duration_secs",
+    "recording.recovery.retry_start_timeout",
+    "recording.recovery.retry_stop_timeout",
+    "recording.recovery.retry_processing_timeout",
+    "recording.recovery.retry_queue_saturation",
+    "models.stt.provider",
+    "models.stt.openrouter.api_key",
+    "models.stt.openrouter.model",
+    "models.stt.openrouter.base_url",
+    "models.stt.openrouter.endpoint",
+    "models.stt.openrouter.prompt",
+    "models.stt.openrouter.max_audio_bytes",
+    "models.formatting.provider",
+    "output.mode",
+    "output.paste_delay_ms",
+    "output.processing_timeout_ms",
+    "tray.title",
+    "tray.icon",
+    "tray.refresh_ms",
+    "tray.tooltip.idle",
+    "tray.tooltip.recording",
+    "tray.tooltip.sending",
+    "tray.tooltip.success"
+  ],
+  "properties": {
+    "system.language": {
+      "type": "string",
+      "enum": ["system", "en", "es"],
+      "default": "system",
+      "x-ui": { "section": "system", "label": "system.language.title" }
+    },
+    "system.launch_at_start": {
+      "type": "boolean",
+      "default": false,
+      "x-ui": { "section": "system", "label": "system.launchAtStart.title" }
+    },
+    "system.save_text_history": {
+      "type": "boolean",
+      "default": false,
+      "x-ui": { "section": "system", "label": "system.saveTextHistory.title" }
+    },
+    "system.save_input_audio": {
+      "type": "boolean",
+      "default": true,
+      "x-ui": { "section": "system", "label": "system.saveInputAudio.title" }
+    },
+    "recording.mode": {
+      "type": "string",
+      "enum": ["push_to_talk", "toggle"],
+      "default": "push_to_talk",
+      "x-ui": { "section": "recording", "label": "recording.mode.title" }
+    },
+    "recording.hotkey": {
+      "type": "string",
+      "minLength": 1,
+      "default": "ctrl+shift+space",
+      "x-ui": { "section": "recording", "label": "recording.hotkey.title" }
+    },
+    "recording.hotkey_repeat_debounce_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60000,
+      "default": 120
+    },
+    "recording.microphone.input_device": {
+      "type": ["string", "null"],
+      "default": null,
+      "x-ui": { "section": "recording", "label": "recording.microphone.title" }
+    },
+    "recording.microphone.auto_switch_to_primary": {
+      "type": "boolean",
+      "default": true,
+      "x-ui": { "section": "recording", "label": "recording.autoSwitch.title" }
+    },
+    "recording.microphone.sample_rate": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 384000,
+      "default": 0
+    },
+    "recording.microphone.channels": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32,
+      "default": 0
+    },
+    "recording.microphone.max_duration_secs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400,
+      "default": 0
+    },
+    "recording.storage.recording_dir": {
+      "type": "string",
+      "minLength": 1,
+      "default": "recordings"
+    },
+    "recording.sounds.enabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "recording.sounds.start": {
+      "type": ["string", "null"],
+      "default": "sounds/start.wav",
+      "x-ui": { "section": "recording", "label": "recording.soundStart.title" }
+    },
+    "recording.sounds.stop": {
+      "type": ["string", "null"],
+      "default": "sounds/stop.wav",
+      "x-ui": { "section": "recording", "label": "recording.soundEnd.title" }
+    },
+    "recording.sounds.error": {
+      "type": ["string", "null"],
+      "default": "sounds/error_1.wav",
+      "x-ui": { "section": "recording", "label": "recording.soundError.title" }
+    },
+    "recording.sounds.volume": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "default": 0.6
+    },
+    "recording.pause_media": {
+      "type": "boolean",
+      "default": false,
+      "x-ui": { "section": "recording", "label": "recording.pauseMedia.title" }
+    },
+    "recording.processing.debounce_ms": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 3600000,
+      "default": null
+    },
+    "recording.processing.settle_timeout_ms": {
+      "type": ["integer", "null"],
+      "minimum": 100,
+      "maximum": 120000,
+      "default": null
+    },
+    "recording.processing.hotkey_queue_capacity": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 5000,
+      "default": null
+    },
+    "recording.processing.worker_queue_capacity": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 20000,
+      "default": null
+    },
+    "recording.processing.queue_saturation_policy": {
+      "type": ["string", "null"],
+      "enum": ["retry", "error_only", null],
+      "default": null
+    },
+    "recording.processing.max_recording_duration_secs": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 86400,
+      "default": null
+    },
+    "recording.recovery.retry_start_timeout": {
+      "type": "boolean",
+      "default": true
+    },
+    "recording.recovery.retry_stop_timeout": {
+      "type": "boolean",
+      "default": true
+    },
+    "recording.recovery.retry_processing_timeout": {
+      "type": "boolean",
+      "default": true
+    },
+    "recording.recovery.retry_queue_saturation": {
+      "type": "boolean",
+      "default": true
+    },
+    "models.stt.provider": {
+      "type": "string",
+      "enum": ["openrouter"],
+      "default": "openrouter",
+      "x-ui": { "section": "models", "label": "models.sttTitle" }
+    },
+    "models.stt.openrouter.api_key": {
+      "type": "string",
+      "default": ""
+    },
+    "models.stt.openrouter.model": {
+      "type": "string",
+      "default": "openai/whisper-1"
+    },
+    "models.stt.openrouter.base_url": {
+      "type": "string",
+      "default": "https://openrouter.ai/api/v1"
+    },
+    "models.stt.openrouter.endpoint": {
+      "type": "string",
+      "default": "audio/transcriptions"
+    },
+    "models.stt.openrouter.prompt": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "models.stt.openrouter.max_audio_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 536870912,
+      "default": 25165824
+    },
+    "models.formatting.provider": {
+      "type": ["string", "null"],
+      "default": null,
+      "x-ui": { "section": "models", "label": "models.formattingTitle" }
+    },
+    "output.mode": {
+      "type": "string",
+      "enum": ["clipboard_only", "clipboard_paste"],
+      "default": "clipboard_paste"
+    },
+    "output.paste_delay_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5000,
+      "default": 40
+    },
+    "output.processing_timeout_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600000,
+      "default": 30000
+    },
+    "tray.title": {
+      "type": "string",
+      "default": "Cretar IA"
+    },
+    "tray.icon": {
+      "type": "string",
+      "default": "idle"
+    },
+    "tray.refresh_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 120000,
+      "default": 3000
+    },
+    "tray.tooltip.idle": {
+      "type": "string",
+      "default": "Cretar IA idle"
+    },
+    "tray.tooltip.recording": {
+      "type": "string",
+      "default": "Cretar IA recording"
+    },
+    "tray.tooltip.sending": {
+      "type": "string",
+      "default": "Cretar IA transcribing..."
+    },
+    "tray.tooltip.success": {
+      "type": "string",
+      "default": "Cretar IA ready"
+    }
+  }
+}

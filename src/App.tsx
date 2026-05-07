@@ -16,8 +16,9 @@ import { SettingsBadge } from "@/components/settings-badge";
 import { tauriInvoke } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
 import { logger } from "@/lib/logger";
+import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
-import type { AppConfig, AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
+import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
 import { ShieldCheck, ShieldX } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
@@ -25,10 +26,10 @@ const APP_VERSION = "0.1.0";
 export default function App() {
   const { t } = useTranslation();
   const fetchSettings = useSettingsStore((s) => s.fetchSettings);
-  const config = useSettingsStore((s) => s.config);
+  const settings = useSettingsStore((s) => s.settings);
   const isReady = useSettingsStore((s) => s.isReady);
   const saveSettings = useSettingsStore((s) => s.updateSettings);
-  const [draftConfig, setDraftConfig] = useState<AppConfig | null>(null);
+  const [draftSettings, setDraftSettings] = useState<SettingsRecord | null>(null);
   const [permissions, setPermissions] = useState<PermissionsStatus | null>(null);
   const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
@@ -89,27 +90,27 @@ export default function App() {
   }, [checkPermissions]);
 
   useEffect(() => {
-    if (!config) {
+    if (!settings) {
       return;
     }
-    setDraftConfig(config);
-    void i18n.changeLanguage(resolveAppLocale(config.ui?.language));
+    setDraftSettings(settings);
+    void i18n.changeLanguage(resolveAppLocale(settings["system.language"] as AppLanguage));
     skipNextAutosave.current = true;
     hasHydrated.current = true;
-  }, [config]);
+  }, [settings]);
 
   useEffect(() => {
-    if (!draftConfig || !hasHydrated.current) {
+    if (!draftSettings || !hasHydrated.current) {
       return;
     }
-    void i18n.changeLanguage(resolveAppLocale(draftConfig.ui?.language));
+    void i18n.changeLanguage(resolveAppLocale(draftSettings["system.language"] as AppLanguage));
     if (skipNextAutosave.current) {
       skipNextAutosave.current = false;
       return;
     }
 
     const timeout = window.setTimeout(() => {
-      void saveSettings(draftConfig).catch((error) => {
+      void saveSettings(draftSettings).catch((error) => {
         logger.error("failed to autosave settings", {
           error: error instanceof Error ? error.message : String(error),
         });
@@ -117,18 +118,21 @@ export default function App() {
     }, AUTOSAVE_DELAY_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [draftConfig, saveSettings]);
+  }, [draftSettings, saveSettings]);
 
-  const updateDraft = (updater: (config: AppConfig) => AppConfig) => {
-    setDraftConfig((current) => {
+  const updateDraft = (key: string, value: SettingValue) => {
+    setDraftSettings((current) => {
       if (!current) {
         return current;
       }
-      return updater(current);
+      return {
+        ...current,
+        [key]: value,
+      };
     });
   };
 
-  const draft = draftConfig;
+  const draft = draftSettings;
 
   return (
     <main className="h-screen overflow-hidden bg-background text-foreground">
@@ -177,8 +181,8 @@ export default function App() {
 }
 
 type PaneProps = {
-  draft: AppConfig;
-  updateDraft: (updater: (config: AppConfig) => AppConfig) => void;
+  draft: SettingsRecord;
+  updateDraft: (key: string, value: SettingValue) => void;
 };
 
 function SystemPane({ draft, updateDraft }: PaneProps) {
@@ -190,15 +194,9 @@ function SystemPane({ draft, updateDraft }: PaneProps) {
         <CardContent className="space-y-5">
           <SettingRow title={t("system.language.title")} description={t("system.language.description")}>
             <Select
-              value={draft.ui?.language ?? "system"}
+              value={draft["system.language"] as string}
               onValueChange={(value) =>
-                updateDraft((config) => ({
-                  ...config,
-                  ui: {
-                    ...config.ui,
-                    language: value as AppLanguage,
-                  },
-                }))
+                updateDraft("system.language", value as AppLanguage)
               }
             >
               <SelectTrigger className="w-56">
@@ -219,16 +217,8 @@ function SystemPane({ draft, updateDraft }: PaneProps) {
           </SettingRow>
           <SettingRow title={t("system.saveInputAudio.title")} description={t("system.saveInputAudio.description")}>
             <Switch
-              checked={!draft.output.cleanup_recording_after_processing}
-              onCheckedChange={(checked) =>
-                updateDraft((config) => ({
-                  ...config,
-                  output: {
-                    ...config.output,
-                    cleanup_recording_after_processing: !checked,
-                  },
-                }))
-              }
+              checked={draft["system.save_input_audio"] as boolean}
+              onCheckedChange={(checked) => updateDraft("system.save_input_audio", checked)}
             />
           </SettingRow>
         </CardContent>
@@ -264,9 +254,9 @@ function RecordingPane({
   refreshPermissions: () => Promise<void>;
 }) {
   const { t } = useTranslation();
-  const startEnabled = draft.audio_cues.start_sound !== null;
-  const stopEnabled = draft.audio_cues.stop_sound !== null;
-  const errorEnabled = draft.audio_cues.error_sound !== null;
+  const startEnabled = draft["recording.sounds.start"] !== null;
+  const stopEnabled = draft["recording.sounds.stop"] !== null;
+  const errorEnabled = draft["recording.sounds.error"] !== null;
 
   return (
     <div className="grid gap-4">
@@ -296,16 +286,10 @@ function RecordingPane({
         <CardContent className="space-y-5">
           <SettingRow title={t("recording.mode.title")} description={t("recording.mode.description")}>
             <Select
-              value={draft.interaction.mode}
+              value={draft["recording.mode"] as string}
               disabled={disabled}
               onValueChange={(value) =>
-                updateDraft((config) => ({
-                  ...config,
-                  interaction: {
-                    ...config.interaction,
-                    mode: value as InteractionMode,
-                  },
-                }))
+                updateDraft("recording.mode", value as InteractionMode)
               }
             >
               <SelectTrigger className="w-52">
@@ -320,16 +304,10 @@ function RecordingPane({
 
           <SettingRow title={t("recording.hotkey.title")} description={t("recording.hotkey.description")}>
             <HotkeyCapture
-              shortcut={draft.interaction.shortcut}
+              shortcut={draft["recording.hotkey"] as string}
               disabled={disabled}
               onChange={(shortcut) =>
-                updateDraft((config) => ({
-                  ...config,
-                  interaction: {
-                    ...config.interaction,
-                    shortcut,
-                  },
-                }))
+                updateDraft("recording.hotkey", shortcut)
               }
             />
           </SettingRow>
@@ -352,13 +330,7 @@ function RecordingPane({
               <Switch
                 checked={startEnabled}
                 onCheckedChange={(checked) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      start_sound: checked ? config.audio_cues.start_sound ?? "sounds/start.wav" : null,
-                    },
-                  }))
+                  updateDraft("recording.sounds.start", checked ? (draft["recording.sounds.start"] ?? "sounds/start.wav") : null)
                 }
               />
               <Button variant="outline" size="sm" disabled>
@@ -372,13 +344,7 @@ function RecordingPane({
               <Switch
                 checked={stopEnabled}
                 onCheckedChange={(checked) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      stop_sound: checked ? config.audio_cues.stop_sound ?? "sounds/stop.wav" : null,
-                    },
-                  }))
+                  updateDraft("recording.sounds.stop", checked ? (draft["recording.sounds.stop"] ?? "sounds/stop.wav") : null)
                 }
               />
               <Button variant="outline" size="sm" disabled>
@@ -392,13 +358,7 @@ function RecordingPane({
               <Switch
                 checked={errorEnabled}
                 onCheckedChange={(checked) =>
-                  updateDraft((config) => ({
-                    ...config,
-                    audio_cues: {
-                      ...config.audio_cues,
-                      error_sound: checked ? config.audio_cues.error_sound ?? "sounds/error_1.wav" : null,
-                    },
-                  }))
+                  updateDraft("recording.sounds.error", checked ? (draft["recording.sounds.error"] ?? "sounds/error_1.wav") : null)
                 }
               />
               <Button variant="outline" size="sm" disabled>
@@ -409,16 +369,8 @@ function RecordingPane({
 
           <SettingRow title={t("recording.autoSwitch.title")} description={t("recording.autoSwitch.description")}>
             <Switch
-              checked={draft.audio.auto_switch_to_primary_device}
-              onCheckedChange={(checked) =>
-                updateDraft((config) => ({
-                  ...config,
-                  audio: {
-                    ...config.audio,
-                    auto_switch_to_primary_device: checked,
-                  },
-                }))
-              }
+              checked={draft["recording.microphone.auto_switch_to_primary"] as boolean}
+              onCheckedChange={(checked) => updateDraft("recording.microphone.auto_switch_to_primary", checked)}
             />
           </SettingRow>
 
@@ -443,9 +395,10 @@ function PermissionBadge({ label, state }: { label: string; state?: PermissionSt
   );
 }
 
-function ModelsPane({ draft }: { draft: AppConfig }) {
+function ModelsPane({ draft }: { draft: SettingsRecord }) {
   const { t } = useTranslation();
-  const providerName = useMemo(() => providerLabel(draft.provider.provider, t), [draft.provider.provider, t]);
+  const provider = draft["models.stt.provider"] as string;
+  const providerName = useMemo(() => providerLabel(provider, t), [provider, t]);
 
   return (
     <div className="grid gap-4">
@@ -455,7 +408,7 @@ function ModelsPane({ draft }: { draft: AppConfig }) {
           <CardDescription>{t("models.sttDescription")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ProviderItem name={providerName} detail={draft.provider.openrouter.model || t("models.noModel")} />
+          <ProviderItem name={providerName} detail={(draft["models.stt.openrouter.model"] as string) || t("models.noModel")} />
           <Button variant="outline" size="sm" disabled>
             {t("models.addProvider")}
           </Button>

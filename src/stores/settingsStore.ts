@@ -1,21 +1,25 @@
 import { useSyncExternalStore } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { tauriInvoke } from "../hooks/useTauriIPC";
-import type { AppConfig } from "../lib/types";
-import { DEFAULT_APP_CONFIG } from "../lib/types";
 import type { AppRuntimeState } from "../lib/runtime";
 import { DEFAULT_APP_RUNTIME_STATE } from "../lib/runtime";
 import { logger } from "../lib/logger";
+import { loadSettingsRows, saveSettingsRows } from "../settings/sql";
+import {
+  defaultSettings,
+  settingFingerprint,
+  type SettingsRecord,
+} from "../settings/schema";
 
 type SettingsState = {
-  config: AppConfig | null;
+  settings: SettingsRecord | null;
   appState: AppRuntimeState;
   isLoading: boolean;
   isSaving: boolean;
   isReady: boolean;
   error: string | null;
   fetchSettings: () => Promise<void>;
-  updateSettings: (config: AppConfig) => Promise<void>;
+  updateSettings: (settings: SettingsRecord) => Promise<void>;
 };
 
 type InternalSettingsState = Omit<SettingsState, "fetchSettings" | "updateSettings">;
@@ -24,7 +28,7 @@ const listeners = new Set<() => void>();
 let nextSaveId = 1;
 let latestSentSaveId = 0;
 let state: InternalSettingsState = {
-  config: null,
+  settings: null,
   appState: DEFAULT_APP_RUNTIME_STATE,
   isLoading: false,
   isSaving: false,
@@ -47,7 +51,7 @@ const actions = {
 
     if (!isTauri()) {
       setState({
-        config: DEFAULT_APP_CONFIG,
+        settings: defaultSettings(),
         isLoading: false,
         isReady: true,
         appState: {
@@ -61,9 +65,9 @@ const actions = {
     }
 
     try {
-      const config = await tauriInvoke<AppConfig>("load_config");
+      const settings = await loadSettingsRows();
       setState({
-        config,
+        settings,
         isLoading: false,
         isReady: true,
         appState: {
@@ -75,26 +79,27 @@ const actions = {
         error: null,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       setState({
-        config: DEFAULT_APP_CONFIG,
+        settings: defaultSettings(),
         isLoading: false,
         isReady: true,
         appState: {
           ...state.appState,
           status: "error",
-          lastError: error instanceof Error ? error.message : String(error),
+          lastError: message,
           configReady: false,
         },
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
     }
   },
-  updateSettings: async (config: AppConfig) => {
+  updateSettings: async (settings: SettingsRecord) => {
     const saveId = nextSaveId++;
     latestSentSaveId = saveId;
     logger.info("[settings] save queued", {
       saveId,
-      fingerprint: configFingerprint(config),
+      fingerprint: settingFingerprint(settings),
     });
 
     setState({
@@ -110,13 +115,8 @@ const actions = {
 
     try {
       if (!isTauri()) {
-        logger.info("[settings] save resolved", {
-          saveId,
-          stale: saveId < latestSentSaveId,
-          fingerprint: configFingerprint(config),
-        });
         setState({
-          config,
+          settings,
           isReady: true,
           isSaving: false,
           appState: {
@@ -130,15 +130,12 @@ const actions = {
         return;
       }
 
-      logger.info("[settings] save sent", {
-        saveId,
-        fingerprint: configFingerprint(config),
-      });
-      const savedConfig = await tauriInvoke<AppConfig>("save_config", { config, saveId });
+      await saveSettingsRows(settings);
+      await tauriInvoke<void>("apply_settings", { saveId });
       logger.info("[settings] save resolved", {
         saveId,
         stale: saveId < latestSentSaveId,
-        fingerprint: configFingerprint(savedConfig),
+        fingerprint: settingFingerprint(settings),
       });
       if (saveId < latestSentSaveId) {
         logger.warn("[settings] stale save response ignored", {
@@ -148,7 +145,7 @@ const actions = {
         return;
       }
       setState({
-        config: savedConfig,
+        settings,
         isSaving: false,
         isReady: true,
         appState: {
@@ -164,7 +161,7 @@ const actions = {
       logger.error("[settings] save failed", {
         saveId,
         stale: saveId < latestSentSaveId,
-        fingerprint: configFingerprint(config),
+        fingerprint: settingFingerprint(settings),
         error: message,
       });
       setState({
@@ -201,19 +198,6 @@ function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-  };
-}
-
-function configFingerprint(config: AppConfig): Record<string, unknown> {
-  return {
-    language: config.ui?.language,
-    mode: config.interaction.mode,
-    shortcut: config.interaction.shortcut,
-    inputDevice: config.audio.input_device,
-    autoSwitchInput: config.audio.auto_switch_to_primary_device,
-    startSound: config.audio_cues.start_sound,
-    stopSound: config.audio_cues.stop_sound,
-    errorSound: config.audio_cues.error_sound,
   };
 }
 

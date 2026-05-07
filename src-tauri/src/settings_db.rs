@@ -1,11 +1,11 @@
 use crate::config::AppConfig;
+use crate::settings_schema;
 use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 pub const SETTINGS_DB_URL: &str = "sqlite:cretar-ia.db";
-const SETTINGS_KEY: &str = "app_config";
 
 #[derive(Clone)]
 pub struct SettingsDb {
@@ -46,39 +46,64 @@ impl SettingsDb {
         &self.db_path
     }
 
-    pub async fn load_config(&self) -> Result<AppConfig> {
-        let row = sqlx::query("SELECT value FROM settings WHERE key = $1")
-            .bind(SETTINGS_KEY)
-            .fetch_optional(&self.pool)
+    pub async fn load_settings(&self) -> Result<serde_json::Value> {
+        let mut settings = settings_schema::default_settings()?;
+        let rows = sqlx::query("SELECT key, value FROM settings")
+            .fetch_all(&self.pool)
             .await
-            .context("loading app config from sqlite")?;
+            .context("loading settings from sqlite")?;
 
-        let Some(row) = row else {
-            let config = AppConfig::default();
-            self.save_config(config.clone()).await?;
-            return Ok(config);
-        };
+        for row in rows {
+            let key: String = row.try_get("key").context("reading setting key")?;
+            let Some(current) = settings.get_mut(&key) else {
+                continue;
+            };
+            let raw: String = row.try_get("value").context("reading setting value")?;
+            *current = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+        }
 
-        let raw: String = row.try_get("value").context("reading app config value")?;
-        AppConfig::parse(&raw)
+        settings_schema::validate_settings(&settings)?;
+        self.save_settings(&settings).await?;
+        Ok(settings)
     }
 
-    pub async fn save_config(&self, config: AppConfig) -> Result<AppConfig> {
-        config.validate()?;
-        let value = serde_json::to_string_pretty(&config).context("serializing app config")?;
+    pub async fn save_settings(&self, settings: &serde_json::Value) -> Result<()> {
+        settings_schema::validate_settings(settings)?;
         let updated_at = chrono::Utc::now().to_rfc3339();
 
+        let Some(values) = settings.as_object() else {
+            return Err(anyhow::anyhow!("settings must be an object"));
+        };
+
+        for (key, value) in values {
+            self.upsert_setting(key, value.clone(), &updated_at).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn upsert_setting(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+        updated_at: &str,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, $3)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
-        .bind(SETTINGS_KEY)
-        .bind(value)
+        .bind(key)
+        .bind(serde_json::to_string(&value).context("serializing setting value")?)
         .bind(updated_at)
         .execute(&self.pool)
         .await
-        .context("saving app config to sqlite")?;
+        .with_context(|| format!("saving setting '{key}' to sqlite"))?;
 
-        Ok(config)
+        Ok(())
+    }
+
+    pub async fn load_config(&self) -> Result<AppConfig> {
+        let settings = self.load_settings().await?;
+        settings_schema::runtime_config_from_settings(&settings)
     }
 }

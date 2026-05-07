@@ -13,6 +13,8 @@ mod permissions;
 mod app_host;
 #[cfg(feature = "settings-ui")]
 mod settings_db;
+#[cfg(feature = "settings-ui")]
+mod settings_schema;
 mod runtime;
 mod recording;
 mod tray;

@@ -91,12 +91,9 @@ pub fn run() -> Result<()> {
     builder
         .manage(runtime_state.clone())
         .invoke_handler(tauri::generate_handler![
-            settings::load_config,
-            settings::save_config,
+            settings::apply_settings,
             settings::get_config_path,
             settings::open_config_file,
-            settings::get_settings,
-            settings::update_settings,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
@@ -250,7 +247,7 @@ fn stop_runtime(app: &AppHandle) {
     }
 }
 
-fn current_config(app: &AppHandle) -> Option<AppConfig> {
+pub fn current_config(app: &AppHandle) -> Option<AppConfig> {
     let state = app.try_state::<AppRuntimeState>()?;
     state
         .inner
@@ -392,18 +389,22 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
                 log::warn!("failed to save input device '{device}': settings database unavailable");
                 return;
             };
-            let mut config = match storage.load_config().await {
-                Ok(config) => config,
+            let mut settings = match storage.load_settings().await {
+                Ok(settings) => settings,
                 Err(err) => {
-                    log::warn!("failed to load config for input device '{device}': {err}");
+                    log::warn!("failed to load settings for input device '{device}': {err}");
                     return;
                 }
             };
-            config.audio.input_device = Some(device.clone());
-            let config = match storage.save_config(config).await {
+            settings["recording.microphone.input_device"] = serde_json::Value::String(device.clone());
+            if let Err(err) = storage.save_settings(&settings).await {
+                log::warn!("failed to save input device '{device}': {err}");
+                return;
+            }
+            let config = match storage.load_config().await {
                 Ok(config) => config,
                 Err(err) => {
-                    log::warn!("failed to save input device '{device}': {err}");
+                    log::warn!("failed to load runtime config after input device change '{device}': {err}");
                     return;
                 }
             };
