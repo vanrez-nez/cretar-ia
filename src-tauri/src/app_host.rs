@@ -118,7 +118,7 @@ pub fn open_settings_window(app: &AppHandle) -> Result<()> {
 
     WebviewWindowBuilder::new(app, SETTINGS_WINDOW_LABEL, settings_url())
         .title("Cretar IA Settings")
-        .inner_size(880.0, 680.0)
+        .inner_size(880.0, 490.0)
         .resizable(true)
         .theme(Some(Theme::Dark))
         .background_color(SETTINGS_BACKGROUND)

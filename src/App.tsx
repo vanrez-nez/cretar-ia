@@ -124,7 +124,7 @@ export default function App() {
 
   return (
     <main className="h-screen overflow-hidden bg-background text-foreground">
-      <div className="h-full w-full">
+      <div className="h-full w-full overflow-x-hidden">
         {!draft ? (
           <Card className="m-5">
             <CardHeader>
@@ -135,14 +135,14 @@ export default function App() {
             </CardHeader>
           </Card>
         ) : (
-          <Tabs defaultValue="system" orientation="vertical" className="h-full w-full gap-0">
+          <Tabs defaultValue="system" orientation="vertical" className="h-full w-full gap-0 overflow-x-hidden">
             <SettingsNavigation />
 
-            <TabsContent value="system" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
+            <TabsContent value="system" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
               <SystemPane draft={draft} updateDraft={updateDraft} />
             </TabsContent>
 
-            <TabsContent value="recording" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
+            <TabsContent value="recording" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
               <RecordingPane
                 draft={draft}
                 updateDraft={updateDraft}
@@ -154,11 +154,11 @@ export default function App() {
               />
             </TabsContent>
 
-            <TabsContent value="models" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
+            <TabsContent value="models" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
               <ModelsPane draft={draft} />
             </TabsContent>
 
-            <TabsContent value="about" className="ml-44 h-screen overflow-y-auto p-5 pl-0">
+            <TabsContent value="about" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
               <AboutPane />
             </TabsContent>
           </Tabs>
@@ -175,12 +175,8 @@ type PaneProps = {
 
 function SystemPane({ draft, updateDraft }: PaneProps) {
   return (
-    <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
+    <div className="grid gap-4 h-full">
       <Card>
-        <CardHeader>
-          <CardTitle>System</CardTitle>
-          <CardDescription>General app behavior and local storage.</CardDescription>
-        </CardHeader>
         <CardContent className="space-y-5">
           <SettingRow title="Language" description="UI language support is not wired yet.">
             <Input value="System default" disabled className="max-w-56" />
@@ -208,12 +204,11 @@ function SystemPane({ draft, updateDraft }: PaneProps) {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="h-full">
         <CardHeader>
           <CardTitle>Overview Stats</CardTitle>
-          <CardDescription>Local usage counters are not available yet.</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3">
+        <CardContent className="grid grid-cols-3 items-start gap-3">
           <StatRow label="Transcripts Count" value="0" />
           <StatRow label="Words Transcribed" value="0" />
           <StatRow label="Minutes Recorded" value="0" />
@@ -269,10 +264,6 @@ function RecordingPane({
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Recording</CardTitle>
-          <CardDescription>Capture mode, hotkey, microphone, and cues.</CardDescription>
-        </CardHeader>
         <CardContent className="space-y-5">
           <SettingRow title="Mode" description="Choose how the hotkey controls recording.">
             <Select
@@ -427,7 +418,7 @@ function ModelsPane({ draft }: { draft: AppConfig }) {
   const providerName = useMemo(() => providerLabel(draft.provider.provider), [draft.provider.provider]);
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="grid gap-4">
       <Card>
         <CardHeader>
           <CardTitle>STT Model</CardTitle>
@@ -493,7 +484,7 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid gap-3 rounded-lg border border-border/70 bg-card/50 p-3 sm:grid-cols-[1fr_auto] sm:items-center">
+    <div className="grid p-0 sm:grid-cols-[1fr_auto] sm:items-center">
       <div className="space-y-1">
         <Label className="text-sm font-medium">{title}</Label>
         {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
@@ -505,9 +496,9 @@ function SettingRow({
 
 function StatRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between rounded-lg border border-border/70 bg-card/50 px-3 py-2">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="text-lg font-semibold tabular-nums">{value}</span>
+    <div className="flex flex-col items-center justify-center gap-1 rounded-lg bg-muted/45 px-3 py-2 text-center">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-xl font-semibold tabular-nums">{value}</span>
     </div>
   );
 }
