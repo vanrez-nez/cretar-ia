@@ -71,6 +71,13 @@ fn settings_migrations() -> Vec<Migration> {
 pub fn run() -> Result<()> {
     let runtime_state = AppRuntimeState::new();
     let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|_app, argv, cwd| {
+            log::info!(
+                "second app launch ignored argv={} cwd={}",
+                argv.join(" "),
+                cwd
+            );
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
