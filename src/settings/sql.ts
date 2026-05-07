@@ -23,7 +23,6 @@ export async function loadSettingsRows(): Promise<SettingsRecord> {
   }
 
   const normalized = normalizeSettings(settings);
-  await saveSettingsRows(normalized);
   return normalized;
 }
 

@@ -81,6 +81,17 @@ pub fn run() -> Result<()> {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
+                .filter(|metadata| {
+                    if metadata.target().starts_with("sqlx")
+                        && matches!(
+                            metadata.level(),
+                            log::Level::Trace | log::Level::Debug | log::Level::Info
+                        )
+                    {
+                        return false;
+                    }
+                    true
+                })
                 .targets([
                     Target::new(TargetKind::Stdout),
                     Target::new(TargetKind::LogDir {
@@ -313,6 +324,7 @@ fn runtime_fingerprint(cfg: &AppConfig) -> String {
         "start_sound": cfg.audio_cues.start_sound,
         "stop_sound": cfg.audio_cues.stop_sound,
         "error_sound": cfg.audio_cues.error_sound,
+        "pause_media": cfg.pipeline.pause_media,
     })
     .to_string()
 }
@@ -389,7 +401,8 @@ fn spawn_status_task(
                     if let Some(cue_kind) = render.cue {
                         if Some(status.source.as_str()) != last_cued_event.as_deref() {
                             match cue_kind {
-                                audio_cues::CueKind::Start => cue.play_start(),
+                                audio_cues::CueKind::Start if !cfg.pipeline.pause_media => cue.play_start(),
+                                audio_cues::CueKind::Start => {}
                                 audio_cues::CueKind::Stop => cue.play_stop(),
                                 audio_cues::CueKind::Error => cue.play_error(),
                             }

@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use crate::settings_schema;
 use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
@@ -48,6 +49,7 @@ impl SettingsDb {
 
     pub async fn load_settings(&self) -> Result<serde_json::Value> {
         let mut settings = settings_schema::default_settings()?;
+        let mut loaded = HashMap::new();
         let rows = sqlx::query("SELECT key, value FROM settings")
             .fetch_all(&self.pool)
             .await
@@ -59,12 +61,14 @@ impl SettingsDb {
                 continue;
             };
             let raw: String = row.try_get("value").context("reading setting value")?;
-            *current = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+            let value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+            *current = value.clone();
+            loaded.insert(key, value);
         }
 
         settings_schema::normalize_settings(&mut settings);
         settings_schema::validate_settings(&settings)?;
-        self.save_settings(&settings).await?;
+        self.save_missing_or_changed_settings(&settings, &loaded).await?;
         Ok(settings)
     }
 
@@ -78,6 +82,33 @@ impl SettingsDb {
 
         for (key, value) in values {
             self.upsert_setting(key, value.clone(), &updated_at).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn save_missing_or_changed_settings(
+        &self,
+        settings: &serde_json::Value,
+        loaded: &HashMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        let Some(values) = settings.as_object() else {
+            return Err(anyhow::anyhow!("settings must be an object"));
+        };
+
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let mut changed = 0usize;
+
+        for (key, value) in values {
+            if loaded.get(key) == Some(value) {
+                continue;
+            }
+            self.upsert_setting(key, value.clone(), &updated_at).await?;
+            changed += 1;
+        }
+
+        if changed > 0 {
+            log::info!("persisted {changed} missing or normalized setting rows");
         }
 
         Ok(())
