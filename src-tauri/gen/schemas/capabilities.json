@@ -1,1 +1,1 @@
-{"settings-ui":{"identifier":"settings-ui","description":"Enable settings window IPC and window controls.","local":true,"windows":["settings"],"permissions":["core:default","log:default","sql:default","sql:allow-execute","settings-ui-commands"]}}
+{"settings-ui":{"identifier":"settings-ui","description":"Enable settings window IPC and window controls.","local":true,"windows":["settings"],"permissions":["core:default","log:default","autostart:default","sql:default","sql:allow-execute","settings-ui-commands"]}}

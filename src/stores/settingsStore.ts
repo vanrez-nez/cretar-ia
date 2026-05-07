@@ -4,6 +4,7 @@ import { tauriInvoke } from "../hooks/useTauriIPC";
 import type { AppRuntimeState } from "../lib/runtime";
 import { DEFAULT_APP_RUNTIME_STATE } from "../lib/runtime";
 import { logger } from "../lib/logger";
+import { loadLaunchAtStart } from "../settings/autostart";
 import { loadSettingsRows, saveSettingsRows } from "../settings/sql";
 import {
   defaultSettings,
@@ -66,6 +67,11 @@ const actions = {
 
     try {
       const settings = await loadSettingsRows();
+      const launchAtStart = await loadLaunchAtStart();
+      if (settings["system.launch_at_start"] !== launchAtStart) {
+        settings["system.launch_at_start"] = launchAtStart;
+        await saveSettingsRows(settings);
+      }
       setState({
         settings,
         isLoading: false,

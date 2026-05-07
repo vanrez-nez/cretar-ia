@@ -84,6 +84,7 @@ pub fn run() -> Result<()> {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(SETTINGS_DB_URL, settings_migrations())

@@ -16,6 +16,7 @@ import { SettingsBadge } from "@/components/settings-badge";
 import { tauriInvoke } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
 import { logger } from "@/lib/logger";
+import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
@@ -33,6 +34,7 @@ export default function App() {
   const [permissions, setPermissions] = useState<PermissionsStatus | null>(null);
   const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [isUpdatingAutostart, setIsUpdatingAutostart] = useState(false);
   const hasHydrated = useRef(false);
   const skipNextAutosave = useRef(true);
 
@@ -135,6 +137,20 @@ export default function App() {
     });
   };
 
+  const updateLaunchAtStart = async (checked: boolean) => {
+    setIsUpdatingAutostart(true);
+    try {
+      const enabled = await setLaunchAtStart(checked);
+      updateDraft("system.launch_at_start", enabled);
+    } catch (error) {
+      logger.error("failed to update autostart", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setIsUpdatingAutostart(false);
+    }
+  };
+
   const draft = draftSettings;
 
   return (
@@ -154,7 +170,12 @@ export default function App() {
             <SettingsNavigation />
 
             <TabsContent value="system" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
-              <SystemPane draft={draft} updateDraft={updateDraft} />
+              <SystemPane
+                draft={draft}
+                updateDraft={updateDraft}
+                isUpdatingAutostart={isUpdatingAutostart}
+                updateLaunchAtStart={updateLaunchAtStart}
+              />
             </TabsContent>
 
             <TabsContent value="recording" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
@@ -188,7 +209,15 @@ type PaneProps = {
   updateDraft: (key: string, value: SettingValue) => void;
 };
 
-function SystemPane({ draft, updateDraft }: PaneProps) {
+function SystemPane({
+  draft,
+  updateDraft,
+  isUpdatingAutostart,
+  updateLaunchAtStart,
+}: PaneProps & {
+  isUpdatingAutostart: boolean;
+  updateLaunchAtStart: (checked: boolean) => Promise<void>;
+}) {
   const { t } = useTranslation();
 
   return (
@@ -213,7 +242,11 @@ function SystemPane({ draft, updateDraft }: PaneProps) {
             </Select>
           </SettingRow>
           <SettingRow title={t("system.launchAtStart.title")} description={t("system.launchAtStart.description")}>
-            <Switch checked={false} disabled />
+            <Switch
+              checked={draft["system.launch_at_start"] as boolean}
+              disabled={isUpdatingAutostart}
+              onCheckedChange={(checked) => void updateLaunchAtStart(checked)}
+            />
           </SettingRow>
           <SettingRow title={t("system.saveTextHistory.title")} description={t("system.saveTextHistory.description")}>
             <Switch checked={false} disabled />
