@@ -28,11 +28,22 @@
           "identifier": "settings-ui",
           "description": "Runtime access for the settings window",
           "windows": ["settings"],
-          "permissions": ["core:default", "log:default", "sql:default", "settings-ui-commands"]
+          "permissions": ["core:default", "log:default", "sql:default", "sql:allow-execute", "settings-ui-commands"]
         }
       ]
     },
-    "windows": []
+    "windows": [
+      {
+        "label": "settings",
+        "title": "Cretar IA Settings",
+        "width": 880,
+        "height": 490,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "skipTaskbar": true
+      }
+    ]
   },
   "plugins": {
     "sql": {

@@ -4,7 +4,6 @@ use crate::config::{AppConfig, InteractionMode};
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
-use crate::i18n;
 use crate::openrouter::OpenRouterClient;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
@@ -12,12 +11,25 @@ use crate::settings_db::{SettingsDb, SETTINGS_DB_URL};
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 const SETTINGS_WINDOW_LABEL: &str = "settings";
+
+#[cfg(target_os = "macos")]
+pub fn show_dock_icon(app: &AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    log::debug!("dock icon shown with ActivationPolicy::Regular");
+}
+
+#[cfg(target_os = "macos")]
+pub fn hide_dock_icon(app: &AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    log::debug!("dock icon hidden with ActivationPolicy::Accessory");
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeState {
     inner: Arc<Mutex<Option<AppRuntime>>>,
@@ -100,6 +112,11 @@ pub fn run() -> Result<()> {
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
+            #[cfg(target_os = "macos")]
+            {
+                hide_dock_icon(&app_handle);
+                log::info!("set macOS activation policy to Accessory");
+            }
             let storage = tauri::async_runtime::block_on(SettingsDb::connect(&app_handle))
                 .map_err(|err| anyhow!(err.to_string()))?;
             let cfg = tauri::async_runtime::block_on(storage.load_config())
@@ -137,36 +154,39 @@ pub fn run() -> Result<()> {
                     log::warn!("failed to hide settings window on close: {err}");
                 } else {
                     log::info!("settings window hidden instead of closed");
+                    #[cfg(target_os = "macos")]
+                    hide_dock_icon(window.app_handle());
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .map_err(|err| anyhow!(err.to_string()))?;
+        .build(tauri::generate_context!())
+        .map_err(|err| anyhow!(err.to_string()))?
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+                if !has_visible_windows {
+                    if let Err(err) = open_settings_window(app) {
+                        log::warn!("failed to reopen settings window: {err}");
+                    }
+                }
+            }
+        });
 
     Ok(())
 }
 
 pub fn open_settings_window(app: &AppHandle) -> Result<()> {
-    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        return Ok(());
-    }
+    let window = app
+        .get_webview_window(SETTINGS_WINDOW_LABEL)
+        .ok_or_else(|| anyhow!("settings window not found"))?;
 
-    let config = app
-        .try_state::<SettingsDb>()
-        .and_then(|storage| tauri::async_runtime::block_on(storage.load_config()).ok())
-        .or_else(|| current_config(app))
-        .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    show_dock_icon(app);
 
-    WebviewWindowBuilder::new(app, SETTINGS_WINDOW_LABEL, settings_url())
-        .title(i18n::t_config(&config, "tray.windowTitle"))
-        .inner_size(880.0, 490.0)
-        .resizable(true)
-        .build()
-        .map(|_| ())
-        .map_err(|err| anyhow!(err.to_string()))
+    window.show().map_err(|err| anyhow!(err.to_string()))?;
+    window.unminimize().map_err(|err| anyhow!(err.to_string()))?;
+    window.set_focus().map_err(|err| anyhow!(err.to_string()))?;
+    Ok(())
 }
 
 pub fn restart_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
@@ -414,15 +434,4 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
             }
         });
     }
-}
-
-fn settings_url() -> WebviewUrl {
-    #[cfg(debug_assertions)]
-    {
-        if let Ok(url) = "http://localhost:5173".parse() {
-            return WebviewUrl::External(url);
-        }
-    }
-
-    WebviewUrl::App("index.html".into())
 }

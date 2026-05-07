@@ -7,6 +7,7 @@
     "core:default",
     "log:default",
     "sql:default",
+    "sql:allow-execute",
     "settings-ui-commands"
   ]
 }

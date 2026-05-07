@@ -93,6 +93,9 @@ export default function App() {
     if (!settings) {
       return;
     }
+    if (hasHydrated.current) {
+      return;
+    }
     setDraftSettings(settings);
     void i18n.changeLanguage(resolveAppLocale(settings["system.language"] as AppLanguage));
     skipNextAutosave.current = true;
