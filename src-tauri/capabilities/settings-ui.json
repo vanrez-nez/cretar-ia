@@ -5,6 +5,7 @@
   "windows": ["settings"],
   "permissions": [
     "core:default",
+    "log:default",
     "settings-ui-commands"
   ]
 }

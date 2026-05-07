@@ -15,6 +15,7 @@ import { HotkeyCapture } from "@/components/hotkey";
 import { SettingsBadge } from "@/components/settings-badge";
 import { tauriInvoke } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
+import { logger } from "@/lib/logger";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppConfig, AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
 import { ShieldCheck, ShieldX } from "lucide-react";
@@ -109,7 +110,9 @@ export default function App() {
 
     const timeout = window.setTimeout(() => {
       void saveSettings(draftConfig).catch((error) => {
-        console.error("failed to autosave settings", error);
+        logger.error("failed to autosave settings", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     }, AUTOSAVE_DELAY_MS);
 

@@ -14,6 +14,7 @@ use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 const SETTINGS_WINDOW_LABEL: &str = "settings";
@@ -58,6 +59,18 @@ fn settings_migrations() -> Vec<Migration> {
 pub fn run() -> Result<()> {
     let runtime_state = AppRuntimeState::new();
     let mut builder = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Debug)
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("app".into()),
+                    }),
+                    Target::new(TargetKind::Webview),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -93,8 +106,6 @@ pub fn run() -> Result<()> {
             let storage = tauri::async_runtime::block_on(SettingsDb::connect(&app_handle))
                 .map_err(|err| anyhow!(err.to_string()))?;
             let cfg = tauri::async_runtime::block_on(storage.load_config())
-                .map_err(|err| anyhow!(err.to_string()))?;
-            crate::init_logging(storage.app_data_dir())
                 .map_err(|err| anyhow!(err.to_string()))?;
             log::info!(
                 "starting app v{} with interaction {:?} and shortcut {}",

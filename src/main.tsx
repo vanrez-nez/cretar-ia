@@ -3,8 +3,11 @@ import { createRoot } from "react-dom/client";
 
 import App from "./App";
 import { SystemThemeProvider } from "@/components/system-theme-provider";
+import { attachTauriLogger } from "@/lib/logger";
 import "./i18n";
 import "./main.css";
+
+void attachTauriLogger();
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

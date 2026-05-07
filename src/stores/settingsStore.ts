@@ -5,6 +5,7 @@ import type { AppConfig } from "../lib/types";
 import { DEFAULT_APP_CONFIG } from "../lib/types";
 import type { AppRuntimeState } from "../lib/runtime";
 import { DEFAULT_APP_RUNTIME_STATE } from "../lib/runtime";
+import { logger } from "../lib/logger";
 
 type SettingsState = {
   config: AppConfig | null;
@@ -91,7 +92,7 @@ const actions = {
   updateSettings: async (config: AppConfig) => {
     const saveId = nextSaveId++;
     latestSentSaveId = saveId;
-    console.info("[settings] save queued", {
+    logger.info("[settings] save queued", {
       saveId,
       fingerprint: configFingerprint(config),
     });
@@ -109,7 +110,7 @@ const actions = {
 
     try {
       if (!isTauri()) {
-        console.info("[settings] save resolved", {
+        logger.info("[settings] save resolved", {
           saveId,
           stale: saveId < latestSentSaveId,
           fingerprint: configFingerprint(config),
@@ -129,18 +130,18 @@ const actions = {
         return;
       }
 
-      console.info("[settings] save sent", {
+      logger.info("[settings] save sent", {
         saveId,
         fingerprint: configFingerprint(config),
       });
       const savedConfig = await tauriInvoke<AppConfig>("save_config", { config, saveId });
-      console.info("[settings] save resolved", {
+      logger.info("[settings] save resolved", {
         saveId,
         stale: saveId < latestSentSaveId,
         fingerprint: configFingerprint(savedConfig),
       });
       if (saveId < latestSentSaveId) {
-        console.warn("[settings] stale save response ignored", {
+        logger.warn("[settings] stale save response ignored", {
           saveId,
           latestSentSaveId,
         });
@@ -160,7 +161,7 @@ const actions = {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("[settings] save failed", {
+      logger.error("[settings] save failed", {
         saveId,
         stale: saveId < latestSentSaveId,
         fingerprint: configFingerprint(config),
