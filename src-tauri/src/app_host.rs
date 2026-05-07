@@ -11,7 +11,7 @@ use crate::settings_db::{SettingsDb, SETTINGS_DB_URL};
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -114,6 +114,7 @@ pub fn run() -> Result<()> {
             settings::apply_settings,
             settings::get_config_path,
             settings::open_config_file,
+            settings::list_input_devices,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
@@ -305,7 +306,6 @@ fn runtime_fingerprint(cfg: &AppConfig) -> String {
         "mode": cfg.interaction.mode,
         "shortcut": cfg.interaction.shortcut,
         "input_device": cfg.audio.input_device,
-        "auto_switch_input": cfg.audio.auto_switch_to_primary_device,
         "start_sound": cfg.audio_cues.start_sound,
         "stop_sound": cfg.audio_cues.stop_sound,
         "error_sound": cfg.audio_cues.error_sound,
@@ -409,37 +409,55 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
     } else if id == tray::MENU_QUIT {
         stop_runtime(app);
         app.exit(0);
+    } else if id == tray::MENU_DEVICE_DEFAULT {
+        save_input_device_from_tray(app, None);
     } else if let Some(device) = id.strip_prefix(tray::MENU_DEVICE_PREFIX) {
-        let app = app.clone();
-        let device = device.to_string();
-        tauri::async_runtime::spawn(async move {
-            let Some(storage) = app.try_state::<SettingsDb>() else {
-                log::warn!("failed to save input device '{device}': settings database unavailable");
-                return;
-            };
-            let mut settings = match storage.load_settings().await {
-                Ok(settings) => settings,
-                Err(err) => {
-                    log::warn!("failed to load settings for input device '{device}': {err}");
-                    return;
-                }
-            };
-            settings["recording.microphone.input_device"] = serde_json::Value::String(device.clone());
-            if let Err(err) = storage.save_settings(&settings).await {
-                log::warn!("failed to save input device '{device}': {err}");
-                return;
-            }
-            let config = match storage.load_config().await {
-                Ok(config) => config,
-                Err(err) => {
-                    log::warn!("failed to load runtime config after input device change '{device}': {err}");
-                    return;
-                }
-            };
-            refresh_tray_menu(&app, &config);
-            if let Err(err) = restart_runtime(&app, config) {
-                log::error!("failed to restart runtime after input device change: {err}");
-            }
-        });
+        save_input_device_from_tray(app, Some(device.to_string()));
     }
+}
+
+fn save_input_device_from_tray(app: &AppHandle, device: Option<String>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(storage) = app.try_state::<SettingsDb>() else {
+            log::warn!("failed to save input device from tray: settings database unavailable");
+            return;
+        };
+        let previous = current_config(&app);
+        let mut settings = match storage.load_settings().await {
+            Ok(settings) => settings,
+            Err(err) => {
+                log::warn!("failed to load settings for tray input device change: {err}");
+                return;
+            }
+        };
+        settings["recording.microphone.input_device"] = device
+            .clone()
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null);
+        if let Err(err) = storage.save_settings(&settings).await {
+            log::warn!("failed to save tray input device change: {err}");
+            return;
+        }
+        let config = match crate::settings_schema::runtime_config_from_settings(&settings) {
+            Ok(config) => config,
+            Err(err) => {
+                log::warn!("failed to load runtime config after tray input device change: {err}");
+                return;
+            }
+        };
+        if let Err(err) = crate::commands::settings::apply_saved_config(&app, previous.as_ref(), &config, None) {
+            log::error!("failed to apply tray input device change: {err}");
+            return;
+        }
+        if let Err(err) = app.emit(
+            "settings:changed",
+            serde_json::json!({
+                "source": "tray",
+                "keys": ["recording.microphone.input_device"],
+            }),
+        ) {
+            log::warn!("failed to emit settings change after tray input device change: {err}");
+        }
+    });
 }

@@ -5,6 +5,7 @@ commands.allow = [
   "get_config_path",
   "apply_settings",
   "open_config_file",
+  "list_input_devices",
   "check_permissions",
   "request_microphone_permission",
   "request_accessibility_permission",

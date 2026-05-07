@@ -31,6 +31,14 @@ pub(crate) fn available_input_device_names() -> Vec<String> {
         let Ok(name) = device.name() else {
             continue;
         };
+        let Ok(mut supported_configs) = device.supported_input_configs() else {
+            log::debug!("skipping input device '{name}' because supported configs are unavailable");
+            continue;
+        };
+        if supported_configs.next().is_none() {
+            log::debug!("skipping input device '{name}' because it exposes no supported input configs");
+            continue;
+        }
         if !names.iter().any(|existing| existing == &name) {
             names.push(name);
         }

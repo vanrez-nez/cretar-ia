@@ -92,7 +92,7 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
             sample_rate: setting(settings, "recording.microphone.sample_rate")?,
             channels: setting(settings, "recording.microphone.channels")?,
             input_device: setting(settings, "recording.microphone.input_device")?,
-            auto_switch_to_primary_device: setting(settings, "recording.microphone.auto_switch_to_primary")?,
+            auto_switch_to_primary_device: true,
             max_duration_secs: setting(settings, "recording.microphone.max_duration_secs")?,
             recording_dir: setting(settings, "recording.storage.recording_dir")?,
         },

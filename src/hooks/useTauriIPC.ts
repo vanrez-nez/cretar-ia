@@ -17,6 +17,10 @@ export function useTauriEvent<T>(
   handlerRef.current = handler;
 
   useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+
     let unlisten: UnlistenFn | undefined;
 
     listen<T>(event, (e) => {

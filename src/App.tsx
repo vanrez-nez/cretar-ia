@@ -13,7 +13,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
 import { SettingsBadge } from "@/components/settings-badge";
-import { tauriInvoke } from "@/hooks/useTauriIPC";
+import { tauriInvoke, useTauriEvent } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
 import { logger } from "@/lib/logger";
 import { setLaunchAtStart } from "@/settings/autostart";
@@ -24,6 +24,13 @@ import { ShieldCheck, ShieldX } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
+const SYSTEM_DEFAULT_INPUT_DEVICE = "__system_default__";
+
+type SettingsChangedEvent = {
+  source: string;
+  keys: string[];
+};
+
 export default function App() {
   const { t } = useTranslation();
   const fetchSettings = useSettingsStore((s) => s.fetchSettings);
@@ -35,6 +42,7 @@ export default function App() {
   const [isRefreshingPermissions, setIsRefreshingPermissions] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [isUpdatingAutostart, setIsUpdatingAutostart] = useState(false);
+  const [inputDevices, setInputDevices] = useState<string[]>([]);
   const hasHydrated = useRef(false);
   const skipNextAutosave = useRef(true);
 
@@ -90,6 +98,30 @@ export default function App() {
       setPermissionError(error instanceof Error ? error.message : String(error));
     });
   }, [checkPermissions]);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      setInputDevices([]);
+      return;
+    }
+
+    void tauriInvoke<string[]>("list_input_devices")
+      .then(setInputDevices)
+      .catch((error) => {
+        logger.error("failed to list input devices", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, []);
+
+  useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
+    if (!event.keys.includes("recording.microphone.input_device")) {
+      return;
+    }
+    hasHydrated.current = false;
+    skipNextAutosave.current = true;
+    void fetchSettings();
+  });
 
   useEffect(() => {
     if (!settings) {
@@ -183,6 +215,7 @@ export default function App() {
                 draft={draft}
                 updateDraft={updateDraft}
                 disabled={!isReady}
+                inputDevices={inputDevices}
                 permissions={permissions}
                 isRefreshingPermissions={isRefreshingPermissions}
                 permissionError={permissionError}
@@ -278,12 +311,14 @@ function RecordingPane({
   draft,
   updateDraft,
   disabled,
+  inputDevices,
   permissions,
   isRefreshingPermissions,
   permissionError,
   refreshPermissions,
 }: PaneProps & {
   disabled: boolean;
+  inputDevices: string[];
   permissions: PermissionsStatus | null;
   isRefreshingPermissions: boolean;
   permissionError: string | null;
@@ -293,6 +328,11 @@ function RecordingPane({
   const startEnabled = draft["recording.sounds.start"] !== null;
   const stopEnabled = draft["recording.sounds.stop"] !== null;
   const errorEnabled = draft["recording.sounds.error"] !== null;
+  const selectedInputDevice = draft["recording.microphone.input_device"];
+  const selectedInputDeviceValue =
+    typeof selectedInputDevice === "string" ? selectedInputDevice : SYSTEM_DEFAULT_INPUT_DEVICE;
+  const selectedDeviceUnavailable =
+    typeof selectedInputDevice === "string" && !inputDevices.includes(selectedInputDevice);
 
   return (
     <div className="grid gap-4">
@@ -349,12 +389,31 @@ function RecordingPane({
           </SettingRow>
 
           <SettingRow title={t("recording.microphone.title")} description={t("recording.microphone.description")}>
-            <Select disabled value="default">
+            <Select
+              disabled={disabled}
+              value={selectedInputDeviceValue}
+              onValueChange={(value) =>
+                updateDraft(
+                  "recording.microphone.input_device",
+                  value === SYSTEM_DEFAULT_INPUT_DEVICE ? null : value
+                )
+              }
+            >
               <SelectTrigger className="w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="default">{t("common.default")}</SelectItem>
+                <SelectItem value={SYSTEM_DEFAULT_INPUT_DEVICE}>{t("common.systemDefault")}</SelectItem>
+                {inputDevices.map((device) => (
+                  <SelectItem key={device} value={device}>
+                    {device}
+                  </SelectItem>
+                ))}
+                {selectedDeviceUnavailable ? (
+                  <SelectItem value={selectedInputDevice as string} disabled>
+                    {selectedInputDevice} ({t("common.unavailable")})
+                  </SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
           </SettingRow>
@@ -401,13 +460,6 @@ function RecordingPane({
                 {t("common.edit")}
               </Button>
             </div>
-          </SettingRow>
-
-          <SettingRow title={t("recording.autoSwitch.title")} description={t("recording.autoSwitch.description")}>
-            <Switch
-              checked={draft["recording.microphone.auto_switch_to_primary"] as boolean}
-              onCheckedChange={(checked) => updateDraft("recording.microphone.auto_switch_to_primary", checked)}
-            />
           </SettingRow>
 
           <SettingRow title={t("recording.pauseMedia.title")} description={t("recording.pauseMedia.description")}>

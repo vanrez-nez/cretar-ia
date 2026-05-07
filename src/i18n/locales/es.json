@@ -68,7 +68,7 @@
     },
     "microphone": {
       "title": "Micrófono",
-      "description": "El selector nativo de dispositivo está disponible desde la bandeja por ahora."
+      "description": "Elige el dispositivo de entrada usado para grabar."
     },
     "soundStart": {
       "title": "Sonido al iniciar grabación",
@@ -81,10 +81,6 @@
     "soundError": {
       "title": "Sonido de error",
       "description": "Activa o desactiva el sonido de error configurado."
-    },
-    "autoSwitch": {
-      "title": "Cambiar automáticamente a la entrada principal",
-      "description": "Usa la entrada predeterminada del sistema cuando el dispositivo seleccionado no esté disponible."
     },
     "pauseMedia": {
       "title": "Pausar medios durante la grabación",

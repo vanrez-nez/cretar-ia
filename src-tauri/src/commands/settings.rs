@@ -34,6 +34,11 @@ pub async fn open_config_file(storage: State<'_, SettingsDb>) -> Result<(), Stri
 }
 
 #[tauri::command]
+pub async fn list_input_devices() -> Result<Vec<String>, String> {
+    Ok(crate::audio::available_input_device_names())
+}
+
+#[tauri::command]
 pub async fn check_permissions() -> Result<PermissionsStatus, String> {
     Ok(crate::permissions::check_permissions().await)
 }
@@ -48,7 +53,7 @@ pub async fn request_accessibility_permission() -> Result<crate::permissions::Pe
     Ok(crate::permissions::request_accessibility_permission().await)
 }
 
-fn apply_saved_config(
+pub(crate) fn apply_saved_config(
     app: &AppHandle,
     previous: Option<&AppConfig>,
     config: &AppConfig,
@@ -109,7 +114,6 @@ fn settings_fingerprint(settings: &Value) -> String {
         "recording.mode": settings.get("recording.mode"),
         "recording.hotkey": settings.get("recording.hotkey"),
         "recording.microphone.input_device": settings.get("recording.microphone.input_device"),
-        "recording.microphone.auto_switch_to_primary": settings.get("recording.microphone.auto_switch_to_primary"),
         "recording.sounds.start": settings.get("recording.sounds.start"),
         "recording.sounds.stop": settings.get("recording.sounds.stop"),
         "recording.sounds.error": settings.get("recording.sounds.error"),
@@ -123,7 +127,6 @@ fn config_fingerprint(config: &AppConfig) -> String {
         "recording.mode": config.interaction.mode,
         "recording.hotkey": config.interaction.shortcut,
         "recording.microphone.input_device": config.audio.input_device,
-        "recording.microphone.auto_switch_to_primary": config.audio.auto_switch_to_primary_device,
         "recording.sounds.start": config.audio_cues.start_sound,
         "recording.sounds.stop": config.audio_cues.stop_sound,
         "recording.sounds.error": config.audio_cues.error_sound,

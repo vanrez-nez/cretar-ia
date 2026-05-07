@@ -11,6 +11,7 @@ use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Wry};
 
 pub const MENU_DEVICE_PREFIX: &str = "input-device:";
+pub const MENU_DEVICE_DEFAULT: &str = "input-device:system-default";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_QUIT: &str = "quit";
 
@@ -96,7 +97,6 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
         serde_json::json!({
             "language": config.ui.language,
             "input_device": config.audio.input_device,
-            "auto_switch_input": config.audio.auto_switch_to_primary_device,
         })
     );
     let menu = Menu::new(app)?;
@@ -113,15 +113,26 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
     let device_names = available_input_device_names();
     let selected_device = selected_input_device(config);
     let configured_device = configured_input_device(config);
+    let default_checked = configured_device.is_none();
+    let default_item = CheckMenuItem::with_id(
+        app,
+        MENU_DEVICE_DEFAULT,
+        i18n::t_config(&config, "common.systemDefault"),
+        true,
+        default_checked,
+        None::<&str>,
+    )?;
+    menu.append(&default_item)?;
 
     if device_names.is_empty() {
         let empty = MenuItem::with_id(app, "input-device:none", i18n::t_config(&config, "tray.noInputDevices"), false, None::<&str>)?;
         menu.append(&empty)?;
     } else {
         for device_name in device_names.iter() {
-            let checked = selected_device
-                .as_deref()
-                .is_some_and(|selected| selected == device_name);
+            let checked = configured_device.is_some()
+                && selected_device
+                    .as_deref()
+                    .is_some_and(|selected| selected == device_name);
             let item = CheckMenuItem::with_id(
                 app,
                 format!("{MENU_DEVICE_PREFIX}{device_name}"),

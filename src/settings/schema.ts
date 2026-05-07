@@ -41,7 +41,6 @@ export function settingFingerprint(settings: SettingsRecord): Record<string, Set
     "recording.mode": settings["recording.mode"],
     "recording.hotkey": settings["recording.hotkey"],
     "recording.microphone.input_device": settings["recording.microphone.input_device"],
-    "recording.microphone.auto_switch_to_primary": settings["recording.microphone.auto_switch_to_primary"],
     "recording.sounds.start": settings["recording.sounds.start"],
     "recording.sounds.stop": settings["recording.sounds.stop"],
     "recording.sounds.error": settings["recording.sounds.error"],

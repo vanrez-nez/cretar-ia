@@ -68,7 +68,7 @@
     },
     "microphone": {
       "title": "Microphone",
-      "description": "Native device picker is available from the tray for now."
+      "description": "Choose the input device used for recording."
     },
     "soundStart": {
       "title": "Sound Record Start",
@@ -81,10 +81,6 @@
     "soundError": {
       "title": "Sound Record Error",
       "description": "Enable or disable the configured error cue."
-    },
-    "autoSwitch": {
-      "title": "Auto-switch to primary input device",
-      "description": "Use the system default input when the selected device is unavailable."
     },
     "pauseMedia": {
       "title": "Pause media during recording",

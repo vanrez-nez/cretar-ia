@@ -13,7 +13,6 @@
     "recording.hotkey",
     "recording.hotkey_repeat_debounce_ms",
     "recording.microphone.input_device",
-    "recording.microphone.auto_switch_to_primary",
     "recording.microphone.sample_rate",
     "recording.microphone.channels",
     "recording.microphone.max_duration_secs",
@@ -97,11 +96,6 @@
       "type": ["string", "null"],
       "default": null,
       "x-ui": { "section": "recording", "label": "recording.microphone.title" }
-    },
-    "recording.microphone.auto_switch_to_primary": {
-      "type": "boolean",
-      "default": true,
-      "x-ui": { "section": "recording", "label": "recording.autoSwitch.title" }
     },
     "recording.microphone.sample_rate": {
       "type": "integer",
