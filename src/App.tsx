@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
-import { ShieldCheck, ShieldX } from "lucide-react";
+import { Play, ShieldCheck, ShieldX } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -30,6 +31,14 @@ type SettingsChangedEvent = {
   source: string;
   keys: string[];
 };
+
+type SoundOption = {
+  id: string;
+  label: string;
+  file: string;
+};
+
+type SoundSlot = "start" | "stop" | "error";
 
 export default function App() {
   const { t } = useTranslation();
@@ -43,6 +52,8 @@ export default function App() {
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [isUpdatingAutostart, setIsUpdatingAutostart] = useState(false);
   const [inputDevices, setInputDevices] = useState<string[]>([]);
+  const [soundOptions, setSoundOptions] = useState<SoundOption[]>([]);
+  const [previewingSoundKey, setPreviewingSoundKey] = useState<string | null>(null);
   const hasHydrated = useRef(false);
   const skipNextAutosave = useRef(true);
 
@@ -109,6 +120,21 @@ export default function App() {
       .then(setInputDevices)
       .catch((error) => {
         logger.error("failed to list input devices", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      setSoundOptions([]);
+      return;
+    }
+
+    void tauriInvoke<SoundOption[]>("list_sound_options")
+      .then(setSoundOptions)
+      .catch((error) => {
+        logger.error("failed to list sound options", {
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -183,6 +209,24 @@ export default function App() {
     }
   };
 
+  const previewSound = async (key: string, path: string | null) => {
+    if (!path || !isTauri()) {
+      return;
+    }
+
+    setPreviewingSoundKey(key);
+    try {
+      await tauriInvoke<void>("preview_sound", { path });
+    } catch (error) {
+      logger.error("failed to preview sound", {
+        key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPreviewingSoundKey((current) => (current === key ? null : current));
+    }
+  };
+
   const draft = draftSettings;
 
   return (
@@ -216,6 +260,9 @@ export default function App() {
                 updateDraft={updateDraft}
                 disabled={!isReady}
                 inputDevices={inputDevices}
+                soundOptions={soundOptions}
+                previewingSoundKey={previewingSoundKey}
+                previewSound={previewSound}
                 permissions={permissions}
                 isRefreshingPermissions={isRefreshingPermissions}
                 permissionError={permissionError}
@@ -312,6 +359,9 @@ function RecordingPane({
   updateDraft,
   disabled,
   inputDevices,
+  soundOptions,
+  previewingSoundKey,
+  previewSound,
   permissions,
   isRefreshingPermissions,
   permissionError,
@@ -319,15 +369,15 @@ function RecordingPane({
 }: PaneProps & {
   disabled: boolean;
   inputDevices: string[];
+  soundOptions: SoundOption[];
+  previewingSoundKey: string | null;
+  previewSound: (key: string, path: string | null) => Promise<void>;
   permissions: PermissionsStatus | null;
   isRefreshingPermissions: boolean;
   permissionError: string | null;
   refreshPermissions: () => Promise<void>;
 }) {
   const { t } = useTranslation();
-  const startEnabled = draft["recording.sounds.start"] !== null;
-  const stopEnabled = draft["recording.sounds.stop"] !== null;
-  const errorEnabled = draft["recording.sounds.error"] !== null;
   const selectedInputDevice = draft["recording.microphone.input_device"];
   const selectedInputDeviceValue =
     typeof selectedInputDevice === "string" ? selectedInputDevice : SYSTEM_DEFAULT_INPUT_DEVICE;
@@ -421,45 +471,42 @@ function RecordingPane({
           <Separator />
 
           <SettingRow title={t("recording.soundStart.title")} description={t("recording.soundStart.description")}>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={startEnabled}
-                onCheckedChange={(checked) =>
-                  updateDraft("recording.sounds.start", checked ? (draft["recording.sounds.start"] ?? "sounds/start.wav") : null)
-                }
-              />
-              <Button variant="outline" size="sm" disabled>
-                {t("common.edit")}
-              </Button>
-            </div>
+            <SoundControl
+              settingKey="recording.sounds.start"
+              slot="start"
+              value={draft["recording.sounds.start"] as string | null}
+              options={soundOptions}
+              disabled={disabled}
+              previewingSoundKey={previewingSoundKey}
+              onChange={(value) => updateDraft("recording.sounds.start", value)}
+              onPreview={previewSound}
+            />
           </SettingRow>
 
           <SettingRow title={t("recording.soundEnd.title")} description={t("recording.soundEnd.description")}>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={stopEnabled}
-                onCheckedChange={(checked) =>
-                  updateDraft("recording.sounds.stop", checked ? (draft["recording.sounds.stop"] ?? "sounds/stop.wav") : null)
-                }
-              />
-              <Button variant="outline" size="sm" disabled>
-                {t("common.edit")}
-              </Button>
-            </div>
+            <SoundControl
+              settingKey="recording.sounds.stop"
+              slot="stop"
+              value={draft["recording.sounds.stop"] as string | null}
+              options={soundOptions}
+              disabled={disabled}
+              previewingSoundKey={previewingSoundKey}
+              onChange={(value) => updateDraft("recording.sounds.stop", value)}
+              onPreview={previewSound}
+            />
           </SettingRow>
 
           <SettingRow title={t("recording.soundError.title")} description={t("recording.soundError.description")}>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={errorEnabled}
-                onCheckedChange={(checked) =>
-                  updateDraft("recording.sounds.error", checked ? (draft["recording.sounds.error"] ?? "sounds/error_1.wav") : null)
-                }
-              />
-              <Button variant="outline" size="sm" disabled>
-                {t("common.edit")}
-              </Button>
-            </div>
+            <SoundControl
+              settingKey="recording.sounds.error"
+              slot="error"
+              value={draft["recording.sounds.error"] as string | null}
+              options={soundOptions}
+              disabled={disabled}
+              previewingSoundKey={previewingSoundKey}
+              onChange={(value) => updateDraft("recording.sounds.error", value)}
+              onPreview={previewSound}
+            />
           </SettingRow>
 
           <SettingRow title={t("recording.pauseMedia.title")} description={t("recording.pauseMedia.description")}>
@@ -480,6 +527,154 @@ function PermissionBadge({ label, state }: { label: string; state?: PermissionSt
     <SettingsBadge tone={tone} icon={<Icon className="size-3" aria-hidden="true" />}>
       {label}
     </SettingsBadge>
+  );
+}
+
+function SoundControl({
+  settingKey,
+  slot,
+  value,
+  options,
+  disabled,
+  previewingSoundKey,
+  onChange,
+  onPreview,
+}: {
+  settingKey: string;
+  slot: SoundSlot;
+  value: string | null;
+  options: SoundOption[];
+  disabled: boolean;
+  previewingSoundKey: string | null;
+  onChange: (value: string | null) => void;
+  onPreview: (key: string, path: string | null) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const isPreviewing = previewingSoundKey === settingKey;
+
+  return (
+    <div className="flex items-center gap-2">
+      <SoundSelect
+        value={value}
+        slot={slot}
+        options={options}
+        disabled={disabled}
+        onChange={onChange}
+      />
+      <Button
+        variant="outline"
+        size="icon"
+        disabled={disabled || !isTauri() || value === null || isPreviewing}
+        onClick={() => void onPreview(settingKey, value)}
+        aria-label={t("common.preview")}
+        title={t("common.preview")}
+      >
+        <Play className="size-4" aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}
+
+function SoundSelect({
+  value,
+  slot,
+  options,
+  disabled,
+  onChange,
+}: {
+  value: string | null;
+  slot: SoundSlot;
+  options: SoundOption[];
+  disabled: boolean;
+  onChange: (value: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const noneValue = "__none__";
+  const customValue = "__custom__";
+  const optionPaths = options.map((option) => soundOptionPath(option));
+  const isCustomSelected = value !== null && !optionPaths.includes(value);
+  const selectValue = value === null ? noneValue : value;
+
+  const handleChange = async (next: string) => {
+    if (next === noneValue) {
+      onChange(null);
+      return;
+    }
+
+    if (next !== customValue) {
+      onChange(next);
+      return;
+    }
+
+    if (!isTauri()) {
+      return;
+    }
+
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "WAV", extensions: ["wav"] }],
+      });
+
+      if (typeof selected !== "string") {
+        return;
+      }
+
+      const imported = await tauriInvoke<string>("import_custom_sound", { path: selected, slot });
+      onChange(imported);
+    } catch (error) {
+      logger.error("failed to import custom sound", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  return (
+    <Select
+      value={selectValue}
+      disabled={disabled}
+      onValueChange={(next) => void handleChange(next)}
+    >
+      <SelectTrigger className="w-64">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={noneValue}>{t("common.none")}</SelectItem>
+        {options.map((option) => (
+          <SelectItem key={option.id} value={soundOptionPath(option)}>
+            {option.label}
+          </SelectItem>
+        ))}
+        {isCustomSelected ? (
+          <SelectItem value={value}>
+            <FileNameLabel fileName={fileNameFromPath(value)} />
+          </SelectItem>
+        ) : null}
+        <SelectItem value={customValue}>{t("common.custom")}</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
+function soundOptionPath(option: SoundOption): string {
+  return `sounds/${option.file}`;
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function FileNameLabel({ fileName }: { fileName: string }) {
+  const extensionIndex = fileName.lastIndexOf(".");
+  const extension = extensionIndex > 0 ? fileName.slice(extensionIndex) : "";
+  const base = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
+
+  return (
+    <span className="flex min-w-0 max-w-full items-center">
+      <span className="min-w-0 truncate">{base}</span>
+      {extension ? <span className="shrink-0">{extension}</span> : null}
+    </span>
   );
 }
 

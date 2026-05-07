@@ -126,17 +126,17 @@
     },
     "recording.sounds.start": {
       "type": ["string", "null"],
-      "default": "sounds/start.wav",
+      "default": "sounds/sine_transition_start.wav",
       "x-ui": { "section": "recording", "label": "recording.soundStart.title" }
     },
     "recording.sounds.stop": {
       "type": ["string", "null"],
-      "default": "sounds/stop.wav",
+      "default": "sounds/sine_transition_stop.wav",
       "x-ui": { "section": "recording", "label": "recording.soundEnd.title" }
     },
     "recording.sounds.error": {
       "type": ["string", "null"],
-      "default": "sounds/error_1.wav",
+      "default": "sounds/sine_error.wav",
       "x-ui": { "section": "recording", "label": "recording.soundError.title" }
     },
     "recording.sounds.volume": {

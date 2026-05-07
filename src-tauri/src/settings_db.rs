@@ -62,6 +62,7 @@ impl SettingsDb {
             *current = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
         }
 
+        settings_schema::normalize_settings(&mut settings);
         settings_schema::validate_settings(&settings)?;
         self.save_settings(&settings).await?;
         Ok(settings)

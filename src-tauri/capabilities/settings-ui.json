@@ -7,6 +7,7 @@
     "core:default",
     "log:default",
     "autostart:default",
+    "dialog:allow-open",
     "sql:default",
     "sql:allow-execute",
     "settings-ui-commands"

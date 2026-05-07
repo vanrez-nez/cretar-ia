@@ -4,7 +4,10 @@
     "remove": "Eliminar",
     "refresh": "Actualizar",
     "refreshing": "Actualizando...",
+    "preview": "Previsualizar",
     "default": "Predeterminado",
+    "none": "Ninguno",
+    "custom": "Personalizado...",
     "unavailable": "No disponible",
     "systemDefault": "Predeterminado del sistema",
     "website": "Sitio web"

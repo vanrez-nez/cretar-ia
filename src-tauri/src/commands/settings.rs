@@ -1,7 +1,11 @@
 use crate::config::AppConfig;
 use crate::permissions::PermissionsStatus;
 use crate::settings_db::SettingsDb;
+use rodio::Source;
 use serde_json::Value;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -36,6 +40,80 @@ pub async fn open_config_file(storage: State<'_, SettingsDb>) -> Result<(), Stri
 #[tauri::command]
 pub async fn list_input_devices() -> Result<Vec<String>, String> {
     Ok(crate::audio::available_input_device_names())
+}
+
+#[tauri::command]
+pub async fn list_sound_options() -> Result<Vec<crate::config::SoundOption>, String> {
+    crate::config::sound_options().map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn import_custom_sound(
+    path: String,
+    slot: String,
+    storage: State<'_, SettingsDb>,
+) -> Result<String, String> {
+    let slot = match slot.as_str() {
+        "start" | "stop" | "error" => slot,
+        _ => return Err("invalid custom sound slot".to_string()),
+    };
+    let source = Path::new(&path);
+    if !source.is_file() {
+        return Err("selected sound file does not exist".to_string());
+    }
+
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("wav") {
+        return Err("selected sound file must be a WAV file".to_string());
+    }
+    hound::WavReader::open(source)
+        .map_err(|err| format!("selected sound file is not a valid WAV file: {err}"))?;
+
+    let custom_dir = storage.app_data_dir().join("sounds").join("custom").join(&slot);
+    if custom_dir.exists() {
+        std::fs::remove_dir_all(&custom_dir).map_err(|err| err.to_string())?;
+    }
+    std::fs::create_dir_all(&custom_dir).map_err(|err| err.to_string())?;
+
+    let file_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(sanitize_filename)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "custom.wav".to_string());
+    let target = custom_dir.join(&file_name);
+    std::fs::copy(source, &target).map_err(|err| err.to_string())?;
+
+    Ok(format!("sounds/custom/{slot}/{file_name}"))
+}
+
+#[tauri::command]
+pub async fn preview_sound(
+    path: Option<String>,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    let path = path.ok_or_else(|| "no sound selected".to_string())?;
+    let raw_path = std::path::PathBuf::from(&path);
+    let resolved = if raw_path.is_absolute() {
+        raw_path
+    } else {
+        storage.app_data_dir().join(raw_path)
+    };
+    let file = File::open(&resolved)
+        .map_err(|err| format!("failed to open sound preview {}: {err}", resolved.display()))?;
+    let source = rodio::Decoder::new(BufReader::new(file))
+        .map_err(|err| format!("failed to decode sound preview {}: {err}", resolved.display()))?;
+    let (_stream, handle) = rodio::OutputStream::try_default()
+        .map_err(|err| format!("failed to initialize sound preview output: {err}"))?;
+    let sink = rodio::Sink::try_new(&handle)
+        .map_err(|err| format!("failed to create sound preview sink: {err}"))?;
+
+    sink.append(source.convert_samples::<f32>());
+    sink.sleep_until_end();
+    Ok(())
 }
 
 #[tauri::command]
@@ -87,6 +165,19 @@ pub(crate) fn apply_saved_config(
 
 fn command_error(err: anyhow::Error) -> String {
     err.to_string()
+}
+
+fn sanitize_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn requires_runtime_restart(previous: Option<&AppConfig>, next: &AppConfig) -> bool {

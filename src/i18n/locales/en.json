@@ -4,7 +4,10 @@
     "remove": "Remove",
     "refresh": "Refresh",
     "refreshing": "Refreshing...",
+    "preview": "Preview",
     "default": "Default",
+    "none": "None",
+    "custom": "Custom...",
     "unavailable": "Unavailable",
     "systemDefault": "System default",
     "website": "Website"

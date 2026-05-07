@@ -1,0 +1,34 @@
+{
+  "sounds": [
+    {
+      "id": "sine_toggle_on",
+      "label": "Sine Toggle On",
+      "file": "sine_toggle_start.wav"
+    },
+    {
+      "id": "sine_toggle_off",
+      "label": "Sine Toggle Off",
+      "file": "sine_toggle_stop.wav"
+    },
+    {
+      "id": "sine_transition_start",
+      "label": "Sine Transition Start",
+      "file": "sine_transition_start.wav"
+    },
+    {
+      "id": "sine_transition_stop",
+      "label": "Sine Transition Stop",
+      "file": "sine_transition_stop.wav"
+    },
+    {
+      "id": "sine_error",
+      "label": "Sine Error",
+      "file": "sine_error.wav"
+    },
+    {
+      "id": "sine_notification",
+      "label": "Sine Notification",
+      "file": "sine_notification.wav"
+    }
+  ]
+}

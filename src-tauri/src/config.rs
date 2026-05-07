@@ -401,11 +401,29 @@ impl Default for AudioCueConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            start_sound: Some("sounds/start.wav".to_string()),
-            stop_sound: Some("sounds/stop.wav".to_string()),
-            error_sound: Some("sounds/error_1.wav".to_string()),
+            start_sound: Some("sounds/sine_transition_start.wav".to_string()),
+            stop_sound: Some("sounds/sine_transition_stop.wav".to_string()),
+            error_sound: Some("sounds/sine_error.wav".to_string()),
             volume: 0.6,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoundManifest {
+    pub sounds: Vec<SoundOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SoundOption {
+    pub id: String,
+    pub label: String,
+    pub file: String,
+}
+
+impl SoundOption {
+    pub fn settings_path(&self) -> String {
+        format!("sounds/{}", self.file)
     }
 }
 
@@ -689,13 +707,9 @@ impl AppConfig {
         fs::create_dir_all(&target_dir)
             .with_context(|| format!("creating sound cue directory {}", target_dir.display()))?;
 
-        let assets: [(&str, &[u8]); 3] = [
-            ("start.wav", include_bytes!("../sounds/start.wav")),
-            ("stop.wav", include_bytes!("../sounds/stop.wav")),
-            ("error_1.wav", include_bytes!("../sounds/error_1.wav")),
-        ];
-
-        for (name, bytes) in assets {
+        for option in sound_options()? {
+            let bytes = bundled_sound_bytes(&option.file)?;
+            let name = option.file;
             let target = target_dir.join(name);
             if !target.exists() {
                 fs::write(&target, bytes)
@@ -704,5 +718,23 @@ impl AppConfig {
         }
 
         Ok(())
+    }
+}
+
+pub fn sound_options() -> Result<Vec<SoundOption>> {
+    let manifest: SoundManifest = serde_json::from_str(include_str!("../sounds/manifest.json"))
+        .context("parsing sound manifest")?;
+    Ok(manifest.sounds)
+}
+
+fn bundled_sound_bytes(file: &str) -> Result<&'static [u8]> {
+    match file {
+        "sine_error.wav" => Ok(include_bytes!("../sounds/sine_error.wav")),
+        "sine_notification.wav" => Ok(include_bytes!("../sounds/sine_notification.wav")),
+        "sine_toggle_start.wav" => Ok(include_bytes!("../sounds/sine_toggle_start.wav")),
+        "sine_toggle_stop.wav" => Ok(include_bytes!("../sounds/sine_toggle_stop.wav")),
+        "sine_transition_start.wav" => Ok(include_bytes!("../sounds/sine_transition_start.wav")),
+        "sine_transition_stop.wav" => Ok(include_bytes!("../sounds/sine_transition_stop.wav")),
+        other => Err(anyhow!("sound manifest references unknown bundled file '{other}'")),
     }
 }

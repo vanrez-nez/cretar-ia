@@ -91,6 +91,7 @@ pub fn run() -> Result<()> {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -115,6 +116,9 @@ pub fn run() -> Result<()> {
             settings::get_config_path,
             settings::open_config_file,
             settings::list_input_devices,
+            settings::list_sound_options,
+            settings::import_custom_sound,
+            settings::preview_sound,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,

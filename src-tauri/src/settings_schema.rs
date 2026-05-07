@@ -47,6 +47,27 @@ pub fn validate_settings(settings: &Value) -> Result<()> {
     Ok(())
 }
 
+pub fn normalize_settings(settings: &mut Value) {
+    normalize_sound_setting(
+        settings,
+        "recording.sounds.start",
+        "sounds/start.wav",
+        "sounds/sine_transition_start.wav",
+    );
+    normalize_sound_setting(
+        settings,
+        "recording.sounds.stop",
+        "sounds/stop.wav",
+        "sounds/sine_transition_stop.wav",
+    );
+    normalize_sound_setting(
+        settings,
+        "recording.sounds.error",
+        "sounds/error_1.wav",
+        "sounds/sine_error.wav",
+    );
+}
+
 pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
     validate_settings(settings)?;
 
@@ -124,6 +145,16 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
 
     cfg.validate()?;
     Ok(cfg)
+}
+
+fn normalize_sound_setting(settings: &mut Value, key: &str, legacy: &str, next: &str) {
+    let Some(value) = settings.get_mut(key) else {
+        return;
+    };
+
+    if value.as_str() == Some(legacy) {
+        *value = Value::String(next.to_string());
+    }
 }
 
 fn setting<T>(settings: &Value, key: &str) -> Result<T>
