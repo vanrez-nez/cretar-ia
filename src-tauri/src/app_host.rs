@@ -10,13 +10,10 @@ use crate::recording::command_bus::CommandBusTx;
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, Theme, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const SETTINGS_WINDOW_LABEL: &str = "settings";
-const SETTINGS_BACKGROUND: tauri::utils::config::Color =
-    tauri::utils::config::Color(17, 19, 22, 255);
-
 #[derive(Clone)]
 pub struct AppRuntimeState {
     inner: Arc<Mutex<Option<AppRuntime>>>,
@@ -120,8 +117,6 @@ pub fn open_settings_window(app: &AppHandle) -> Result<()> {
         .title("Cretar IA Settings")
         .inner_size(880.0, 490.0)
         .resizable(true)
-        .theme(Some(Theme::Dark))
-        .background_color(SETTINGS_BACKGROUND)
         .build()
         .map(|_| ())
         .map_err(|err| anyhow!(err.to_string()))
