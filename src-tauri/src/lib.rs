@@ -11,6 +11,8 @@ mod openrouter;
 mod permissions;
 #[cfg(feature = "settings-ui")]
 mod app_host;
+#[cfg(feature = "settings-ui")]
+mod settings_db;
 mod runtime;
 mod recording;
 mod tray;
@@ -18,35 +20,23 @@ mod tray;
 mod commands;
 
 use anyhow::Result;
-use config::AppConfig;
+use std::path::Path;
 
 pub fn run() -> Result<()> {
-    let cfg = AppConfig::load_or_create()?;
-    cfg.validate().map_err(|err| anyhow::anyhow!("{err}"))?;
-    init_logging(&cfg)?;
-
-    log::info!(
-        "starting app v{} with interaction {:?} and shortcut {}",
-        env!("CARGO_PKG_VERSION"),
-        cfg.interaction.mode,
-        cfg.interaction.shortcut
-    );
-    log::info!("config path: {}", AppConfig::config_path().display());
-
     #[cfg(feature = "settings-ui")]
     {
-        return app_host::run(cfg);
+        return app_host::run();
     }
 
     #[cfg(not(feature = "settings-ui"))]
     {
-        let _ = cfg;
         Ok(())
     }
 }
 
-fn init_logging(cfg: &AppConfig) -> Result<()> {
-    let _ = std::fs::create_dir_all(cfg.base_dir_path().join("logs"));
+pub(crate) fn init_logging(base_dir: &Path) -> Result<()> {
+    let log_dir = base_dir.join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
 
     let logger = || {
         fern::Dispatch::new()
@@ -63,7 +53,7 @@ fn init_logging(cfg: &AppConfig) -> Result<()> {
         .chain(std::io::stdout())
     };
 
-    match fern::log_file(config::AppConfig::log_file_path()) {
+    match fern::log_file(log_dir.join("app.log")) {
         Ok(file) => logger().chain(file).apply()?,
         Err(err) => {
             eprintln!("failed to initialize file logger: {err}");

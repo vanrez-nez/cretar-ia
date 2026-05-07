@@ -29,7 +29,7 @@ pub struct AppTray {
 
 pub fn create_tray(app: &AppHandle, cfg: &AppConfig) -> Result<AppTray> {
     let icons = IconSet::new()?;
-    let menu = build_menu(app)?;
+    let menu = build_menu(app, cfg)?;
     let icon = TrayIconBuilder::with_id("main")
         .tooltip(&cfg.tray.tooltip.idle)
         .icon(icons.icon_for_state(ICON_STATE_IDLE))
@@ -58,9 +58,9 @@ impl AppTray {
         }
     }
 
-    pub fn refresh_menu(&self, app: &AppHandle) {
+    pub fn refresh_menu(&self, app: &AppHandle, config: &AppConfig) {
         log::info!("tray menu rebuild requested");
-        match build_menu(app) {
+        match build_menu(app, config) {
             Ok(menu) => {
                 if let Err(err) = self.icon.set_menu(Some(menu)) {
                     log::warn!("failed to refresh tray menu: {err}");
@@ -90,16 +90,7 @@ pub fn status_to_icon(status: &SessionStatus) -> &'static str {
     }
 }
 
-pub fn save_selected_input_device(device_name: &str) -> Result<()> {
-    let mut config = AppConfig::load_or_create().context("loading config for input device selection")?;
-    config.audio.input_device = Some(device_name.to_string());
-    config
-        .save_validated_to(AppConfig::config_path())
-        .context("saving selected input device")
-}
-
-fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
-    let config = AppConfig::load_or_create().unwrap_or_default();
+fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
     log::info!(
         "tray menu build config fingerprint={}",
         serde_json::json!({
@@ -120,8 +111,8 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
     menu.append(&devices_label)?;
 
     let device_names = available_input_device_names();
-    let selected_device = selected_input_device();
-    let configured_device = configured_input_device();
+    let selected_device = selected_input_device(config);
+    let configured_device = configured_input_device(config);
 
     if device_names.is_empty() {
         let empty = MenuItem::with_id(app, "input-device:none", i18n::t_config(&config, "tray.noInputDevices"), false, None::<&str>)?;
@@ -162,18 +153,15 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
     Ok(menu)
 }
 
-fn selected_input_device() -> Option<String> {
-    let config = AppConfig::load_or_create().ok()?;
+fn selected_input_device(config: &AppConfig) -> Option<String> {
     effective_input_device_name(
         config.audio.input_device.as_deref(),
         config.audio.auto_switch_to_primary_device,
     )
 }
 
-fn configured_input_device() -> Option<String> {
-    AppConfig::load_or_create()
-        .ok()
-        .and_then(|config| config.audio.input_device)
+fn configured_input_device(config: &AppConfig) -> Option<String> {
+    config.audio.input_device.clone()
 }
 
 #[derive(Clone)]

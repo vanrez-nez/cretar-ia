@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 mod migration;
 
@@ -15,6 +16,7 @@ const DEFAULT_WORKER_QUEUE_CAPACITY: u32 = 128;
 const DEFAULT_SETTLE_TIMEOUT_MS: u64 = 800;
 const DEFAULT_MAX_RECORDING_DURATION_SECS: u64 = 0;
 const DEFAULT_OPENROUTER_MAX_AUDIO_BYTES: u64 = 24 * 1024 * 1024;
+static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -525,16 +527,19 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn set_app_data_dir(path: PathBuf) {
+        let _ = APP_DATA_DIR.set(path);
+    }
+
     pub fn home_dir() -> PathBuf {
         home_dir().unwrap_or_else(|| PathBuf::from("."))
     }
 
-    pub fn config_path() -> PathBuf {
-        Self::home_dir().join(".cretar-ia").join("config.json")
-    }
-
     pub fn base_dir() -> PathBuf {
-        Self::home_dir().join(".cretar-ia")
+        APP_DATA_DIR
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Self::home_dir().join(".cretar-ia"))
     }
 
     pub fn base_dir_path(&self) -> PathBuf {
@@ -558,10 +563,6 @@ impl AppConfig {
         value
             .as_deref()
             .map(|value| Self::resolve_relative(&self.base_dir_path(), value))
-    }
-
-    pub fn log_file_path() -> PathBuf {
-        Self::base_dir().join("logs").join("app.log")
     }
 
     pub fn effective_repeat_debounce_ms(&self) -> u64 {
@@ -683,33 +684,7 @@ impl AppConfig {
         Ok(cfg)
     }
 
-    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref();
-        let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        if raw.trim().is_empty() {
-            return Err(anyhow!("{} is empty", path.display()));
-        }
-        Self::parse(&raw)
-    }
-
-    pub fn load_or_create() -> Result<Self> {
-        Self::seed_default_sound_cues()?;
-
-        let path = Self::config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-        }
-
-        if path.exists() {
-            return Self::load_from_path(&path);
-        }
-
-        let cfg = Self::default();
-        cfg.save_validated_to(&path)?;
-        Ok(cfg)
-    }
-
-    fn seed_default_sound_cues() -> Result<()> {
+    pub(crate) fn seed_default_sound_cues() -> Result<()> {
         let target_dir = Self::base_dir().join("sounds");
         fs::create_dir_all(&target_dir)
             .with_context(|| format!("creating sound cue directory {}", target_dir.display()))?;
@@ -729,16 +704,5 @@ impl AppConfig {
         }
 
         Ok(())
-    }
-
-    pub fn save_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let payload = serde_json::to_string_pretty(self)?;
-        fs::write(path, payload)?;
-        Ok(())
-    }
-
-    pub fn save_validated_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        self.validate()?;
-        self.save_to(path)
     }
 }

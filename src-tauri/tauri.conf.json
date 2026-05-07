@@ -33,5 +33,10 @@
       ]
     },
     "windows": []
+  },
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:cretar-ia.db"]
+    }
   }
 }

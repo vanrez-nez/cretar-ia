@@ -1,20 +1,12 @@
-use crate::commands::settings_service::SettingsService;
 use crate::config::AppConfig;
 use crate::permissions::PermissionsStatus;
+use crate::settings_db::SettingsDb;
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
-#[derive(Clone)]
-pub struct SettingsState {
-    pub config_path: String,
-}
-
 #[tauri::command]
-pub async fn load_config(state: State<'_, SettingsState>) -> Result<AppConfig, String> {
-    state
-        .service()
-        .load()
-        .map_err(SettingsService::command_error)
+pub async fn load_config(storage: State<'_, SettingsDb>) -> Result<AppConfig, String> {
+    storage.load_config().await.map_err(command_error)
 }
 
 #[tauri::command]
@@ -22,18 +14,17 @@ pub async fn save_config(
     config: Value,
     save_id: Option<u64>,
     app: AppHandle,
-    state: State<'_, SettingsState>,
+    storage: State<'_, SettingsDb>,
 ) -> Result<AppConfig, String> {
-    let service = state.service();
-    let previous = service.load().ok();
+    let previous = storage.load_config().await.ok();
     log::info!(
         "settings save received save_id={:?} fingerprint={}",
         save_id,
         config_value_fingerprint(&config)
     );
-    let config = service
-        .save_value(config)
-        .map_err(SettingsService::command_error)?;
+    let config = serde_json::from_value::<AppConfig>(config)
+        .map_err(|err| format!("invalid config schema: {err}"))?;
+    let config = storage.save_config(config).await.map_err(command_error)?;
     log::info!(
         "settings save persisted save_id={:?} fingerprint={}",
         save_id,
@@ -44,39 +35,33 @@ pub async fn save_config(
 }
 
 #[tauri::command]
-pub async fn get_config_path(state: State<'_, SettingsState>) -> Result<String, String> {
-    Ok(state.config_path.clone())
+pub async fn get_config_path(storage: State<'_, SettingsDb>) -> Result<String, String> {
+    Ok(storage.db_path().to_string_lossy().into_owned())
 }
 
 #[tauri::command]
-pub async fn open_config_file(state: State<'_, SettingsState>) -> Result<(), String> {
-    tauri_plugin_opener::open_path(&state.config_path, None::<&str>)
+pub async fn open_config_file(storage: State<'_, SettingsDb>) -> Result<(), String> {
+    tauri_plugin_opener::open_path(storage.db_path(), None::<&str>)
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub async fn get_settings(state: State<'_, SettingsState>) -> Result<AppConfig, String> {
-    state
-        .service()
-        .load()
-        .map_err(SettingsService::command_error)
+pub async fn get_settings(storage: State<'_, SettingsDb>) -> Result<AppConfig, String> {
+    storage.load_config().await.map_err(command_error)
 }
 
 #[tauri::command]
 pub async fn update_settings(
     app: AppHandle,
-    state: State<'_, SettingsState>,
+    storage: State<'_, SettingsDb>,
     config: AppConfig,
 ) -> Result<(), String> {
-    let service = state.service();
-    let previous = service.load().ok();
+    let previous = storage.load_config().await.ok();
     log::info!(
         "settings typed update received fingerprint={}",
         config_fingerprint(&config)
     );
-    service
-        .save(config.clone())
-        .map_err(SettingsService::command_error)?;
+    let config = storage.save_config(config).await.map_err(command_error)?;
     log::info!(
         "settings typed update persisted fingerprint={}",
         config_fingerprint(&config)
@@ -100,20 +85,6 @@ pub async fn request_accessibility_permission() -> Result<crate::permissions::Pe
     Ok(crate::permissions::request_accessibility_permission().await)
 }
 
-pub fn build_settings_state() -> Result<SettingsState, String> {
-    let service = SettingsService::prepare_default().map_err(SettingsService::command_error)?;
-
-    Ok(SettingsState {
-        config_path: service.config_path().to_string_lossy().into_owned(),
-    })
-}
-
-impl SettingsState {
-    fn service(&self) -> SettingsService {
-        SettingsService::new(&self.config_path)
-    }
-}
-
 fn apply_saved_config(
     app: &AppHandle,
     previous: Option<&AppConfig>,
@@ -125,7 +96,7 @@ fn apply_saved_config(
         save_id,
         config_fingerprint(config)
     );
-    crate::app_host::refresh_tray_menu(app);
+    crate::app_host::refresh_tray_menu(app, config);
     log::info!("settings tray refresh finished save_id={:?}", save_id);
 
     let should_restart = requires_runtime_restart(previous, config);
@@ -144,6 +115,10 @@ fn apply_saved_config(
     }
 
     Ok(())
+}
+
+fn command_error(err: anyhow::Error) -> String {
+    err.to_string()
 }
 
 fn requires_runtime_restart(previous: Option<&AppConfig>, next: &AppConfig) -> bool {

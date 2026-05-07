@@ -8,11 +8,13 @@ use crate::i18n;
 use crate::openrouter::OpenRouterClient;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
+use crate::settings_db::{SettingsDb, SETTINGS_DB_URL};
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_sql::{Migration, MigrationKind};
 
 const SETTINGS_WINDOW_LABEL: &str = "settings";
 #[derive(Clone)]
@@ -40,11 +42,28 @@ impl AppRuntimeState {
     }
 }
 
-pub fn run(cfg: AppConfig) -> Result<()> {
+fn settings_migrations() -> Vec<Migration> {
+    vec![Migration {
+        version: 1,
+        description: "create_settings_table",
+        sql: "CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+        kind: MigrationKind::Up,
+    }]
+}
+
+pub fn run() -> Result<()> {
     let runtime_state = AppRuntimeState::new();
-    let settings_state = settings::build_settings_state().map_err(anyhow::Error::msg)?;
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations(SETTINGS_DB_URL, settings_migrations())
+                .build(),
+        )
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(handle_global_shortcut)
@@ -58,7 +77,6 @@ pub fn run(cfg: AppConfig) -> Result<()> {
 
     builder
         .manage(runtime_state.clone())
-        .manage(settings_state)
         .invoke_handler(tauri::generate_handler![
             settings::load_config,
             settings::save_config,
@@ -70,8 +88,22 @@ pub fn run(cfg: AppConfig) -> Result<()> {
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
         ])
-        .setup(move |app| {
+        .setup(|app| {
             let app_handle = app.handle().clone();
+            let storage = tauri::async_runtime::block_on(SettingsDb::connect(&app_handle))
+                .map_err(|err| anyhow!(err.to_string()))?;
+            let cfg = tauri::async_runtime::block_on(storage.load_config())
+                .map_err(|err| anyhow!(err.to_string()))?;
+            crate::init_logging(storage.app_data_dir())
+                .map_err(|err| anyhow!(err.to_string()))?;
+            log::info!(
+                "starting app v{} with interaction {:?} and shortcut {}",
+                env!("CARGO_PKG_VERSION"),
+                cfg.interaction.mode,
+                cfg.interaction.shortcut
+            );
+            log::info!("settings database path: {}", storage.db_path().display());
+            app.manage(storage);
             let tray = tray::create_tray(&app_handle, &cfg)
                 .map_err(|err| anyhow!(err.to_string()))?;
             app.manage(tray);
@@ -114,11 +146,14 @@ pub fn open_settings_window(app: &AppHandle) -> Result<()> {
         return Ok(());
     }
 
+    let config = app
+        .try_state::<SettingsDb>()
+        .and_then(|storage| tauri::async_runtime::block_on(storage.load_config()).ok())
+        .or_else(|| current_config(app))
+        .unwrap_or_default();
+
     WebviewWindowBuilder::new(app, SETTINGS_WINDOW_LABEL, settings_url())
-        .title(i18n::t_config(
-            &AppConfig::load_or_create().unwrap_or_default(),
-            "tray.windowTitle",
-        ))
+        .title(i18n::t_config(&config, "tray.windowTitle"))
         .inner_size(880.0, 490.0)
         .resizable(true)
         .build()
@@ -141,9 +176,9 @@ pub fn restart_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     Ok(())
 }
 
-pub fn refresh_tray_menu(app: &AppHandle) {
+pub fn refresh_tray_menu(app: &AppHandle, config: &AppConfig) {
     if let Some(tray) = app.try_state::<AppTray>() {
-        tray.refresh_menu(app);
+        tray.refresh_menu(app, config);
     } else {
         log::warn!("tray refresh requested before tray state was available");
     }
@@ -202,6 +237,15 @@ fn stop_runtime(app: &AppHandle) {
         runtime.status_task.abort();
         runtime.orchestrator.abort();
     }
+}
+
+fn current_config(app: &AppHandle) -> Option<AppConfig> {
+    let state = app.try_state::<AppRuntimeState>()?;
+    state
+        .inner
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|runtime| runtime.cfg.clone()))
 }
 
 fn register_shortcut(app: &AppHandle, cfg: &AppConfig) -> Result<Option<Shortcut>> {
@@ -330,21 +374,33 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
         stop_runtime(app);
         app.exit(0);
     } else if let Some(device) = id.strip_prefix(tray::MENU_DEVICE_PREFIX) {
-        if let Err(err) = tray::save_selected_input_device(device) {
-            log::warn!("failed to save input device '{device}': {err}");
-            return;
-        }
-        match AppConfig::load_or_create() {
-            Ok(cfg) => {
-                if let Some(tray) = app.try_state::<AppTray>() {
-                    tray.refresh_menu(app);
+        let app = app.clone();
+        let device = device.to_string();
+        tauri::async_runtime::spawn(async move {
+            let Some(storage) = app.try_state::<SettingsDb>() else {
+                log::warn!("failed to save input device '{device}': settings database unavailable");
+                return;
+            };
+            let mut config = match storage.load_config().await {
+                Ok(config) => config,
+                Err(err) => {
+                    log::warn!("failed to load config for input device '{device}': {err}");
+                    return;
                 }
-                if let Err(err) = restart_runtime(app, cfg) {
-                    log::error!("failed to restart runtime after input device change: {err}");
+            };
+            config.audio.input_device = Some(device.clone());
+            let config = match storage.save_config(config).await {
+                Ok(config) => config,
+                Err(err) => {
+                    log::warn!("failed to save input device '{device}': {err}");
+                    return;
                 }
+            };
+            refresh_tray_menu(&app, &config);
+            if let Err(err) = restart_runtime(&app, config) {
+                log::error!("failed to restart runtime after input device change: {err}");
             }
-            Err(err) => log::error!("failed to reload config after input device change: {err}"),
-        }
+        });
     }
 }
 
