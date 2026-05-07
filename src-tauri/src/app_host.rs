@@ -4,6 +4,7 @@ use crate::config::{AppConfig, InteractionMode};
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
+use crate::i18n;
 use crate::openrouter::OpenRouterClient;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
@@ -114,7 +115,10 @@ pub fn open_settings_window(app: &AppHandle) -> Result<()> {
     }
 
     WebviewWindowBuilder::new(app, SETTINGS_WINDOW_LABEL, settings_url())
-        .title("Cretar IA Settings")
+        .title(i18n::t_config(
+            &AppConfig::load_or_create().unwrap_or_default(),
+            "tray.windowTitle",
+        ))
         .inner_size(880.0, 490.0)
         .resizable(true)
         .build()
@@ -123,6 +127,10 @@ pub fn open_settings_window(app: &AppHandle) -> Result<()> {
 }
 
 pub fn restart_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
+    log::info!(
+        "runtime restart requested fingerprint={}",
+        runtime_fingerprint(&cfg)
+    );
     stop_runtime(app);
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -133,8 +141,17 @@ pub fn restart_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     Ok(())
 }
 
+pub fn refresh_tray_menu(app: &AppHandle) {
+    if let Some(tray) = app.try_state::<AppTray>() {
+        tray.refresh_menu(app);
+    } else {
+        log::warn!("tray refresh requested before tray state was available");
+    }
+}
+
 fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     cfg.validate()?;
+    log::info!("runtime start applying fingerprint={}", runtime_fingerprint(&cfg));
     let runtime_state = app.state::<AppRuntimeState>().runtime_slot();
     let tray = app.state::<AppTray>().inner().clone();
     let cue = audio_cues::CuePlayer::new(&cfg.audio_cues, &cfg);
@@ -200,6 +217,20 @@ fn register_shortcut(app: &AppHandle, cfg: &AppConfig) -> Result<Option<Shortcut
 
     log::info!("registered global shortcut: {}", cfg.interaction.shortcut);
     Ok(Some(shortcut))
+}
+
+fn runtime_fingerprint(cfg: &AppConfig) -> String {
+    serde_json::json!({
+        "language": cfg.ui.language,
+        "mode": cfg.interaction.mode,
+        "shortcut": cfg.interaction.shortcut,
+        "input_device": cfg.audio.input_device,
+        "auto_switch_input": cfg.audio.auto_switch_to_primary_device,
+        "start_sound": cfg.audio_cues.start_sound,
+        "stop_sound": cfg.audio_cues.stop_sound,
+        "error_sound": cfg.audio_cues.error_sound,
+    })
+    .to_string()
 }
 
 fn handle_global_shortcut(

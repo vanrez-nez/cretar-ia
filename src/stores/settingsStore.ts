@@ -20,6 +20,8 @@ type SettingsState = {
 type InternalSettingsState = Omit<SettingsState, "fetchSettings" | "updateSettings">;
 
 const listeners = new Set<() => void>();
+let nextSaveId = 1;
+let latestSentSaveId = 0;
 let state: InternalSettingsState = {
   config: null,
   appState: DEFAULT_APP_RUNTIME_STATE,
@@ -87,6 +89,13 @@ const actions = {
     }
   },
   updateSettings: async (config: AppConfig) => {
+    const saveId = nextSaveId++;
+    latestSentSaveId = saveId;
+    console.info("[settings] save queued", {
+      saveId,
+      fingerprint: configFingerprint(config),
+    });
+
     setState({
       isSaving: true,
       error: null,
@@ -100,6 +109,11 @@ const actions = {
 
     try {
       if (!isTauri()) {
+        console.info("[settings] save resolved", {
+          saveId,
+          stale: saveId < latestSentSaveId,
+          fingerprint: configFingerprint(config),
+        });
         setState({
           config,
           isReady: true,
@@ -115,9 +129,25 @@ const actions = {
         return;
       }
 
-      await tauriInvoke<void>("save_config", { config });
+      console.info("[settings] save sent", {
+        saveId,
+        fingerprint: configFingerprint(config),
+      });
+      const savedConfig = await tauriInvoke<AppConfig>("save_config", { config, saveId });
+      console.info("[settings] save resolved", {
+        saveId,
+        stale: saveId < latestSentSaveId,
+        fingerprint: configFingerprint(savedConfig),
+      });
+      if (saveId < latestSentSaveId) {
+        console.warn("[settings] stale save response ignored", {
+          saveId,
+          latestSentSaveId,
+        });
+        return;
+      }
       setState({
-        config,
+        config: savedConfig,
         isSaving: false,
         isReady: true,
         appState: {
@@ -130,6 +160,12 @@ const actions = {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      console.error("[settings] save failed", {
+        saveId,
+        stale: saveId < latestSentSaveId,
+        fingerprint: configFingerprint(config),
+        error: message,
+      });
       setState({
         isSaving: false,
         error: message,
@@ -164,6 +200,19 @@ function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+function configFingerprint(config: AppConfig): Record<string, unknown> {
+  return {
+    language: config.ui?.language,
+    mode: config.interaction.mode,
+    shortcut: config.interaction.shortcut,
+    inputDevice: config.audio.input_device,
+    autoSwitchInput: config.audio.auto_switch_to_primary_device,
+    startSound: config.audio_cues.start_sound,
+    stopSound: config.audio_cues.stop_sound,
+    errorSound: config.audio_cues.error_sound,
   };
 }
 

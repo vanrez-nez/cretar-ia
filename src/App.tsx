@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,13 +14,15 @@ import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
 import { SettingsBadge } from "@/components/settings-badge";
 import { tauriInvoke } from "@/hooks/useTauriIPC";
+import i18n, { resolveAppLocale } from "@/i18n";
 import { useSettingsStore } from "./stores/settingsStore";
-import type { AppConfig, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
+import type { AppConfig, AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
 import { ShieldCheck, ShieldX } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
 export default function App() {
+  const { t } = useTranslation();
   const fetchSettings = useSettingsStore((s) => s.fetchSettings);
   const config = useSettingsStore((s) => s.config);
   const isReady = useSettingsStore((s) => s.isReady);
@@ -89,6 +92,7 @@ export default function App() {
       return;
     }
     setDraftConfig(config);
+    void i18n.changeLanguage(resolveAppLocale(config.ui?.language));
     skipNextAutosave.current = true;
     hasHydrated.current = true;
   }, [config]);
@@ -97,6 +101,7 @@ export default function App() {
     if (!draftConfig || !hasHydrated.current) {
       return;
     }
+    void i18n.changeLanguage(resolveAppLocale(draftConfig.ui?.language));
     if (skipNextAutosave.current) {
       skipNextAutosave.current = false;
       return;
@@ -128,9 +133,9 @@ export default function App() {
         {!draft ? (
           <Card className="m-5">
             <CardHeader>
-              <CardTitle>Loading settings</CardTitle>
+              <CardTitle>{t("loading.title")}</CardTitle>
               <CardDescription>
-                {isTauri() ? "Reading local configuration..." : "Browser preview uses default settings."}
+                {isTauri() ? t("loading.descriptionTauri") : t("loading.descriptionPreview")}
               </CardDescription>
             </CardHeader>
           </Card>
@@ -174,20 +179,42 @@ type PaneProps = {
 };
 
 function SystemPane({ draft, updateDraft }: PaneProps) {
+  const { t } = useTranslation();
+
   return (
     <div className="grid gap-4 h-full">
       <Card>
         <CardContent className="space-y-5">
-          <SettingRow title="Language" description="UI language support is not wired yet.">
-            <Input value="System default" disabled className="max-w-56" />
+          <SettingRow title={t("system.language.title")} description={t("system.language.description")}>
+            <Select
+              value={draft.ui?.language ?? "system"}
+              onValueChange={(value) =>
+                updateDraft((config) => ({
+                  ...config,
+                  ui: {
+                    ...config.ui,
+                    language: value as AppLanguage,
+                  },
+                }))
+              }
+            >
+              <SelectTrigger className="w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="system">{t("language.system")}</SelectItem>
+                <SelectItem value="en">{t("language.en")}</SelectItem>
+                <SelectItem value="es">{t("language.es")}</SelectItem>
+              </SelectContent>
+            </Select>
           </SettingRow>
-          <SettingRow title="Launch at start" description="Startup integration is planned for a later phase.">
+          <SettingRow title={t("system.launchAtStart.title")} description={t("system.launchAtStart.description")}>
             <Switch checked={false} disabled />
           </SettingRow>
-          <SettingRow title="Save text history" description="Transcript history storage is planned for a later phase.">
+          <SettingRow title={t("system.saveTextHistory.title")} description={t("system.saveTextHistory.description")}>
             <Switch checked={false} disabled />
           </SettingRow>
-          <SettingRow title="Save input audio" description="Keep recordings after successful processing.">
+          <SettingRow title={t("system.saveInputAudio.title")} description={t("system.saveInputAudio.description")}>
             <Switch
               checked={!draft.output.cleanup_recording_after_processing}
               onCheckedChange={(checked) =>
@@ -206,12 +233,12 @@ function SystemPane({ draft, updateDraft }: PaneProps) {
 
       <Card className="h-full">
         <CardHeader>
-          <CardTitle>Overview Stats</CardTitle>
+          <CardTitle>{t("system.stats.title")}</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-3 items-start gap-3">
-          <StatRow label="Transcripts Count" value="0" />
-          <StatRow label="Words Transcribed" value="0" />
-          <StatRow label="Minutes Recorded" value="0" />
+          <StatRow label={t("system.stats.transcripts")} value="0" />
+          <StatRow label={t("system.stats.words")} value="0" />
+          <StatRow label={t("system.stats.minutes")} value="0" />
         </CardContent>
       </Card>
     </div>
@@ -233,6 +260,7 @@ function RecordingPane({
   permissionError: string | null;
   refreshPermissions: () => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const startEnabled = draft.audio_cues.start_sound !== null;
   const stopEnabled = draft.audio_cues.stop_sound !== null;
   const errorEnabled = draft.audio_cues.error_sound !== null;
@@ -241,21 +269,19 @@ function RecordingPane({
     <div className="grid gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>Permissions</CardTitle>
-          <CardDescription>
-            Refresh checks current macOS permission status and requests missing permissions when available.
-          </CardDescription>
+          <CardTitle>{t("permissions.title")}</CardTitle>
+          <CardDescription>{t("permissions.description")}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-3">
-          <PermissionBadge label="Microphone" state={permissions?.microphone} />
-          <PermissionBadge label="Accessibility" state={permissions?.accessibility} />
+          <PermissionBadge label={t("permissions.microphone")} state={permissions?.microphone} />
+          <PermissionBadge label={t("permissions.accessibility")} state={permissions?.accessibility} />
           <Button
             variant="outline"
             size="sm"
             disabled={isRefreshingPermissions}
             onClick={() => void refreshPermissions()}
           >
-            {isRefreshingPermissions ? "Refreshing..." : "Refresh"}
+            {isRefreshingPermissions ? t("common.refreshing") : t("common.refresh")}
           </Button>
           {permissionError ? (
             <span className="text-xs text-destructive">{permissionError}</span>
@@ -265,7 +291,7 @@ function RecordingPane({
 
       <Card>
         <CardContent className="space-y-5">
-          <SettingRow title="Mode" description="Choose how the hotkey controls recording.">
+          <SettingRow title={t("recording.mode.title")} description={t("recording.mode.description")}>
             <Select
               value={draft.interaction.mode}
               disabled={disabled}
@@ -283,13 +309,13 @@ function RecordingPane({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="push_to_talk">Push to Talk</SelectItem>
-                <SelectItem value="toggle">Toggle</SelectItem>
+                <SelectItem value="push_to_talk">{t("recording.mode.pushToTalk")}</SelectItem>
+                <SelectItem value="toggle">{t("recording.mode.toggle")}</SelectItem>
               </SelectContent>
             </Select>
           </SettingRow>
 
-          <SettingRow title="Hotkey" description="Press modifiers first, then the final trigger key.">
+          <SettingRow title={t("recording.hotkey.title")} description={t("recording.hotkey.description")}>
             <HotkeyCapture
               shortcut={draft.interaction.shortcut}
               disabled={disabled}
@@ -305,20 +331,20 @@ function RecordingPane({
             />
           </SettingRow>
 
-          <SettingRow title="Microphone" description="Native device picker is available from the tray for now.">
+          <SettingRow title={t("recording.microphone.title")} description={t("recording.microphone.description")}>
             <Select disabled value="default">
               <SelectTrigger className="w-64">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="default">Default</SelectItem>
+                <SelectItem value="default">{t("common.default")}</SelectItem>
               </SelectContent>
             </Select>
           </SettingRow>
 
           <Separator />
 
-          <SettingRow title="Sound Record Start" description="Enable or disable the configured start cue.">
+          <SettingRow title={t("recording.soundStart.title")} description={t("recording.soundStart.description")}>
             <div className="flex items-center gap-2">
               <Switch
                 checked={startEnabled}
@@ -333,12 +359,12 @@ function RecordingPane({
                 }
               />
               <Button variant="outline" size="sm" disabled>
-                Edit
+                {t("common.edit")}
               </Button>
             </div>
           </SettingRow>
 
-          <SettingRow title="Sound Record End" description="Enable or disable the configured stop cue.">
+          <SettingRow title={t("recording.soundEnd.title")} description={t("recording.soundEnd.description")}>
             <div className="flex items-center gap-2">
               <Switch
                 checked={stopEnabled}
@@ -353,12 +379,12 @@ function RecordingPane({
                 }
               />
               <Button variant="outline" size="sm" disabled>
-                Edit
+                {t("common.edit")}
               </Button>
             </div>
           </SettingRow>
 
-          <SettingRow title="Sound Record Error" description="Enable or disable the configured error cue.">
+          <SettingRow title={t("recording.soundError.title")} description={t("recording.soundError.description")}>
             <div className="flex items-center gap-2">
               <Switch
                 checked={errorEnabled}
@@ -373,12 +399,12 @@ function RecordingPane({
                 }
               />
               <Button variant="outline" size="sm" disabled>
-                Edit
+                {t("common.edit")}
               </Button>
             </div>
           </SettingRow>
 
-          <SettingRow title="Auto-switch to primary input device" description="Use the system default input when the selected device is unavailable.">
+          <SettingRow title={t("recording.autoSwitch.title")} description={t("recording.autoSwitch.description")}>
             <Switch
               checked={draft.audio.auto_switch_to_primary_device}
               onCheckedChange={(checked) =>
@@ -393,7 +419,7 @@ function RecordingPane({
             />
           </SettingRow>
 
-          <SettingRow title="Pause media during recording" description="Media pause integration is planned for a later phase.">
+          <SettingRow title={t("recording.pauseMedia.title")} description={t("recording.pauseMedia.description")}>
             <Switch checked={false} disabled />
           </SettingRow>
         </CardContent>
@@ -415,32 +441,33 @@ function PermissionBadge({ label, state }: { label: string; state?: PermissionSt
 }
 
 function ModelsPane({ draft }: { draft: AppConfig }) {
-  const providerName = useMemo(() => providerLabel(draft.provider.provider), [draft.provider.provider]);
+  const { t } = useTranslation();
+  const providerName = useMemo(() => providerLabel(draft.provider.provider, t), [draft.provider.provider, t]);
 
   return (
     <div className="grid gap-4">
       <Card>
         <CardHeader>
-          <CardTitle>STT Model</CardTitle>
-          <CardDescription>Speech-to-text providers.</CardDescription>
+          <CardTitle>{t("models.sttTitle")}</CardTitle>
+          <CardDescription>{t("models.sttDescription")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ProviderItem name={providerName} detail={draft.provider.openrouter.model || "No model configured"} />
+          <ProviderItem name={providerName} detail={draft.provider.openrouter.model || t("models.noModel")} />
           <Button variant="outline" size="sm" disabled>
-            Add Provider
+            {t("models.addProvider")}
           </Button>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Formatting Model</CardTitle>
-          <CardDescription>Formatting providers are planned for a later phase.</CardDescription>
+          <CardTitle>{t("models.formattingTitle")}</CardTitle>
+          <CardDescription>{t("models.formattingDescription")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ProviderItem name="No provider configured" detail="Unavailable" disabled />
+          <ProviderItem name={t("models.noProvider")} detail={t("common.unavailable")} disabled />
           <Button variant="outline" size="sm" disabled>
-            Add Provider
+            {t("models.addProvider")}
           </Button>
         </CardContent>
       </Card>
@@ -449,22 +476,24 @@ function ModelsPane({ draft }: { draft: AppConfig }) {
 }
 
 function AboutPane() {
+  const { t } = useTranslation();
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>About</CardTitle>
-        <CardDescription>Application information and project links.</CardDescription>
+        <CardTitle>{t("about.title")}</CardTitle>
+        <CardDescription>{t("about.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <SettingRow title="Version Info" description="Current app version.">
+        <SettingRow title={t("about.version.title")} description={t("about.version.description")}>
           <Badge variant="outline">{APP_VERSION}</Badge>
         </SettingRow>
-        <SettingRow title="Website" description="Product website link.">
+        <SettingRow title={t("about.website.title")} description={t("about.website.description")}>
           <Button variant="link" size="sm" disabled>
-            Website
+            {t("common.website")}
           </Button>
         </SettingRow>
-        <SettingRow title="GitHub Link" description="Repository link.">
+        <SettingRow title={t("about.github.title")} description={t("about.github.description")}>
           <Button variant="link" size="sm" disabled>
             GitHub
           </Button>
@@ -512,6 +541,8 @@ function ProviderItem({
   detail: string;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
+
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-card/50 p-3 opacity-100 data-[disabled=true]:opacity-50" data-disabled={disabled}>
       <div className="min-w-0">
@@ -520,19 +551,19 @@ function ProviderItem({
       </div>
       <div className="flex shrink-0 gap-2">
         <Button variant="outline" size="sm" disabled>
-          Edit
+          {t("common.edit")}
         </Button>
         <Button variant="ghost" size="sm" disabled>
-          Remove
+          {t("common.remove")}
         </Button>
       </div>
     </div>
   );
 }
 
-function providerLabel(provider: string) {
+function providerLabel(provider: string, t: (key: string) => string) {
   if (provider === "openrouter") {
-    return "OpenRouter";
+    return t("provider.openrouter");
   }
-  return provider || "Provider";
+  return provider || t("provider.fallback");
 }

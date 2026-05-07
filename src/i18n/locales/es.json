@@ -1,0 +1,150 @@
+{
+  "common": {
+    "edit": "Editar",
+    "remove": "Eliminar",
+    "refresh": "Actualizar",
+    "refreshing": "Actualizando...",
+    "default": "Predeterminado",
+    "unavailable": "No disponible",
+    "systemDefault": "Predeterminado del sistema",
+    "website": "Sitio web"
+  },
+  "language": {
+    "system": "Predeterminado del sistema",
+    "en": "Inglés",
+    "es": "Español"
+  },
+  "sidebar": {
+    "system": "Sistema",
+    "recording": "Grabación",
+    "models": "Modelos",
+    "about": "Acerca de"
+  },
+  "loading": {
+    "title": "Cargando ajustes",
+    "descriptionTauri": "Leyendo configuración local...",
+    "descriptionPreview": "La vista previa del navegador usa ajustes predeterminados."
+  },
+  "system": {
+    "language": {
+      "title": "Idioma",
+      "description": "Usa el idioma del sistema o elige un idioma fijo para la app."
+    },
+    "launchAtStart": {
+      "title": "Abrir al iniciar",
+      "description": "La integración de inicio llegará en una fase posterior."
+    },
+    "saveTextHistory": {
+      "title": "Guardar historial de texto",
+      "description": "El historial de transcripciones llegará en una fase posterior."
+    },
+    "saveInputAudio": {
+      "title": "Guardar audio de entrada",
+      "description": "Conserva grabaciones después de procesarlas correctamente."
+    },
+    "stats": {
+      "title": "Estadísticas generales",
+      "transcripts": "Transcripciones",
+      "words": "Palabras transcritas",
+      "minutes": "Minutos grabados"
+    }
+  },
+  "permissions": {
+    "title": "Permisos",
+    "description": "Actualizar revisa el estado actual de permisos de macOS y solicita los permisos faltantes cuando sea posible.",
+    "microphone": "Micrófono",
+    "accessibility": "Accesibilidad"
+  },
+  "recording": {
+    "mode": {
+      "title": "Modo",
+      "description": "Elige cómo la tecla rápida controla la grabación.",
+      "pushToTalk": "Presionar para hablar",
+      "toggle": "Alternar"
+    },
+    "hotkey": {
+      "title": "Tecla rápida",
+      "description": "Presiona primero los modificadores y luego la tecla final."
+    },
+    "microphone": {
+      "title": "Micrófono",
+      "description": "El selector nativo de dispositivo está disponible desde la bandeja por ahora."
+    },
+    "soundStart": {
+      "title": "Sonido al iniciar grabación",
+      "description": "Activa o desactiva el sonido de inicio configurado."
+    },
+    "soundEnd": {
+      "title": "Sonido al terminar grabación",
+      "description": "Activa o desactiva el sonido de fin configurado."
+    },
+    "soundError": {
+      "title": "Sonido de error",
+      "description": "Activa o desactiva el sonido de error configurado."
+    },
+    "autoSwitch": {
+      "title": "Cambiar automáticamente a la entrada principal",
+      "description": "Usa la entrada predeterminada del sistema cuando el dispositivo seleccionado no esté disponible."
+    },
+    "pauseMedia": {
+      "title": "Pausar medios durante la grabación",
+      "description": "La integración para pausar medios llegará en una fase posterior."
+    }
+  },
+  "hotkey": {
+    "examplePrefix": "ej.",
+    "cancel": "Cancelar",
+    "edit": "Editar",
+    "ariaLabel": "Captura de tecla rápida",
+    "ctrl": "Ctrl",
+    "alt": "Opción",
+    "shift": "Shift",
+    "cmd": "Comando",
+    "space": "ESPACIO",
+    "enter": "ENTER",
+    "tab": "TAB",
+    "caps": "MAYÚS"
+  },
+  "models": {
+    "sttTitle": "Modelo STT",
+    "sttDescription": "Proveedores de voz a texto.",
+    "formattingTitle": "Modelo de formato",
+    "formattingDescription": "Los proveedores de formato llegarán en una fase posterior.",
+    "noModel": "No hay modelo configurado",
+    "noProvider": "No hay proveedor configurado",
+    "addProvider": "Agregar proveedor"
+  },
+  "about": {
+    "title": "Acerca de",
+    "description": "Información de la aplicación y enlaces del proyecto.",
+    "version": {
+      "title": "Versión",
+      "description": "Versión actual de la app."
+    },
+    "website": {
+      "title": "Sitio web",
+      "description": "Enlace al sitio del producto."
+    },
+    "github": {
+      "title": "Enlace de GitHub",
+      "description": "Enlace al repositorio."
+    }
+  },
+  "provider": {
+    "openrouter": "OpenRouter",
+    "fallback": "Proveedor"
+  },
+  "tray": {
+    "settings": "Ajustes",
+    "quit": "Salir",
+    "inputDevices": "Dispositivos de entrada",
+    "noInputDevices": "No se encontraron dispositivos de entrada",
+    "windowTitle": "Ajustes de Cretar IA",
+    "tooltip": {
+      "idle": "Cretar IA inactivo",
+      "recording": "Cretar IA grabando",
+      "sending": "Cretar IA transcribiendo...",
+      "success": "Cretar IA listo"
+    }
+  }
+}

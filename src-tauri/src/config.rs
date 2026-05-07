@@ -41,6 +41,21 @@ pub enum OutputMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AppLanguage {
+    #[default]
+    System,
+    En,
+    Es,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub language: AppLanguage,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum QueueSaturationPolicy {
     #[default]
     Retry,
@@ -477,6 +492,8 @@ impl Default for TrayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
+    pub ui: UiConfig,
+    #[serde(default)]
     pub provider: ProviderConfig,
     #[serde(default)]
     pub interaction: InteractionConfig,
@@ -495,6 +512,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            ui: UiConfig::default(),
             provider: ProviderConfig::default(),
             interaction: InteractionConfig::default(),
             pipeline: PipelineConfig::default(),

@@ -2,6 +2,7 @@ use crate::audio::{available_input_device_names, effective_input_device_name};
 use crate::config::AppConfig;
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
+use crate::i18n;
 use anyhow::{Context, Result};
 use resvg::{tiny_skia, usvg};
 use tauri::image::Image;
@@ -58,10 +59,13 @@ impl AppTray {
     }
 
     pub fn refresh_menu(&self, app: &AppHandle) {
+        log::info!("tray menu rebuild requested");
         match build_menu(app) {
             Ok(menu) => {
                 if let Err(err) = self.icon.set_menu(Some(menu)) {
                     log::warn!("failed to refresh tray menu: {err}");
+                } else {
+                    log::info!("tray menu rebuild applied");
                 }
             }
             Err(err) => log::warn!("failed to rebuild tray menu: {err}"),
@@ -95,12 +99,21 @@ pub fn save_selected_input_device(device_name: &str) -> Result<()> {
 }
 
 fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
+    let config = AppConfig::load_or_create().unwrap_or_default();
+    log::info!(
+        "tray menu build config fingerprint={}",
+        serde_json::json!({
+            "language": config.ui.language,
+            "input_device": config.audio.input_device,
+            "auto_switch_input": config.audio.auto_switch_to_primary_device,
+        })
+    );
     let menu = Menu::new(app)?;
-    let settings = MenuItem::with_id(app, MENU_SETTINGS, "Settings", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "Quit", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, MENU_SETTINGS, i18n::t_config(&config, "tray.settings"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, i18n::t_config(&config, "tray.quit"), true, None::<&str>)?;
     let separator_after_settings = PredefinedMenuItem::separator(app)?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
-    let devices_label = MenuItem::with_id(app, "input-device:label", "Input Devices", false, None::<&str>)?;
+    let devices_label = MenuItem::with_id(app, "input-device:label", i18n::t_config(&config, "tray.inputDevices"), false, None::<&str>)?;
 
     menu.append(&settings)?;
     menu.append(&separator_after_settings)?;
@@ -111,7 +124,7 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
     let configured_device = configured_input_device();
 
     if device_names.is_empty() {
-        let empty = MenuItem::with_id(app, "input-device:none", "No input devices found", false, None::<&str>)?;
+        let empty = MenuItem::with_id(app, "input-device:none", i18n::t_config(&config, "tray.noInputDevices"), false, None::<&str>)?;
         menu.append(&empty)?;
     } else {
         for device_name in device_names.iter() {

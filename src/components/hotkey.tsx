@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsBadge } from "@/components/settings-badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { ArrowBigUp, Command, CornerDownLeft, Option } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 const MODIFIER_ORDER = ["ctrl", "alt", "shift", "cmd"] as const;
 
@@ -17,6 +17,7 @@ type HotkeyCaptureProps = {
 };
 
 export function HotkeyCapture({ shortcut, disabled, onChange }: HotkeyCaptureProps) {
+  const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
   const [capturedModifiers, setCapturedModifiers] = useState<ModifierToken[]>([]);
   const captureRef = useRef<HTMLDivElement | null>(null);
@@ -75,11 +76,11 @@ export function HotkeyCapture({ shortcut, disabled, onChange }: HotkeyCapturePro
         tabIndex={isEditing ? 0 : -1}
         onKeyDown={handleKeyDown}
         className="flex min-h-8 flex-wrap items-center gap-1 outline-none"
-        aria-label="Hotkey capture"
+        aria-label={t("hotkey.ariaLabel")}
       >
         {isEditing && displayParts.length === 0 ? (
           <>
-            <span className="mr-1 text-xs text-muted-foreground">e.g.</span>
+            <span className="mr-1 text-xs text-muted-foreground">{t("hotkey.examplePrefix")}</span>
             <HotkeyBadge part="shift" tone="example" />
             <HotkeyBadge part="cmd" tone="example" />
             <HotkeyBadge part="space" tone="example" />
@@ -104,7 +105,7 @@ export function HotkeyCapture({ shortcut, disabled, onChange }: HotkeyCapturePro
           }
         }}
       >
-        {isEditing ? "Cancel" : "Edit"}
+        {isEditing ? t("hotkey.cancel") : t("hotkey.edit")}
       </Button>
     </div>
   );
@@ -115,13 +116,14 @@ function HotkeyBadge({ part, pending = false, tone = "defined" }: {
   pending?: boolean;
   tone?: "defined" | "capture" | "example";
 }) {
+  const { t } = useTranslation();
   const icon = iconForShortcutPart(part);
   return (
     <SettingsBadge
       tone={pending ? "pending" : tone === "defined" ? "default" : tone}
       icon={icon}
     >
-      {labelForShortcutPart(part)}
+      {labelForShortcutPart(part, t)}
     </SettingsBadge>
   );
 }
@@ -206,24 +208,24 @@ function triggerFromEvent(event: ReactKeyboardEvent<HTMLDivElement>): string | n
   }
 }
 
-function labelForShortcutPart(part: ShortcutPart | "?"): string {
+function labelForShortcutPart(part: ShortcutPart | "?", t: (key: string) => string): string {
   switch (part) {
     case "ctrl":
-      return "Ctrl";
+      return t("hotkey.ctrl");
     case "alt":
-      return "Option";
+      return t("hotkey.alt");
     case "shift":
-      return "Shift";
+      return t("hotkey.shift");
     case "cmd":
-      return "Command";
+      return t("hotkey.cmd");
     case "space":
-      return "SPACE";
+      return t("hotkey.space");
     case "enter":
-      return "ENTER";
+      return t("hotkey.enter");
     case "tab":
-      return "TAB";
+      return t("hotkey.tab");
     case "caps":
-      return "CAPS";
+      return t("hotkey.caps");
     case "?":
       return "?";
     default:

@@ -2,6 +2,8 @@ export type InteractionMode = "push_to_talk" | "toggle";
 
 export type OutputMode = "clipboard_only" | "clipboard_paste";
 
+export type AppLanguage = "system" | "en" | "es";
+
 export type PermissionState =
   | "granted"
   | "denied"
@@ -83,7 +85,12 @@ export interface TrayConfig {
   refresh_ms: number;
 }
 
+export interface UiConfig {
+  language: AppLanguage;
+}
+
 export interface AppConfig {
+  ui: UiConfig;
   provider: ProviderConfig;
   interaction: {
     mode: InteractionMode;
@@ -98,6 +105,9 @@ export interface AppConfig {
 }
 
 export const DEFAULT_APP_CONFIG: AppConfig = {
+  ui: {
+    language: "system",
+  },
   provider: {
     provider: "openrouter",
     openrouter: {

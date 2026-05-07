@@ -1,0 +1,150 @@
+{
+  "common": {
+    "edit": "Edit",
+    "remove": "Remove",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing...",
+    "default": "Default",
+    "unavailable": "Unavailable",
+    "systemDefault": "System default",
+    "website": "Website"
+  },
+  "language": {
+    "system": "System Default",
+    "en": "English",
+    "es": "Spanish"
+  },
+  "sidebar": {
+    "system": "System",
+    "recording": "Recording",
+    "models": "Models",
+    "about": "About"
+  },
+  "loading": {
+    "title": "Loading settings",
+    "descriptionTauri": "Reading local configuration...",
+    "descriptionPreview": "Browser preview uses default settings."
+  },
+  "system": {
+    "language": {
+      "title": "Language",
+      "description": "Follow the system language or choose a fixed app language."
+    },
+    "launchAtStart": {
+      "title": "Launch at start",
+      "description": "Startup integration is planned for a later phase."
+    },
+    "saveTextHistory": {
+      "title": "Save text history",
+      "description": "Transcript history storage is planned for a later phase."
+    },
+    "saveInputAudio": {
+      "title": "Save input audio",
+      "description": "Keep recordings after successful processing."
+    },
+    "stats": {
+      "title": "Overview Stats",
+      "transcripts": "Transcripts Count",
+      "words": "Words Transcribed",
+      "minutes": "Minutes Recorded"
+    }
+  },
+  "permissions": {
+    "title": "Permissions",
+    "description": "Refresh checks current macOS permission status and requests missing permissions when available.",
+    "microphone": "Microphone",
+    "accessibility": "Accessibility"
+  },
+  "recording": {
+    "mode": {
+      "title": "Mode",
+      "description": "Choose how the hotkey controls recording.",
+      "pushToTalk": "Push to Talk",
+      "toggle": "Toggle"
+    },
+    "hotkey": {
+      "title": "Hotkey",
+      "description": "Press modifiers first, then the final trigger key."
+    },
+    "microphone": {
+      "title": "Microphone",
+      "description": "Native device picker is available from the tray for now."
+    },
+    "soundStart": {
+      "title": "Sound Record Start",
+      "description": "Enable or disable the configured start cue."
+    },
+    "soundEnd": {
+      "title": "Sound Record End",
+      "description": "Enable or disable the configured stop cue."
+    },
+    "soundError": {
+      "title": "Sound Record Error",
+      "description": "Enable or disable the configured error cue."
+    },
+    "autoSwitch": {
+      "title": "Auto-switch to primary input device",
+      "description": "Use the system default input when the selected device is unavailable."
+    },
+    "pauseMedia": {
+      "title": "Pause media during recording",
+      "description": "Media pause integration is planned for a later phase."
+    }
+  },
+  "hotkey": {
+    "examplePrefix": "e.g.",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "ariaLabel": "Hotkey capture",
+    "ctrl": "Ctrl",
+    "alt": "Option",
+    "shift": "Shift",
+    "cmd": "Command",
+    "space": "SPACE",
+    "enter": "ENTER",
+    "tab": "TAB",
+    "caps": "CAPS"
+  },
+  "models": {
+    "sttTitle": "STT Model",
+    "sttDescription": "Speech-to-text providers.",
+    "formattingTitle": "Formatting Model",
+    "formattingDescription": "Formatting providers are planned for a later phase.",
+    "noModel": "No model configured",
+    "noProvider": "No provider configured",
+    "addProvider": "Add Provider"
+  },
+  "about": {
+    "title": "About",
+    "description": "Application information and project links.",
+    "version": {
+      "title": "Version Info",
+      "description": "Current app version."
+    },
+    "website": {
+      "title": "Website",
+      "description": "Product website link."
+    },
+    "github": {
+      "title": "GitHub Link",
+      "description": "Repository link."
+    }
+  },
+  "provider": {
+    "openrouter": "OpenRouter",
+    "fallback": "Provider"
+  },
+  "tray": {
+    "settings": "Settings",
+    "quit": "Quit",
+    "inputDevices": "Input Devices",
+    "noInputDevices": "No input devices found",
+    "windowTitle": "Cretar IA Settings",
+    "tooltip": {
+      "idle": "Cretar IA idle",
+      "recording": "Cretar IA recording",
+      "sending": "Cretar IA transcribing...",
+      "success": "Cretar IA ready"
+    }
+  }
+}
