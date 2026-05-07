@@ -19,7 +19,12 @@ pub enum CueKind {
 
 #[derive(Clone)]
 pub struct CuePlayer {
-    sender: mpsc::Sender<CueKind>,
+    sender: mpsc::Sender<CueRequest>,
+}
+
+struct CueRequest {
+    kind: CueKind,
+    completion: Option<mpsc::Sender<bool>>,
 }
 
 impl CuePlayer {
@@ -30,7 +35,7 @@ impl CuePlayer {
         let stop_sound = config.resolve_sound_path(cfg.stop_sound.as_ref());
         let error_sound = config.resolve_sound_path(cfg.error_sound.as_ref());
         log_cue_config(enabled, volume, &start_sound, &stop_sound, &error_sound);
-        let (tx, rx) = mpsc::channel::<CueKind>();
+        let (tx, rx) = mpsc::channel::<CueRequest>();
 
         thread::spawn(move || {
             let player = SerializedCuePlayer {
@@ -42,11 +47,16 @@ impl CuePlayer {
                 output: if enabled { CueOutput::new() } else { None },
             };
 
-            while let Ok(kind) = rx.recv() {
-                match kind {
-                    CueKind::Start => player.play(CueKind::Start),
-                    CueKind::Stop => player.play(CueKind::Stop),
-                    CueKind::Error => player.play(CueKind::Error),
+            while let Ok(request) = rx.recv() {
+                let played = match request.kind {
+                    CueKind::Start => player.play(CueKind::Start, request.completion.is_some()),
+                    CueKind::Stop => player.play(CueKind::Stop, request.completion.is_some()),
+                    CueKind::Error => player.play(CueKind::Error, request.completion.is_some()),
+                };
+                if let Some(completion) = request.completion {
+                    if completion.send(played).is_err() {
+                        log::debug!("audio cue completion receiver dropped");
+                    }
                 }
             }
         });
@@ -67,17 +77,22 @@ impl CuePlayer {
 
     pub fn play_start(&self) {
         log::debug!("queue start cue");
-        let _ = self.sender.send(CueKind::Start);
+        self.queue(CueKind::Start);
+    }
+
+    pub fn play_start_and_wait(&self) -> bool {
+        log::debug!("queue start cue and wait for completion");
+        self.queue_and_wait(CueKind::Start)
     }
 
     pub fn play_stop(&self) {
         log::debug!("queue stop cue");
-        let _ = self.sender.send(CueKind::Stop);
+        self.queue(CueKind::Stop);
     }
 
     pub fn play_error(&self) {
         log::debug!("queue error cue");
-        let _ = self.sender.send(CueKind::Error);
+        self.queue(CueKind::Error);
     }
 
     pub fn status_to_cue(status: &SessionStatus) -> Option<CueKind> {
@@ -101,6 +116,36 @@ impl CuePlayer {
         }
 
         None
+    }
+
+    fn queue(&self, kind: CueKind) {
+        let _ = self.sender.send(CueRequest {
+            kind,
+            completion: None,
+        });
+    }
+
+    fn queue_and_wait(&self, kind: CueKind) -> bool {
+        let (tx, rx) = mpsc::channel();
+        if self
+            .sender
+            .send(CueRequest {
+                kind,
+                completion: Some(tx),
+            })
+            .is_err()
+        {
+            log::warn!("failed to queue waitable audio cue {kind:?}");
+            return false;
+        }
+
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(played) => played,
+            Err(err) => {
+                log::warn!("waitable audio cue {kind:?} did not complete: {err}");
+                false
+            }
+        }
     }
 }
 
@@ -132,10 +177,10 @@ enum CueAsset {
 }
 
 impl SerializedCuePlayer {
-    fn play(&self, kind: CueKind) {
+    fn play(&self, kind: CueKind, wait: bool) -> bool {
         if !self.enabled {
             log::debug!("audio cue {kind:?} skipped: audio cues disabled");
-            return;
+            return true;
         }
 
         log::debug!("audio cue {kind:?} playback requested");
@@ -144,20 +189,20 @@ impl SerializedCuePlayer {
             CueKind::Stop => &self.stop_sound,
             CueKind::Error => &self.error_sound,
         };
-        self.play_asset(asset);
+        self.play_asset(asset, wait)
     }
 
-    fn play_asset(&self, asset: &CueAsset) {
+    fn play_asset(&self, asset: &CueAsset, wait: bool) -> bool {
         let Some(output) = self.output.as_ref() else {
             log::warn!("audio cue output stream unavailable");
-            return;
+            return false;
         };
 
         let sink = match rodio::Sink::try_new(&output.handle) {
             Ok(sink) => sink,
             Err(err) => {
                 log::warn!("failed to create cue sink: {err}");
-                return;
+                return false;
             }
         };
 
@@ -181,7 +226,12 @@ impl SerializedCuePlayer {
                 sink.append(source);
             }
         }
-        sink.detach();
+        if wait {
+            sink.sleep_until_end();
+        } else {
+            sink.detach();
+        }
+        true
     }
 }
 

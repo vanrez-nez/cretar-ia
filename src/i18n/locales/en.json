@@ -87,7 +87,7 @@
     },
     "pauseMedia": {
       "title": "Pause media during recording",
-      "description": "Media pause integration is planned for a later phase."
+      "description": "Pause active macOS media playback while recording, then resume it if Cretar IA paused it."
     }
   },
   "hotkey": {

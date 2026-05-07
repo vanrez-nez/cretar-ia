@@ -6,6 +6,7 @@ pub mod contracts;
 mod hotkey;
 mod i18n;
 mod inject;
+mod media_control;
 mod openrouter;
 #[cfg(feature = "settings-ui")]
 mod permissions;

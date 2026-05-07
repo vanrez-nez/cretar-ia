@@ -125,6 +125,12 @@ pub struct PipelineConfig {
     pub max_recording_duration_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RecordingBehaviorConfig {
+    #[serde(default)]
+    pub pause_media: bool,
+}
+
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
@@ -520,6 +526,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub pipeline: PipelineConfig,
     #[serde(default)]
+    pub recording: RecordingBehaviorConfig,
+    #[serde(default)]
     pub audio: AudioCaptureConfig,
     #[serde(default)]
     pub audio_cues: AudioCueConfig,
@@ -536,6 +544,7 @@ impl Default for AppConfig {
             provider: ProviderConfig::default(),
             interaction: InteractionConfig::default(),
             pipeline: PipelineConfig::default(),
+            recording: RecordingBehaviorConfig::default(),
             audio: AudioCaptureConfig::default(),
             audio_cues: AudioCueConfig::default(),
             output: OutputConfig::default(),

@@ -87,7 +87,7 @@
     },
     "pauseMedia": {
       "title": "Pausar medios durante la grabación",
-      "description": "La integración para pausar medios llegará en una fase posterior."
+      "description": "Pausa la reproducción activa de macOS mientras grabas y la reanuda si Cretar IA la pausó."
     }
   },
   "hotkey": {

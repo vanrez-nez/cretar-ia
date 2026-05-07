@@ -321,6 +321,7 @@ fn runtime_fingerprint(cfg: &AppConfig) -> String {
         "mode": cfg.interaction.mode,
         "shortcut": cfg.interaction.shortcut,
         "input_device": cfg.audio.input_device,
+        "pause_media": cfg.recording.pause_media,
         "start_sound": cfg.audio_cues.start_sound,
         "stop_sound": cfg.audio_cues.stop_sound,
         "error_sound": cfg.audio_cues.error_sound,
@@ -400,6 +401,9 @@ fn spawn_status_task(
                     if let Some(cue_kind) = render.cue {
                         if Some(status.source.as_str()) != last_cued_event.as_deref() {
                             match cue_kind {
+                                audio_cues::CueKind::Start if cfg.recording.pause_media => {
+                                    log::debug!("cue skipped in status task because recording pause_media owns start cue");
+                                }
                                 audio_cues::CueKind::Start => cue.play_start(),
                                 audio_cues::CueKind::Stop => cue.play_stop(),
                                 audio_cues::CueKind::Error => cue.play_error(),

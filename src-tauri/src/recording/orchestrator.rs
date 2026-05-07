@@ -17,6 +17,7 @@ use crate::recording::workers::{
 use crate::recording::state::RecordingState;
 use crate::recording::telemetry;
 use crate::audio;
+use crate::media_control::MediaPauseController;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -25,31 +26,32 @@ use tokio::time::{self, Duration};
 
 pub fn start(
     cfg: AppConfig,
-    _cue: CuePlayer,
+    cue: CuePlayer,
     openrouter: Option<OpenRouterClient>,
 ) -> (
     CommandBusTx,
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, openrouter, true)
+    start_with_worker_mode(cfg, cue, openrouter, true)
 }
 
 #[cfg(test)]
 pub fn start_without_workers_for_tests(
     cfg: AppConfig,
-    _cue: CuePlayer,
+    cue: CuePlayer,
     openrouter: Option<OpenRouterClient>,
 ) -> (
     CommandBusTx,
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, openrouter, false)
+    start_with_worker_mode(cfg, cue, openrouter, false)
 }
 
 fn start_with_worker_mode(
     cfg: AppConfig,
+    cue: CuePlayer,
     openrouter: Option<OpenRouterClient>,
     start_workers: bool,
 ) -> (
@@ -89,6 +91,8 @@ fn start_with_worker_mode(
         let mut runner = Orchestrator {
             cfg,
             openrouter,
+            cue,
+            media_pause: MediaPauseController::new(),
             bus,
             tx: runner_tx,
             audio_worker,
@@ -114,6 +118,8 @@ fn start_with_worker_mode(
 struct Orchestrator {
     cfg: AppConfig,
     openrouter: Option<OpenRouterClient>,
+    cue: CuePlayer,
+    media_pause: MediaPauseController,
     bus: CommandBus,
     tx: CommandBusTx,
     audio_worker: Option<AudioWorker>,
@@ -178,6 +184,7 @@ impl Orchestrator {
             )
         ) {
             self.stop_in_flight = false;
+            self.resume_media_if_needed_after_recording_stop();
         }
 
         if matches!(
@@ -186,9 +193,12 @@ impl Orchestrator {
                 RecordingEvent::ProcessCompleted
                     | RecordingEvent::AudioStartFailed { .. }
                     | RecordingEvent::AudioDeviceUnavailable { .. }
+                    | RecordingEvent::ProcessFailed { .. }
+                    | RecordingEvent::RecoveryFailed { .. }
             )
         ) {
             self.pending_recording = None;
+            self.resume_media_if_needed();
         }
 
         let transition = transition(&self.state, event.clone());
@@ -397,12 +407,30 @@ impl Orchestrator {
             return Ok(());
         };
 
+        if self.cfg.recording.pause_media {
+            self.settling = None;
+        }
+
+        if self.cfg.recording.pause_media {
+            log::info!("recording start: playing start cue before media pause");
+            let cue_played = self.cue.play_start_and_wait();
+            log::debug!("recording start: waitable start cue completed played={cue_played}");
+            let paused = self
+                .media_pause
+                .pause_for_recording(config.input_device.as_deref());
+            log::info!("recording start: media pause result={paused}");
+        } else {
+            log::debug!("recording start: media pause disabled");
+        }
+
         if !audio_worker.request_start(config, record_base) {
             self.publish_status(
                 "audio_start_command_failed",
                 Some(RecordingErrorCode::AudioInit),
                 RecoveryHint::RetryStart,
             );
+        } else {
+            self.adjust_settling();
         }
         Ok(())
     }
@@ -553,6 +581,7 @@ impl Orchestrator {
             return Ok(());
         }
         self.shutdown_started = true;
+        self.resume_media_if_needed();
 
         let drained = self.bus.close_and_drain();
         log::debug!(
@@ -572,6 +601,22 @@ impl Orchestrator {
             recovery_worker.shutdown().await;
         }
         Ok(())
+    }
+
+    fn resume_media_if_needed(&self) {
+        if !self.cfg.recording.pause_media {
+            return;
+        }
+        let resumed = self.media_pause.resume_now();
+        log::debug!("recording media resume result={resumed}");
+    }
+
+    fn resume_media_if_needed_after_recording_stop(&self) {
+        if !self.cfg.recording.pause_media {
+            return;
+        }
+        let resumed = self.media_pause.resume_after_audio_stopped();
+        log::debug!("recording media resume after audio stopped result={resumed}");
     }
 
     fn publish_status(

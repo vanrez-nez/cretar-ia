@@ -510,7 +510,11 @@ function RecordingPane({
           </SettingRow>
 
           <SettingRow title={t("recording.pauseMedia.title")} description={t("recording.pauseMedia.description")}>
-            <Switch checked={false} disabled />
+            <Switch
+              checked={Boolean(draft["recording.pause_media"])}
+              disabled={disabled}
+              onCheckedChange={(checked) => updateDraft("recording.pause_media", checked)}
+            />
           </SettingRow>
         </CardContent>
       </Card>

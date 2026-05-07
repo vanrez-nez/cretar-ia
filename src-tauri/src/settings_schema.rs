@@ -1,7 +1,7 @@
 use crate::config::{
     AppConfig, AudioCaptureConfig, AudioCueConfig, InteractionConfig, OpenRouterConfig,
-    OutputConfig, PipelineConfig, ProviderConfig, RecoveryStrategyConfig, TrayConfig,
-    TrayTooltipConfig, UiConfig,
+    OutputConfig, PipelineConfig, ProviderConfig, RecordingBehaviorConfig,
+    RecoveryStrategyConfig, TrayConfig, TrayTooltipConfig, UiConfig,
 };
 use anyhow::{anyhow, Context, Result};
 use jsonschema::JSONSchema;
@@ -108,6 +108,9 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
                 retry_processing_timeout: setting(settings, "recording.recovery.retry_processing_timeout")?,
                 retry_queue_saturation: setting(settings, "recording.recovery.retry_queue_saturation")?,
             }),
+        },
+        recording: RecordingBehaviorConfig {
+            pause_media: setting(settings, "recording.pause_media")?,
         },
         audio: AudioCaptureConfig {
             sample_rate: setting(settings, "recording.microphone.sample_rate")?,
