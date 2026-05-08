@@ -4,6 +4,7 @@ use crate::config::AppConfig;
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
+use crate::model_health::ModelHealthCache;
 use crate::providers::ProviderFactory;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
@@ -200,6 +201,7 @@ pub fn run() -> Result<()> {
             settings::import_custom_sound,
             settings::preview_sound,
             settings::list_model_settings,
+            settings::list_model_health,
             settings::refresh_provider_models,
             settings::save_model_item,
             settings::delete_model_item,
@@ -230,10 +232,34 @@ pub fn run() -> Result<()> {
                 cfg.interaction.shortcut
             );
             log::info!("settings database path: {}", storage.db_path().display());
+            let health_cache = ModelHealthCache::new();
+            tauri::async_runtime::block_on(health_cache.sync_metadata(&storage.pool()))
+                .map_err(|err| anyhow!(err.to_string()))?;
+            let health_pool = storage.pool();
+            let health_cache_task = health_cache.clone();
+            let health_app = app_handle.clone();
             app.manage(storage);
+            app.manage(health_cache);
             let tray = tray::create_tray(&app_handle, &cfg)
                 .map_err(|err| anyhow!(err.to_string()))?;
             app.manage(tray);
+            tauri::async_runtime::spawn(async move {
+                log::info!("model health startup refresh started");
+                if let Err(err) = health_cache_task.refresh_all(&health_pool).await {
+                    log::warn!("model health startup refresh failed: {err}");
+                    return;
+                }
+                if let Err(err) = health_app.emit(
+                    "settings:changed",
+                    serde_json::json!({
+                        "source": "model_health",
+                        "keys": ["models.health"],
+                    }),
+                ) {
+                    log::warn!("failed to emit startup model health change: {err}");
+                }
+                log::info!("model health startup refresh finished");
+            });
             let runtime_cfg = cfg.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = start_runtime(&app_handle, runtime_cfg).await {
@@ -323,7 +349,14 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     cue.run_self_test_if_requested();
     let stt_provider = match app.try_state::<SettingsDb>() {
         Some(storage) => {
-            let factory = ProviderFactory::new(storage.pool());
+            let factory = match app.try_state::<ModelHealthCache>() {
+                Some(health_cache) => ProviderFactory::with_health(
+                    storage.pool(),
+                    health_cache.clone_cache(),
+                    app.clone(),
+                ),
+                None => ProviderFactory::new(storage.pool()),
+            };
             match factory.speech_to_text().await {
                 Ok(provider) => provider,
                 Err(err) => {
@@ -413,6 +446,7 @@ fn runtime_fingerprint(cfg: &AppConfig) -> String {
         "shortcut": cfg.interaction.shortcut,
         "input_device": cfg.audio.input_device,
         "pause_media": cfg.recording.pause_media,
+        "formatting_enabled": cfg.models.formatting_enabled,
         "start_sound": cfg.audio_cues.start_sound,
         "stop_sound": cfg.audio_cues.stop_sound,
         "error_sound": cfg.audio_cues.error_sound,
@@ -520,7 +554,116 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
         save_input_device_from_tray(app, None);
     } else if let Some(device) = id.strip_prefix(tray::MENU_DEVICE_PREFIX) {
         save_input_device_from_tray(app, Some(device.to_string()));
+    } else if id == tray::MENU_MODEL_FORMATTING_DISABLE {
+        save_formatting_enabled_from_tray(app, false);
+    } else if let Some(selection) = id.strip_prefix(tray::MENU_MODEL_PREFIX) {
+        if !selection.starts_with("stt:") && !selection.starts_with("formatting:") {
+            return;
+        }
+        save_model_selection_from_tray(app, selection);
     }
+}
+
+fn save_model_selection_from_tray(app: &AppHandle, selection: &str) {
+    let Some((role, model_id)) = selection.split_once(':') else {
+        return;
+    };
+    let app = app.clone();
+    let role = role.to_string();
+    let model_id = model_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(storage) = app.try_state::<SettingsDb>() else {
+            log::warn!("failed to save model selection from tray: settings database unavailable");
+            return;
+        };
+        let factory = ProviderFactory::new(storage.pool());
+        if let Err(err) = factory.set_active_model(&role, &model_id).await {
+            log::warn!("failed to save model selection from tray: {err}");
+            return;
+        }
+        if role == "formatting" {
+            let mut settings = match storage.load_settings().await {
+                Ok(settings) => settings,
+                Err(err) => {
+                    log::warn!("failed to load settings for tray transform model selection: {err}");
+                    return;
+                }
+            };
+            settings["models.formatting.enabled"] = serde_json::Value::Bool(true);
+            if let Err(err) = storage.save_settings(&settings).await {
+                log::warn!("failed to save tray transform enable change: {err}");
+                return;
+            }
+        }
+        if let Some(health_cache) = app.try_state::<ModelHealthCache>() {
+            if let Err(err) = health_cache.sync_metadata(&storage.pool()).await {
+                log::warn!("failed to sync model health cache after tray model selection: {err}");
+            }
+        }
+        let config = match storage.load_config().await {
+            Ok(config) => config,
+            Err(err) => {
+                log::warn!("failed to load runtime config after tray model selection: {err}");
+                return;
+            }
+        };
+        refresh_tray_menu(&app, &config);
+        if let Err(err) = restart_runtime(&app, config) {
+                log::error!("failed to apply tray model selection: {err}");
+        }
+        if let Err(err) = app.emit(
+            "settings:changed",
+            serde_json::json!({
+                "source": "tray",
+                "keys": ["models.active", "models.formatting.enabled"],
+            }),
+        ) {
+            log::warn!("failed to emit settings change after tray model selection: {err}");
+        }
+    });
+}
+
+fn save_formatting_enabled_from_tray(app: &AppHandle, enabled: bool) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(storage) = app.try_state::<SettingsDb>() else {
+            log::warn!("failed to save transform setting from tray: settings database unavailable");
+            return;
+        };
+        let previous = current_config(&app);
+        let mut settings = match storage.load_settings().await {
+            Ok(settings) => settings,
+            Err(err) => {
+                log::warn!("failed to load settings for tray transform setting change: {err}");
+                return;
+            }
+        };
+        settings["models.formatting.enabled"] = serde_json::Value::Bool(enabled);
+        if let Err(err) = storage.save_settings(&settings).await {
+            log::warn!("failed to save tray transform setting change: {err}");
+            return;
+        }
+        let config = match crate::settings_schema::runtime_config_from_settings(&settings) {
+            Ok(config) => config,
+            Err(err) => {
+                log::warn!("failed to load runtime config after tray transform setting change: {err}");
+                return;
+            }
+        };
+        if let Err(err) = crate::commands::settings::apply_saved_config(&app, previous.as_ref(), &config, None) {
+            log::error!("failed to apply tray transform setting change: {err}");
+            return;
+        }
+        if let Err(err) = app.emit(
+            "settings:changed",
+            serde_json::json!({
+                "source": "tray",
+                "keys": ["models.formatting.enabled"],
+            }),
+        ) {
+            log::warn!("failed to emit settings change after tray transform setting change: {err}");
+        }
+    });
 }
 
 fn save_input_device_from_tray(app: &AppHandle, device: Option<String>) {

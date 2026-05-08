@@ -131,6 +131,26 @@ pub struct RecordingBehaviorConfig {
     pub pause_media: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelsConfig {
+    #[serde(default = "ModelsConfig::default_formatting_enabled")]
+    pub formatting_enabled: bool,
+}
+
+impl ModelsConfig {
+    fn default_formatting_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for ModelsConfig {
+    fn default() -> Self {
+        Self {
+            formatting_enabled: Self::default_formatting_enabled(),
+        }
+    }
+}
+
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
@@ -526,6 +546,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub recording: RecordingBehaviorConfig,
     #[serde(default)]
+    pub models: ModelsConfig,
+    #[serde(default)]
     pub audio: AudioCaptureConfig,
     #[serde(default)]
     pub audio_cues: AudioCueConfig,
@@ -543,6 +565,7 @@ impl Default for AppConfig {
             interaction: InteractionConfig::default(),
             pipeline: PipelineConfig::default(),
             recording: RecordingBehaviorConfig::default(),
+            models: ModelsConfig::default(),
             audio: AudioCaptureConfig::default(),
             audio_cues: AudioCueConfig::default(),
             output: OutputConfig::default(),

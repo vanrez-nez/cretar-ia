@@ -3,15 +3,23 @@ use crate::config::AppConfig;
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
 use crate::i18n;
+#[cfg(feature = "settings-ui")]
+use crate::model_health::{ModelHealthCache, ModelHealthStatus, ModelHealthView};
 use anyhow::{Context, Result};
 use resvg::{tiny_skia, usvg};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+#[cfg(feature = "settings-ui")]
+use tauri::menu::Submenu;
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Wry};
+#[cfg(feature = "settings-ui")]
+use tauri::Manager;
 
 pub const MENU_DEVICE_PREFIX: &str = "input-device:";
 pub const MENU_DEVICE_DEFAULT: &str = "input-device:system-default";
+pub const MENU_MODEL_PREFIX: &str = "model:";
+pub const MENU_MODEL_FORMATTING_DISABLE: &str = "model-formatting:disable";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_QUIT: &str = "quit";
 
@@ -97,17 +105,25 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
         serde_json::json!({
             "language": config.ui.language,
             "input_device": config.audio.input_device,
+            "formatting_enabled": config.models.formatting_enabled,
         })
     );
     let menu = Menu::new(app)?;
     let settings = MenuItem::with_id(app, MENU_SETTINGS, i18n::t_config(&config, "tray.settings"), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, i18n::t_config(&config, "tray.quit"), true, None::<&str>)?;
     let separator_after_settings = PredefinedMenuItem::separator(app)?;
+    #[cfg(feature = "settings-ui")]
+    let separator_after_models = PredefinedMenuItem::separator(app)?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
     let devices_label = MenuItem::with_id(app, "input-device:label", i18n::t_config(&config, "tray.inputDevices"), false, None::<&str>)?;
 
     menu.append(&settings)?;
     menu.append(&separator_after_settings)?;
+    #[cfg(feature = "settings-ui")]
+    {
+        menu.append(&build_models_submenu(app, config)?)?;
+        menu.append(&separator_after_models)?;
+    }
     menu.append(&devices_label)?;
 
     let device_names = available_input_device_names();
@@ -162,6 +178,84 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
     menu.append(&separator_before_quit)?;
     menu.append(&quit)?;
     Ok(menu)
+}
+
+#[cfg(feature = "settings-ui")]
+fn build_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
+    let submenu = Submenu::with_id(app, "models", i18n::t_config(config, "tray.models"), true)?;
+    let transcript_label = MenuItem::with_id(app, "model:transcript-label", i18n::t_config(config, "models.sttTitle"), false, None::<&str>)?;
+    let transform_label = MenuItem::with_id(app, "model:transform-label", i18n::t_config(config, "models.formattingTitle"), false, None::<&str>)?;
+    submenu.append(&transcript_label)?;
+    append_model_items(app, &submenu, config, "stt")?;
+    submenu.append(&PredefinedMenuItem::separator(app)?)?;
+    submenu.append(&transform_label)?;
+    append_model_items(app, &submenu, config, "formatting")?;
+    let disable_title = if config.models.formatting_enabled {
+        i18n::t_config(config, "models.disableTransform")
+    } else {
+        format!("✓ {}", i18n::t_config(config, "models.disableTransform"))
+    };
+    let disable_transform = MenuItem::with_id(
+        app,
+        MENU_MODEL_FORMATTING_DISABLE,
+        disable_title,
+        true,
+        None::<&str>,
+    )?;
+    submenu.append(&disable_transform)?;
+    Ok(submenu)
+}
+
+#[cfg(feature = "settings-ui")]
+fn append_model_items(app: &AppHandle, menu: &Submenu<Wry>, config: &AppConfig, role: &str) -> Result<()> {
+    let models = tray_model_snapshot(app);
+    let role_models = models
+        .iter()
+        .filter(|model| model.role == role)
+        .collect::<Vec<_>>();
+    if role_models.is_empty() {
+        let empty = MenuItem::with_id(
+            app,
+            format!("model:{role}:empty"),
+            i18n::t_config(config, "tray.noModels"),
+            false,
+            None::<&str>,
+        )?;
+        menu.append(&empty)?;
+        return Ok(());
+    }
+
+    for model in role_models {
+        let item = MenuItem::with_id(
+            app,
+            format!("{MENU_MODEL_PREFIX}{role}:{}", model.id),
+            model_menu_title(model, config),
+            true,
+            None::<&str>,
+        )?;
+        menu.append(&item)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "settings-ui")]
+fn tray_model_snapshot(app: &AppHandle) -> Vec<ModelHealthView> {
+    app.try_state::<ModelHealthCache>()
+        .map(|cache| cache.snapshot())
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "settings-ui")]
+fn model_menu_title(model: &ModelHealthView, config: &AppConfig) -> String {
+    let is_selected = model.is_active
+        && !(model.role == "formatting" && !config.models.formatting_enabled);
+    let prefix = match (model.health, is_selected) {
+        (ModelHealthStatus::Unhealthy, _) => "⚠ ",
+        (_, true) => "✓ ",
+        (ModelHealthStatus::Healthy, false) => "",
+        (ModelHealthStatus::Unknown, false) => "",
+    };
+    format!("{prefix}{} ({})", model.display_name, model.provider_name)
 }
 
 fn selected_input_device(config: &AppConfig) -> Option<String> {

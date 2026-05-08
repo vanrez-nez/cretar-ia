@@ -33,6 +33,7 @@
     "recording.recovery.retry_stop_timeout",
     "recording.recovery.retry_processing_timeout",
     "recording.recovery.retry_queue_saturation",
+    "models.formatting.enabled",
     "output.mode",
     "output.paste_delay_ms",
     "output.processing_timeout_ms",
@@ -192,6 +193,14 @@
       "x-ui": {
         "section": "recording",
         "label": "recording.pauseMedia.title"
+      }
+    },
+    "models.formatting.enabled": {
+      "type": "boolean",
+      "default": true,
+      "x-ui": {
+        "section": "models",
+        "label": "models.transformEnabled"
       }
     },
     "recording.processing.debounce_ms": {

@@ -1,7 +1,7 @@
 use crate::config::{
     AppConfig, AudioCaptureConfig, AudioCueConfig, InteractionConfig, OutputConfig, PipelineConfig,
-    ProviderConfig, RecordingBehaviorConfig, RecoveryStrategyConfig, TrayConfig, TrayTooltipConfig,
-    UiConfig,
+    ModelsConfig, ProviderConfig, RecordingBehaviorConfig, RecoveryStrategyConfig, TrayConfig,
+    TrayTooltipConfig, UiConfig,
 };
 use anyhow::{anyhow, Context, Result};
 use jsonschema::JSONSchema;
@@ -101,6 +101,9 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
         },
         recording: RecordingBehaviorConfig {
             pause_media: setting(settings, "recording.pause_media")?,
+        },
+        models: ModelsConfig {
+            formatting_enabled: setting(settings, "models.formatting.enabled")?,
         },
         audio: AudioCaptureConfig {
             sample_rate: setting(settings, "recording.microphone.sample_rate")?,

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use crate::model_health::{ModelHealthCache, ModelHealthStatus};
 use jsonschema::JSONSchema;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 
 const PROVIDER_PRESETS: &str = include_str!("../providers/presets.json");
 
@@ -31,6 +33,8 @@ pub trait FormattingProvider: Send + Sync {
 pub struct ProviderFactory {
     pool: SqlitePool,
     client: Client,
+    health_cache: Option<ModelHealthCache>,
+    app: Option<AppHandle>,
 }
 
 impl ProviderFactory {
@@ -38,6 +42,17 @@ impl ProviderFactory {
         Self {
             pool,
             client: Client::new(),
+            health_cache: None,
+            app: None,
+        }
+    }
+
+    pub fn with_health(pool: SqlitePool, health_cache: ModelHealthCache, app: AppHandle) -> Self {
+        Self {
+            pool,
+            client: Client::new(),
+            health_cache: Some(health_cache),
+            app: Some(app),
         }
     }
 
@@ -70,14 +85,17 @@ impl ProviderFactory {
             driver.as_str()
         );
 
+        let user_model_id = selection.user_model_id.clone();
         Ok(Some(Arc::new(GenericSpeechToTextProvider {
             client: self.client.clone(),
+            user_model_id: user_model_id.clone(),
             provider_id: selection.provider_id,
             model_id: selection.model_id,
             external_model_id: selection.external_model_id,
             provider_config,
             model_config,
             driver,
+            health_reporter: self.health_reporter("stt", &user_model_id),
         })))
     }
 
@@ -102,14 +120,26 @@ impl ProviderFactory {
         let model_config: RuntimeModelConfig = serde_json::from_value(selection.model_config.clone())
             .with_context(|| format!("parsing model '{}' runtime config", selection.model_id))?;
 
+        let user_model_id = selection.user_model_id.clone();
         Ok(Some(Arc::new(GenericFormattingProvider {
             client: self.client.clone(),
+            user_model_id: user_model_id.clone(),
             provider_id: selection.provider_id,
             model_id: selection.model_id,
             external_model_id: selection.external_model_id,
             provider_config,
             model_config,
+            health_reporter: self.health_reporter("formatting", &user_model_id),
         })))
+    }
+
+    fn health_reporter(&self, role: &str, user_model_id: &str) -> Option<ModelHealthReporter> {
+        Some(ModelHealthReporter {
+            cache: self.health_cache.clone()?,
+            app: self.app.clone()?,
+            role: role.to_string(),
+            user_model_id: user_model_id.to_string(),
+        })
     }
 
     async fn load_active_model(&self, role: &str) -> Result<Option<ProviderModelSelection>> {
@@ -124,6 +154,7 @@ impl ProviderFactory {
     ) -> Result<Option<ProviderModelSelection>> {
         let sql = format!(
             "SELECT
+                um.id AS user_model_id,
                 p.id AS provider_id,
                 p.config_json AS provider_config_json,
                 p.config_schema_json AS provider_config_schema_json,
@@ -161,6 +192,7 @@ impl ProviderFactory {
         let model_override = parse_json_column(&row, "model_override_json")?;
         merge_config_values(&mut model_config, &model_override);
         Ok(Some(ProviderModelSelection {
+            user_model_id: row.try_get("user_model_id").context("reading user_model_id")?,
             provider_id: row.try_get("provider_id").context("reading provider_id")?,
             provider_config,
             provider_config_schema: parse_json_column(&row, "provider_config_schema_json")?,
@@ -546,6 +578,7 @@ impl ProviderFactory {
 
 #[derive(Debug)]
 struct ProviderModelSelection {
+    user_model_id: String,
     provider_id: String,
     provider_config: Value,
     provider_config_schema: Value,
@@ -606,6 +639,59 @@ enum SttDriver {
     MultipartAudioTranscription,
 }
 
+#[derive(Clone)]
+struct ModelHealthReporter {
+    cache: ModelHealthCache,
+    app: AppHandle,
+    role: String,
+    user_model_id: String,
+}
+
+impl ModelHealthReporter {
+    fn record_success(&self) {
+        self.record(ModelHealthStatus::Healthy);
+    }
+
+    fn record_failure(&self) {
+        self.record(ModelHealthStatus::Unhealthy);
+    }
+
+    fn record(&self, health: ModelHealthStatus) {
+        if !self
+            .cache
+            .record_model_health_outcome(&self.role, &self.user_model_id, health)
+        {
+            log::debug!(
+                "model health outcome ignored role={} user_model_id={} health={health:?} reason=not_in_cache",
+                self.role,
+                self.user_model_id
+            );
+            return;
+        }
+        log::debug!(
+            "model health outcome recorded role={} user_model_id={} health={health:?}",
+            self.role,
+            self.user_model_id
+        );
+        notify_model_health_changed(&self.app);
+    }
+}
+
+fn notify_model_health_changed(app: &AppHandle) {
+    if let Some(config) = crate::app_host::current_config(app) {
+        crate::app_host::refresh_tray_menu(app, &config);
+    }
+    if let Err(err) = app.emit(
+        "settings:changed",
+        serde_json::json!({
+            "source": "model_health",
+            "keys": ["models.health"],
+        }),
+    ) {
+        log::warn!("failed to emit model health change: {err}");
+    }
+}
+
 impl SttDriver {
     fn from_config(config: &RuntimeModelConfig) -> Result<Self> {
         match config.operation_driver.as_deref() {
@@ -629,48 +715,64 @@ impl SttDriver {
 
 struct GenericSpeechToTextProvider {
     client: Client,
+    user_model_id: String,
     provider_id: String,
     model_id: String,
     external_model_id: String,
     provider_config: RuntimeProviderConfig,
     model_config: RuntimeModelConfig,
     driver: SttDriver,
+    health_reporter: Option<ModelHealthReporter>,
 }
 
 impl SpeechToTextProvider for GenericSpeechToTextProvider {
     fn transcribe<'a>(&'a self, wav_file: &'a Path) -> ProviderFuture<'a, String> {
         Box::pin(async move {
-            let start = std::time::Instant::now();
-            let file_bytes = read_audio_file(wav_file, self.model_config.max_audio_bytes)?;
-            let url = self.endpoint_url()?;
-            log::info!(
-                "stt request provider={} model_id={} model={} driver={} bytes={} endpoint={}",
-                self.provider_id,
-                self.model_id,
-                self.external_model_id,
-                self.driver.as_str(),
-                file_bytes.len(),
-                url
-            );
+            let result = async {
+                let start = std::time::Instant::now();
+                let file_bytes = read_audio_file(wav_file, self.model_config.max_audio_bytes)?;
+                let url = self.endpoint_url()?;
+                log::info!(
+                    "stt request provider={} user_model_id={} model_id={} model={} driver={} bytes={} endpoint={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    file_bytes.len(),
+                    url
+                );
 
-            let response = match self.driver {
-                SttDriver::HttpJsonAudioTranscription => self.send_json_audio(&url, &file_bytes).await?,
-                SttDriver::MultipartAudioTranscription => self.send_multipart_audio(&url, file_bytes).await?,
-            };
+                let response = match self.driver {
+                    SttDriver::HttpJsonAudioTranscription => self.send_json_audio(&url, &file_bytes).await?,
+                    SttDriver::MultipartAudioTranscription => self.send_multipart_audio(&url, file_bytes).await?,
+                };
 
-            let text = extract_text(&response, &self.response_text_paths())?.trim().to_string();
-            if text.is_empty() {
-                return Err(anyhow!("stt response text is empty"));
+                let text = extract_text(&response, &self.response_text_paths())?.trim().to_string();
+                if text.is_empty() {
+                    return Err(anyhow!("stt response text is empty"));
+                }
+                log::info!(
+                    "stt completed provider={} user_model_id={} model_id={} model={} elapsed={:?} text_len={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    start.elapsed(),
+                    text.len()
+                );
+                Ok(text)
             }
-            log::info!(
-                "stt completed provider={} model_id={} model={} elapsed={:?} text_len={}",
-                self.provider_id,
-                self.model_id,
-                self.external_model_id,
-                start.elapsed(),
-                text.len()
-            );
-            Ok(text)
+            .await;
+
+            if let Some(reporter) = &self.health_reporter {
+                if result.is_ok() {
+                    reporter.record_success();
+                } else {
+                    reporter.record_failure();
+                }
+            }
+            result
         })
     }
 }
@@ -744,23 +846,29 @@ impl GenericSpeechToTextProvider {
 
 struct GenericFormattingProvider {
     client: Client,
+    user_model_id: String,
     provider_id: String,
     model_id: String,
     external_model_id: String,
     provider_config: RuntimeProviderConfig,
     model_config: RuntimeModelConfig,
+    health_reporter: Option<ModelHealthReporter>,
 }
 
 impl FormattingProvider for GenericFormattingProvider {
     fn format<'a>(&'a self, text: &'a str) -> ProviderFuture<'a, String> {
         Box::pin(async move {
             let _ = (&self.client, &self.provider_config, &self.model_config, text);
-            Err(anyhow!(
+            let result: Result<String> = Err(anyhow!(
                 "formatting provider '{}' model_id='{}' model '{}' is loaded but formatting runtime is not wired yet",
                 self.provider_id,
                 self.model_id,
                 self.external_model_id
-            ))
+            ));
+            if let Some(reporter) = &self.health_reporter {
+                reporter.record_failure();
+            }
+            result
         })
     }
 }

@@ -10,6 +10,7 @@ commands.allow = [
   "import_custom_sound",
   "preview_sound",
   "list_model_settings",
+  "list_model_health",
   "refresh_provider_models",
   "save_model_item",
   "delete_model_item",

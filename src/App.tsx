@@ -21,7 +21,7 @@ import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
-import { Check, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2 } from "lucide-react";
+import { Check, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -141,7 +141,10 @@ export default function App() {
   }, []);
 
   useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
-    if (!event.keys.includes("recording.microphone.input_device")) {
+    const shouldFetch = event.keys.some((key) =>
+      key === "recording.microphone.input_device" || key === "models.formatting.enabled"
+    );
+    if (!shouldFetch) {
       return;
     }
     hasHydrated.current = false;
@@ -271,7 +274,7 @@ export default function App() {
             </TabsContent>
 
             <TabsContent value="models" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
-              <ModelsPane />
+              <ModelsPane draft={draft} updateDraft={updateDraft} />
             </TabsContent>
 
             <TabsContent value="about" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
@@ -725,6 +728,16 @@ type UserModelView = {
   is_active: boolean;
 };
 
+type ModelHealthStatus = "healthy" | "unhealthy" | "unknown";
+type ModelHealthView = {
+  id: string;
+  role: ModelRole;
+  display_name: string;
+  provider_name: string;
+  is_active: boolean;
+  health: ModelHealthStatus;
+};
+
 type RoleModelSettings = {
   role: ModelRole;
   model_id: string | null;
@@ -738,8 +751,15 @@ type ProviderModelOption = {
   name: string;
 };
 
-function ModelsPane() {
+function ModelsPane({
+  draft,
+  updateDraft,
+}: {
+  draft: SettingsRecord;
+  updateDraft: (key: string, value: SettingValue) => void;
+}) {
   const { t } = useTranslation();
+  const transformEnabled = draft["models.formatting.enabled"] !== false;
 
   return (
     <div className="grid gap-4">
@@ -753,6 +773,8 @@ function ModelsPane() {
         role="formatting"
         title={t("models.formattingTitle")}
         description={t("models.formattingDescription")}
+        transformEnabled={transformEnabled}
+        onTransformEnabledChange={(checked) => updateDraft("models.formatting.enabled", checked)}
       />
     </div>
   );
@@ -762,16 +784,22 @@ function ModelRoleCard({
   role,
   title,
   description,
+  transformEnabled,
+  onTransformEnabledChange,
 }: {
   role: ModelRole;
   title: string;
   description: string;
+  transformEnabled?: boolean;
+  onTransformEnabledChange?: (checked: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<RoleModelSettings | null>(null);
+  const [modelHealth, setModelHealth] = useState<Record<string, ModelHealthStatus>>({});
   const [isAdding, setIsAdding] = useState(false);
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isRoleDisabled = role === "formatting" && transformEnabled === false;
 
   const load = useCallback(async () => {
     if (!isTauri()) {
@@ -789,9 +817,38 @@ function ModelRoleCard({
     void load();
   }, [load]);
 
+  useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
+    if (event.keys.includes("models.active") || event.keys.includes("models.health")) {
+      void load();
+    }
+  });
+
   const providers = settings?.providers ?? [];
   const catalogModels = settings?.models ?? [];
   const userModels = settings?.user_models ?? [];
+
+  useEffect(() => {
+    if (!isTauri() || userModels.length === 0) {
+      setModelHealth({});
+      return;
+    }
+    let cancelled = false;
+    void tauriInvoke<ModelHealthView[]>("list_model_health", { role }).then(
+      (models) => {
+        if (!cancelled) {
+          setModelHealth(Object.fromEntries(models.map((model) => [model.id, model.health] as const)));
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setModelHealth(Object.fromEntries(userModels.map((model) => [model.id, "unknown"] as const)));
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [role, userModels]);
 
   const handleSaved = (modelId: string) => {
     setIsAdding(false);
@@ -805,11 +862,25 @@ function ModelRoleCard({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div className="min-w-0 space-y-1.5">
+          <CardTitle>{title}</CardTitle>
+          <CardDescription>{description}</CardDescription>
+        </div>
+        {role === "formatting" && onTransformEnabledChange ? (
+          <div className="flex shrink-0 items-center gap-2 pt-0.5">
+            <Label htmlFor="models-formatting-enabled" className="text-xs text-muted-foreground">
+              {t("models.enabled")}
+            </Label>
+            <Switch
+              id="models-formatting-enabled"
+              checked={transformEnabled ?? true}
+              onCheckedChange={onTransformEnabledChange}
+            />
+          </div>
+        ) : null}
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className={`space-y-3 ${isRoleDisabled ? "opacity-50" : ""}`}>
         {userModels.length === 0 && !isAdding ? (
           <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
             {t("models.noModel")}
@@ -823,7 +894,8 @@ function ModelRoleCard({
             catalogModels={catalogModels}
             providers={providers}
             isSelected={model.is_active}
-            isLocked={editingModelId !== null && editingModelId !== model.id}
+            health={modelHealth[model.id] ?? "unknown"}
+            isLocked={isRoleDisabled || (editingModelId !== null && editingModelId !== model.id)}
             onSaved={handleSaved}
             onSelected={handleSelected}
             onEditingChange={(editing) => setEditingModelId(editing ? model.id : null)}
@@ -839,7 +911,8 @@ function ModelRoleCard({
             catalogModels={catalogModels}
             providers={providers}
             isSelected={false}
-            isLocked={editingModelId !== null && editingModelId !== "__new__"}
+            health="unknown"
+            isLocked={isRoleDisabled || (editingModelId !== null && editingModelId !== "__new__")}
             onSaved={handleSaved}
             onSelected={handleSelected}
             onEditingChange={(editing) => setEditingModelId(editing ? "__new__" : null)}
@@ -853,7 +926,7 @@ function ModelRoleCard({
             <Button
               variant="outline"
               size="sm"
-              disabled={editingModelId !== null}
+              disabled={isRoleDisabled || editingModelId !== null}
               onClick={() => {
                 setEditingModelId("__new__");
                 setIsAdding(true);
@@ -876,6 +949,7 @@ function ModelItem({
   catalogModels,
   providers,
   isSelected,
+  health,
   isLocked,
   onSaved,
   onSelected,
@@ -888,6 +962,7 @@ function ModelItem({
   catalogModels: CatalogModelView[];
   providers: ProviderSettingsView[];
   isSelected: boolean;
+  health: ModelHealthStatus;
   isLocked: boolean;
   onSaved: (modelId: string) => void;
   onSelected: () => void;
@@ -1106,7 +1181,7 @@ function ModelItem({
               <Trash2 className="size-4" aria-hidden="true" />
             </Button>
           </div>
-          {isSelected ? <Check className="size-4 text-success" aria-label={t("models.selected")} /> : null}
+          <ModelHealthIcon health={health} isSelected={isSelected} />
         </div>
       </div>
     );
@@ -1224,6 +1299,16 @@ function ModelItem({
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
+}
+
+function ModelHealthIcon({ health, isSelected }: { health: ModelHealthStatus; isSelected: boolean }) {
+  if (health === "unhealthy") {
+    return <TriangleAlert className="size-4 text-destructive" aria-hidden="true" />;
+  }
+  if (health === "healthy") {
+    return <Check className={`size-4 ${isSelected ? "text-success" : "text-muted-foreground"}`} aria-hidden="true" />;
+  }
+  return null;
 }
 
 function AboutPane() {

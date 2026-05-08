@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::model_health::{ModelHealthCache, ModelHealthView};
 use crate::permissions::PermissionsStatus;
 use crate::providers::{ProviderModelOption, RoleModelSettings};
 use crate::settings_db::SettingsDb;
@@ -7,7 +8,7 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 pub async fn apply_settings(
@@ -127,17 +128,31 @@ pub async fn list_model_settings(
 }
 
 #[tauri::command]
+pub async fn list_model_health(
+    role: String,
+    health_cache: State<'_, ModelHealthCache>,
+) -> Result<Vec<ModelHealthView>, String> {
+    Ok(health_cache.role_snapshot(&role))
+}
+
+#[tauri::command]
 pub async fn refresh_provider_models(
     role: String,
     provider_id: String,
     provider_config_override: Value,
+    health_cache: State<'_, ModelHealthCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<Vec<ProviderModelOption>, String> {
     let factory = crate::providers::ProviderFactory::new(storage.pool());
-    factory
+    let options = factory
         .refresh_provider_models(&role, &provider_id, provider_config_override)
         .await
-        .map_err(command_error)
+        .map_err(command_error)?;
+    health_cache
+        .sync_metadata(&storage.pool())
+        .await
+        .map_err(command_error)?;
+    Ok(options)
 }
 
 #[tauri::command]
@@ -149,6 +164,7 @@ pub async fn save_model_item(
     provider_config_override: Value,
     model_config_override: Value,
     app: AppHandle,
+    health_cache: State<'_, ModelHealthCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<String, String> {
     let factory = crate::providers::ProviderFactory::new(storage.pool());
@@ -163,6 +179,10 @@ pub async fn save_model_item(
         )
         .await
         .map_err(command_error)?;
+    if let Err(err) = health_cache.refresh_model(&storage.pool(), &role, &model_id).await {
+        log::warn!("failed to refresh model health after save model_id={model_id}: {err}");
+    }
+    refresh_tray_and_emit_model_health(&app);
     restart_runtime_after_provider_change(&app)?;
     Ok(model_id)
 }
@@ -172,6 +192,7 @@ pub async fn delete_model_item(
     role: String,
     model_id: String,
     app: AppHandle,
+    health_cache: State<'_, ModelHealthCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<(), String> {
     let factory = crate::providers::ProviderFactory::new(storage.pool());
@@ -179,6 +200,11 @@ pub async fn delete_model_item(
         .delete_model_item(&role, &model_id)
         .await
         .map_err(command_error)?;
+    health_cache
+        .sync_metadata(&storage.pool())
+        .await
+        .map_err(command_error)?;
+    refresh_tray_and_emit_model_health(&app);
     restart_runtime_after_provider_change(&app)
 }
 
@@ -187,6 +213,7 @@ pub async fn select_model(
     role: String,
     model_id: String,
     app: AppHandle,
+    health_cache: State<'_, ModelHealthCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<(), String> {
     let factory = crate::providers::ProviderFactory::new(storage.pool());
@@ -194,6 +221,11 @@ pub async fn select_model(
         .set_active_model(&role, &model_id)
         .await
         .map_err(command_error)?;
+    health_cache
+        .sync_metadata(&storage.pool())
+        .await
+        .map_err(command_error)?;
+    refresh_tray_and_emit_model_health(&app);
     restart_runtime_after_provider_change(&app)
 }
 
@@ -314,6 +346,21 @@ fn restart_runtime_after_provider_change(app: &AppHandle) -> Result<(), String> 
     crate::app_host::restart_runtime(app, config).map_err(|err| err.to_string())
 }
 
+fn refresh_tray_and_emit_model_health(app: &AppHandle) {
+    if let Some(config) = crate::app_host::current_config(app) {
+        crate::app_host::refresh_tray_menu(app, &config);
+    }
+    if let Err(err) = app.emit(
+        "settings:changed",
+        serde_json::json!({
+            "source": "model_health",
+            "keys": ["models.health", "models.active"],
+        }),
+    ) {
+        log::warn!("failed to emit model health change: {err}");
+    }
+}
+
 fn sanitize_filename(value: &str) -> String {
     value
         .chars()
@@ -341,6 +388,7 @@ fn runtime_config_value(config: &AppConfig) -> Value {
         "interaction": &config.interaction,
         "pipeline": &config.pipeline,
         "recording": &config.recording,
+        "models": &config.models,
         "audio": &config.audio,
         "audio_cues": &config.audio_cues,
         "output": &config.output,
@@ -354,6 +402,7 @@ fn settings_fingerprint(settings: &Value) -> String {
         "recording.hotkey": settings.get("recording.hotkey"),
         "recording.microphone.input_device": settings.get("recording.microphone.input_device"),
         "recording.pause_media": settings.get("recording.pause_media"),
+        "models.formatting.enabled": settings.get("models.formatting.enabled"),
         "recording.sounds.start": settings.get("recording.sounds.start"),
         "recording.sounds.stop": settings.get("recording.sounds.stop"),
         "recording.sounds.error": settings.get("recording.sounds.error"),
@@ -368,6 +417,7 @@ fn config_fingerprint(config: &AppConfig) -> String {
         "recording.hotkey": config.interaction.shortcut,
         "recording.microphone.input_device": config.audio.input_device,
         "recording.pause_media": config.recording.pause_media,
+        "models.formatting.enabled": config.models.formatting_enabled,
         "recording.sounds.start": config.audio_cues.start_sound,
         "recording.sounds.stop": config.audio_cues.stop_sound,
         "recording.sounds.error": config.audio_cues.error_sound,

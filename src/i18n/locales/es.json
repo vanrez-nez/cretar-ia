@@ -107,10 +107,13 @@
     "caps": "MAYÚS"
   },
   "models": {
-    "sttTitle": "Modelo STT",
-    "sttDescription": "Proveedores de voz a texto.",
-    "formattingTitle": "Modelo de formato",
-    "formattingDescription": "Los proveedores de formato llegarán en una fase posterior.",
+    "sttTitle": "Transcripción",
+    "sttDescription": "Proveedores de transcripción.",
+    "formattingTitle": "Transformación",
+    "formattingDescription": "Proveedores de transformación.",
+    "enabled": "Activado",
+    "transformEnabled": "Transformación",
+    "disableTransform": "Desactivar",
     "noModel": "No hay modelo configurado",
     "noProvider": "No hay proveedor configurado",
     "addProvider": "Agregar proveedor",
@@ -152,6 +155,8 @@
   },
   "tray": {
     "settings": "Ajustes",
+    "models": "Modelos",
+    "noModels": "No hay modelos configurados",
     "quit": "Salir",
     "inputDevices": "Dispositivos de entrada",
     "noInputDevices": "No se encontraron dispositivos de entrada",

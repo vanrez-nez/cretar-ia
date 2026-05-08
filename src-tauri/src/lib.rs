@@ -8,6 +8,8 @@ mod i18n;
 mod inject;
 mod media_control;
 #[cfg(feature = "settings-ui")]
+mod model_health;
+#[cfg(feature = "settings-ui")]
 mod providers;
 #[cfg(feature = "settings-ui")]
 mod permissions;

@@ -107,10 +107,13 @@
     "caps": "CAPS"
   },
   "models": {
-    "sttTitle": "STT Model",
-    "sttDescription": "Speech-to-text providers.",
-    "formattingTitle": "Formatting Model",
-    "formattingDescription": "Formatting providers are planned for a later phase.",
+    "sttTitle": "Transcript",
+    "sttDescription": "Transcript providers.",
+    "formattingTitle": "Transform",
+    "formattingDescription": "Transform providers.",
+    "enabled": "Enabled",
+    "transformEnabled": "Transforming",
+    "disableTransform": "Disable",
     "noModel": "No model configured",
     "noProvider": "No provider configured",
     "addProvider": "Add Provider",
@@ -152,6 +155,8 @@
   },
   "tray": {
     "settings": "Settings",
+    "models": "Models",
+    "noModels": "No models configured",
     "quit": "Quit",
     "inputDevices": "Input Devices",
     "noInputDevices": "No input devices found",
