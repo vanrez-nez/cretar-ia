@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::providers;
 use crate::settings_schema;
 use anyhow::{Context, Result};
 use sqlx::{Row, SqlitePool};
@@ -31,6 +32,7 @@ impl SettingsDb {
         let pool = SqlitePool::connect(&url)
             .await
             .with_context(|| format!("connecting settings database {}", db_path.display()))?;
+        providers::seed_provider_presets(&pool).await?;
 
         Ok(Self {
             pool,
@@ -45,6 +47,10 @@ impl SettingsDb {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    pub fn pool(&self) -> SqlitePool {
+        self.pool.clone()
     }
 
     pub async fn load_settings(&self) -> Result<serde_json::Value> {

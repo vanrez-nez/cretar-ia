@@ -4,7 +4,7 @@ use crate::config::AppConfig;
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
-use crate::openrouter::OpenRouterClient;
+use crate::providers::ProviderFactory;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
 use crate::settings_db::{SettingsDb, SETTINGS_DB_URL};
@@ -56,16 +56,85 @@ impl AppRuntimeState {
 }
 
 fn settings_migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create_settings_table",
-        sql: "CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );",
-        kind: MigrationKind::Up,
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "create_current_settings_schema",
+            sql: "CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                config_schema_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_preset INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS models (
+                id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
+                external_model_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                config_schema_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_preset INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(provider_id, external_model_id, role)
+            );
+            CREATE INDEX IF NOT EXISTS models_provider_role_idx ON models(provider_id, role);
+            CREATE TABLE IF NOT EXISTS provider_config_overrides (
+                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
+                provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(role, provider_id)
+            );
+            CREATE TABLE IF NOT EXISTS model_config_overrides (
+                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
+                model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(role, model_id)
+            );
+            CREATE TABLE IF NOT EXISTS model_provider_config_overrides (
+                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
+                model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(role, model_id)
+            );
+            CREATE TABLE IF NOT EXISTS user_models (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
+                provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE RESTRICT,
+                model_id TEXT NOT NULL REFERENCES models(id) ON DELETE RESTRICT,
+                display_name TEXT NOT NULL,
+                provider_config_override_json TEXT NOT NULL,
+                model_config_override_json TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS user_models_role_idx ON user_models(role);
+            CREATE INDEX IF NOT EXISTS user_models_provider_model_idx ON user_models(provider_id, model_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS user_models_active_role_idx
+                ON user_models(role)
+                WHERE is_active = 1;",
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 pub fn run() -> Result<()> {
@@ -130,6 +199,15 @@ pub fn run() -> Result<()> {
             settings::list_sound_options,
             settings::import_custom_sound,
             settings::preview_sound,
+            settings::list_model_settings,
+            settings::refresh_provider_models,
+            settings::save_model_item,
+            settings::delete_model_item,
+            settings::select_model,
+            settings::save_provider_config_override,
+            settings::save_model_config_override,
+            settings::reset_provider_config_override,
+            settings::reset_model_config_override,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
@@ -158,7 +236,7 @@ pub fn run() -> Result<()> {
             app.manage(tray);
             let runtime_cfg = cfg.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = start_runtime(&app_handle, runtime_cfg) {
+                if let Err(err) = start_runtime(&app_handle, runtime_cfg).await {
                     log::error!("failed to start runtime: {err}");
                 }
             });
@@ -221,7 +299,7 @@ pub fn restart_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     stop_runtime(app);
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(err) = start_runtime(&app_handle, cfg) {
+        if let Err(err) = start_runtime(&app_handle, cfg).await {
             log::error!("failed to restart runtime: {err}");
         }
     });
@@ -236,23 +314,36 @@ pub fn refresh_tray_menu(app: &AppHandle, config: &AppConfig) {
     }
 }
 
-fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
+async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     cfg.validate()?;
     log::info!("runtime start applying fingerprint={}", runtime_fingerprint(&cfg));
     let runtime_state = app.state::<AppRuntimeState>().runtime_slot();
     let tray = app.state::<AppTray>().inner().clone();
     let cue = audio_cues::CuePlayer::new(&cfg.audio_cues, &cfg);
     cue.run_self_test_if_requested();
-    let openrouter = match OpenRouterClient::new(cfg.provider.openrouter.clone()) {
-        Ok(client) => Some(client),
-        Err(err) => {
-            log::warn!("provider config error: {err}");
+    let stt_provider = match app.try_state::<SettingsDb>() {
+        Some(storage) => {
+            let factory = ProviderFactory::new(storage.pool());
+            match factory.speech_to_text().await {
+                Ok(provider) => provider,
+                Err(err) => {
+                    log::warn!("provider factory error: {err}");
+                    None
+                }
+            }
+        }
+        None => {
+            log::warn!("provider factory unavailable because settings db state is missing");
             None
         }
     };
 
+    if stt_provider.is_none() {
+        log::warn!("speech-to-text provider not configured");
+    }
+
     let (bus_tx, status_rx, orchestrator) =
-        recording::orchestrator::start(cfg.clone(), cue.clone(), openrouter);
+        recording::orchestrator::start(cfg.clone(), cue.clone(), stt_provider);
     let status_task = spawn_status_task(status_rx, tray, cue, cfg.clone());
     let shortcut = register_shortcut(app, &cfg)?;
 
@@ -355,22 +446,19 @@ fn handle_global_shortcut(
     }
 
     let hotkey = match event.state() {
-        ShortcutState::Pressed => Some(HotkeyEvent::Pressed),
-        ShortcutState::Released => Some(HotkeyEvent::Released),
-        _ => None,
+        ShortcutState::Pressed => HotkeyEvent::Pressed,
+        ShortcutState::Released => HotkeyEvent::Released,
     };
 
-    if let Some(hotkey) = hotkey {
-        log::debug!(
-            "global shortcut event mode={:?} shortcut={:?} state={:?} hotkey={}",
-            cfg.interaction.mode,
-            shortcut,
-            event.state(),
-            hotkey
-        );
-        if let Some(worker_event) = bus_tx.send_hotkey(hotkey) {
-            let _ = bus_tx.send_worker(worker_event);
-        }
+    log::debug!(
+        "global shortcut event mode={:?} shortcut={:?} state={:?} hotkey={}",
+        cfg.interaction.mode,
+        shortcut,
+        event.state(),
+        hotkey
+    );
+    if let Some(worker_event) = bus_tx.send_hotkey(hotkey) {
+        let _ = bus_tx.send_worker(worker_event);
     }
 }
 

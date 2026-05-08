@@ -33,14 +33,6 @@
     "recording.recovery.retry_stop_timeout",
     "recording.recovery.retry_processing_timeout",
     "recording.recovery.retry_queue_saturation",
-    "models.stt.provider",
-    "models.stt.openrouter.api_key",
-    "models.stt.openrouter.model",
-    "models.stt.openrouter.base_url",
-    "models.stt.openrouter.endpoint",
-    "models.stt.openrouter.prompt",
-    "models.stt.openrouter.max_audio_bytes",
-    "models.formatting.provider",
     "output.mode",
     "output.paste_delay_ms",
     "output.processing_timeout_ms",
@@ -55,36 +47,61 @@
   "properties": {
     "system.language": {
       "type": "string",
-      "enum": ["system", "en", "es"],
+      "enum": [
+        "system",
+        "en",
+        "es"
+      ],
       "default": "system",
-      "x-ui": { "section": "system", "label": "system.language.title" }
+      "x-ui": {
+        "section": "system",
+        "label": "system.language.title"
+      }
     },
     "system.launch_at_start": {
       "type": "boolean",
       "default": false,
-      "x-ui": { "section": "system", "label": "system.launchAtStart.title" }
+      "x-ui": {
+        "section": "system",
+        "label": "system.launchAtStart.title"
+      }
     },
     "system.save_text_history": {
       "type": "boolean",
       "default": false,
-      "x-ui": { "section": "system", "label": "system.saveTextHistory.title" }
+      "x-ui": {
+        "section": "system",
+        "label": "system.saveTextHistory.title"
+      }
     },
     "system.save_input_audio": {
       "type": "boolean",
       "default": true,
-      "x-ui": { "section": "system", "label": "system.saveInputAudio.title" }
+      "x-ui": {
+        "section": "system",
+        "label": "system.saveInputAudio.title"
+      }
     },
     "recording.mode": {
       "type": "string",
-      "enum": ["push_to_talk", "toggle"],
+      "enum": [
+        "push_to_talk",
+        "toggle"
+      ],
       "default": "push_to_talk",
-      "x-ui": { "section": "recording", "label": "recording.mode.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.mode.title"
+      }
     },
     "recording.hotkey": {
       "type": "string",
       "minLength": 1,
       "default": "ctrl+shift+space",
-      "x-ui": { "section": "recording", "label": "recording.hotkey.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.hotkey.title"
+      }
     },
     "recording.hotkey_repeat_debounce_ms": {
       "type": "integer",
@@ -93,9 +110,15 @@
       "default": 120
     },
     "recording.microphone.input_device": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null,
-      "x-ui": { "section": "recording", "label": "recording.microphone.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.microphone.title"
+      }
     },
     "recording.microphone.sample_rate": {
       "type": "integer",
@@ -125,19 +148,37 @@
       "default": true
     },
     "recording.sounds.start": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": "sounds/sine_transition_start.wav",
-      "x-ui": { "section": "recording", "label": "recording.soundStart.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.soundStart.title"
+      }
     },
     "recording.sounds.stop": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": "sounds/sine_transition_stop.wav",
-      "x-ui": { "section": "recording", "label": "recording.soundEnd.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.soundEnd.title"
+      }
     },
     "recording.sounds.error": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": "sounds/sine_error.wav",
-      "x-ui": { "section": "recording", "label": "recording.soundError.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.soundError.title"
+      }
     },
     "recording.sounds.volume": {
       "type": "number",
@@ -148,39 +189,64 @@
     "recording.pause_media": {
       "type": "boolean",
       "default": false,
-      "x-ui": { "section": "recording", "label": "recording.pauseMedia.title" }
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.pauseMedia.title"
+      }
     },
     "recording.processing.debounce_ms": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "maximum": 3600000,
       "default": null
     },
     "recording.processing.settle_timeout_ms": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 100,
       "maximum": 120000,
       "default": null
     },
     "recording.processing.hotkey_queue_capacity": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "maximum": 5000,
       "default": null
     },
     "recording.processing.worker_queue_capacity": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "maximum": 20000,
       "default": null
     },
     "recording.processing.queue_saturation_policy": {
-      "type": ["string", "null"],
-      "enum": ["retry", "error_only", null],
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "retry",
+        "error_only",
+        null
+      ],
       "default": null
     },
     "recording.processing.max_recording_duration_secs": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "maximum": 86400,
       "default": null
@@ -201,46 +267,12 @@
       "type": "boolean",
       "default": true
     },
-    "models.stt.provider": {
-      "type": "string",
-      "enum": ["openrouter"],
-      "default": "openrouter",
-      "x-ui": { "section": "models", "label": "models.sttTitle" }
-    },
-    "models.stt.openrouter.api_key": {
-      "type": "string",
-      "default": ""
-    },
-    "models.stt.openrouter.model": {
-      "type": "string",
-      "default": "openai/whisper-1"
-    },
-    "models.stt.openrouter.base_url": {
-      "type": "string",
-      "default": "https://openrouter.ai/api/v1"
-    },
-    "models.stt.openrouter.endpoint": {
-      "type": "string",
-      "default": "audio/transcriptions"
-    },
-    "models.stt.openrouter.prompt": {
-      "type": ["string", "null"],
-      "default": null
-    },
-    "models.stt.openrouter.max_audio_bytes": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 536870912,
-      "default": 25165824
-    },
-    "models.formatting.provider": {
-      "type": ["string", "null"],
-      "default": null,
-      "x-ui": { "section": "models", "label": "models.formattingTitle" }
-    },
     "output.mode": {
       "type": "string",
-      "enum": ["clipboard_only", "clipboard_paste"],
+      "enum": [
+        "clipboard_only",
+        "clipboard_paste"
+      ],
       "default": "clipboard_paste"
     },
     "output.paste_delay_ms": {

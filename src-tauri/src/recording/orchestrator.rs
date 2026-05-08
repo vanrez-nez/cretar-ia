@@ -6,7 +6,7 @@ use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingEvent};
 use crate::contracts::status::{
     bounded_status_channel, SessionStatusReceiver, SessionStatusSender, SESSION_STATUS_QUEUE_CAPACITY,
 };
-use crate::openrouter::OpenRouterClient;
+use crate::providers::DynSpeechToTextProvider;
 use crate::recording::command_bus::{CommandBus, CommandBusTx};
 use crate::recording::fsm::{transition, NoopReason, RecordedEvent, Transition, TransitionResult};
 use crate::recording::workers::{
@@ -27,32 +27,32 @@ use tokio::time::{self, Duration};
 pub fn start(
     cfg: AppConfig,
     cue: CuePlayer,
-    openrouter: Option<OpenRouterClient>,
+    stt_provider: Option<DynSpeechToTextProvider>,
 ) -> (
     CommandBusTx,
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, cue, openrouter, true)
+    start_with_worker_mode(cfg, cue, stt_provider, true)
 }
 
 #[cfg(test)]
 pub fn start_without_workers_for_tests(
     cfg: AppConfig,
     cue: CuePlayer,
-    openrouter: Option<OpenRouterClient>,
+    stt_provider: Option<DynSpeechToTextProvider>,
 ) -> (
     CommandBusTx,
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, cue, openrouter, false)
+    start_with_worker_mode(cfg, cue, stt_provider, false)
 }
 
 fn start_with_worker_mode(
     cfg: AppConfig,
     cue: CuePlayer,
-    openrouter: Option<OpenRouterClient>,
+    stt_provider: Option<DynSpeechToTextProvider>,
     start_workers: bool,
 ) -> (
     CommandBusTx,
@@ -90,7 +90,7 @@ fn start_with_worker_mode(
     let handle = tokio::spawn(async move {
         let mut runner = Orchestrator {
             cfg,
-            openrouter,
+            stt_provider,
             cue,
             media_pause: MediaPauseController::new(),
             bus,
@@ -117,7 +117,7 @@ fn start_with_worker_mode(
 
 struct Orchestrator {
     cfg: AppConfig,
-    openrouter: Option<OpenRouterClient>,
+    stt_provider: Option<DynSpeechToTextProvider>,
     cue: CuePlayer,
     media_pause: MediaPauseController,
     bus: CommandBus,
@@ -475,7 +475,7 @@ impl Orchestrator {
 
         let audio_cfg = self.cfg.audio.clone();
         let output_cfg = self.cfg.output.clone();
-        let openrouter = self.openrouter.clone();
+        let stt_provider = self.stt_provider.clone();
         let Some(processor_worker) = self.processor_worker.as_ref() else {
             self.publish_status(
                 "processing_after_shutdown_ignored",
@@ -485,7 +485,7 @@ impl Orchestrator {
             return Ok(());
         };
 
-        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, openrouter) {
+        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, stt_provider) {
             self.publish_status(
                 "processing_start_command_failed",
                 Some(RecordingErrorCode::Processing),

@@ -2,7 +2,7 @@ use crate::config::{AudioCaptureConfig, OutputConfig};
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::inject;
-use crate::openrouter::OpenRouterClient;
+use crate::providers::DynSpeechToTextProvider;
 use crate::recording::command_bus::CommandBusTx;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ enum ProcessorWorkerCommand {
         audio_cfg: AudioCaptureConfig,
         output_cfg: OutputConfig,
         wav_file: PathBuf,
-        openrouter: Option<OpenRouterClient>,
+        stt_provider: Option<DynSpeechToTextProvider>,
     },
     Cancel,
     Shutdown {
@@ -68,14 +68,14 @@ impl ProcessorWorker {
         audio_cfg: AudioCaptureConfig,
         output_cfg: OutputConfig,
         wav_file: PathBuf,
-        openrouter: Option<OpenRouterClient>,
+        stt_provider: Option<DynSpeechToTextProvider>,
     ) -> bool {
         self.command_tx
             .send(ProcessorWorkerCommand::Run {
                 audio_cfg,
                 output_cfg,
                 wav_file,
-                openrouter,
+                stt_provider,
             })
             .is_ok()
     }
@@ -109,7 +109,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                         audio_cfg,
                         output_cfg,
                         wav_file,
-                        openrouter,
+                        stt_provider,
                     } => {
                         if processing_task.is_some() {
                             if tx.send_worker(RecordingEvent::ProcessFailed {
@@ -130,7 +130,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                         let result_tx = result_tx.clone();
                         processing_task = Some(tokio::spawn(async move {
                             let result =
-                                process_recording_work(audio_cfg, output_cfg, wav_file, openrouter).await;
+                                process_recording_work(audio_cfg, output_cfg, wav_file, stt_provider).await;
                             let success = result.is_ok();
                             let _ = result_tx.send(result);
                             log::debug!(
@@ -176,7 +176,7 @@ async fn process_recording_work(
     audio_cfg: crate::config::AudioCaptureConfig,
     output_cfg: crate::config::OutputConfig,
     wav_file: PathBuf,
-    openrouter: Option<OpenRouterClient>,
+    stt_provider: Option<DynSpeechToTextProvider>,
 ) -> Result<(), (RecordingErrorCode, String)> {
     if wav_file.as_os_str().is_empty() {
         return Err((
@@ -186,7 +186,7 @@ async fn process_recording_work(
     }
 
     let work = async {
-        match openrouter {
+        match stt_provider {
             Some(client) => match client.transcribe(&wav_file).await {
                 Ok(text) => match inject::deliver_text(&audio_cfg, &output_cfg, &text).await {
                     Ok(_) => Ok(()),

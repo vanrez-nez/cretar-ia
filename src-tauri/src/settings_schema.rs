@@ -1,7 +1,7 @@
 use crate::config::{
-    AppConfig, AudioCaptureConfig, AudioCueConfig, InteractionConfig, OpenRouterConfig,
-    OutputConfig, PipelineConfig, ProviderConfig, RecordingBehaviorConfig,
-    RecoveryStrategyConfig, TrayConfig, TrayTooltipConfig, UiConfig,
+    AppConfig, AudioCaptureConfig, AudioCueConfig, InteractionConfig, OutputConfig, PipelineConfig,
+    ProviderConfig, RecordingBehaviorConfig, RecoveryStrategyConfig, TrayConfig, TrayTooltipConfig,
+    UiConfig,
 };
 use anyhow::{anyhow, Context, Result};
 use jsonschema::JSONSchema;
@@ -75,17 +75,7 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
         ui: UiConfig {
             language: setting(settings, "system.language")?,
         },
-        provider: ProviderConfig {
-            provider: setting(settings, "models.stt.provider")?,
-            openrouter: OpenRouterConfig {
-                api_key: setting(settings, "models.stt.openrouter.api_key")?,
-                model: setting(settings, "models.stt.openrouter.model")?,
-                base_url: setting(settings, "models.stt.openrouter.base_url")?,
-                endpoint: setting(settings, "models.stt.openrouter.endpoint")?,
-                prompt: setting(settings, "models.stt.openrouter.prompt")?,
-                max_audio_bytes: setting(settings, "models.stt.openrouter.max_audio_bytes")?,
-            },
-        },
+        provider: ProviderConfig::default(),
         interaction: InteractionConfig {
             mode: setting(settings, "recording.mode")?,
             shortcut: setting(settings, "recording.hotkey")?,

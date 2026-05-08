@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::permissions::PermissionsStatus;
+use crate::providers::{ProviderModelOption, RoleModelSettings};
 use crate::settings_db::SettingsDb;
 use rodio::Source;
 use serde_json::Value;
@@ -117,6 +118,145 @@ pub async fn preview_sound(
 }
 
 #[tauri::command]
+pub async fn list_model_settings(
+    role: String,
+    storage: State<'_, SettingsDb>,
+) -> Result<RoleModelSettings, String> {
+    let factory = crate::providers::ProviderFactory::new(storage.pool());
+    factory.model_settings(&role).await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn refresh_provider_models(
+    role: String,
+    provider_id: String,
+    provider_config_override: Value,
+    storage: State<'_, SettingsDb>,
+) -> Result<Vec<ProviderModelOption>, String> {
+    let factory = crate::providers::ProviderFactory::new(storage.pool());
+    factory
+        .refresh_provider_models(&role, &provider_id, provider_config_override)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn save_model_item(
+    role: String,
+    provider_id: String,
+    model_id: String,
+    display_name: Option<String>,
+    provider_config_override: Value,
+    model_config_override: Value,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<String, String> {
+    let factory = crate::providers::ProviderFactory::new(storage.pool());
+    let model_id = factory
+        .save_model_item(
+            &role,
+            &provider_id,
+            &model_id,
+            display_name,
+            provider_config_override,
+            model_config_override,
+        )
+        .await
+        .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)?;
+    Ok(model_id)
+}
+
+#[tauri::command]
+pub async fn delete_model_item(
+    role: String,
+    model_id: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    let factory = crate::providers::ProviderFactory::new(storage.pool());
+    factory
+        .delete_model_item(&role, &model_id)
+        .await
+        .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)
+}
+
+#[tauri::command]
+pub async fn select_model(
+    role: String,
+    model_id: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    let factory = crate::providers::ProviderFactory::new(storage.pool());
+    factory
+        .set_active_model(&role, &model_id)
+        .await
+        .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)
+}
+
+#[tauri::command]
+pub async fn save_provider_config_override(
+    role: String,
+    provider_id: String,
+    override_config: Value,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    crate::providers::save_provider_config_override(
+        &storage.pool(),
+        &role,
+        &provider_id,
+        override_config,
+    )
+    .await
+    .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)
+}
+
+#[tauri::command]
+pub async fn save_model_config_override(
+    role: String,
+    model_id: String,
+    override_config: Value,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    crate::providers::save_model_config_override(&storage.pool(), &role, &model_id, override_config)
+        .await
+        .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)
+}
+
+#[tauri::command]
+pub async fn reset_provider_config_override(
+    role: String,
+    provider_id: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    crate::providers::reset_provider_config_override(&storage.pool(), &role, &provider_id)
+        .await
+        .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)
+}
+
+#[tauri::command]
+pub async fn reset_model_config_override(
+    role: String,
+    model_id: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    crate::providers::reset_model_config_override(&storage.pool(), &role, &model_id)
+        .await
+        .map_err(command_error)?;
+    restart_runtime_after_provider_change(&app)
+}
+
+#[tauri::command]
 pub async fn check_permissions() -> Result<PermissionsStatus, String> {
     Ok(crate::permissions::check_permissions().await)
 }
@@ -165,6 +305,13 @@ pub(crate) fn apply_saved_config(
 
 fn command_error(err: anyhow::Error) -> String {
     err.to_string()
+}
+
+fn restart_runtime_after_provider_change(app: &AppHandle) -> Result<(), String> {
+    let Some(config) = crate::app_host::current_config(app) else {
+        return Ok(());
+    };
+    crate::app_host::restart_runtime(app, config).map_err(|err| err.to_string())
 }
 
 fn sanitize_filename(value: &str) -> String {

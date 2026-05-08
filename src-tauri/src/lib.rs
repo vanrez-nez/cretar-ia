@@ -7,7 +7,8 @@ mod hotkey;
 mod i18n;
 mod inject;
 mod media_control;
-mod openrouter;
+#[cfg(feature = "settings-ui")]
+mod providers;
 #[cfg(feature = "settings-ui")]
 mod permissions;
 #[cfg(feature = "settings-ui")]

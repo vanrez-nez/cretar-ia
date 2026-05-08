@@ -304,7 +304,6 @@ impl InteractionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenRouterConfig {
     pub api_key: String,
-    pub model: String,
     #[serde(default = "OpenRouterConfig::default_base_url")]
     pub base_url: String,
     #[serde(default = "OpenRouterConfig::default_endpoint")]
@@ -333,7 +332,6 @@ impl Default for OpenRouterConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            model: "openai/whisper-1".to_string(),
             base_url: Self::default_base_url(),
             endpoint: Self::default_endpoint(),
             max_audio_bytes: Self::default_max_audio_bytes(),

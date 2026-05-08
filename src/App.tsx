@@ -21,7 +21,7 @@ import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
-import { Play, ShieldCheck, ShieldX } from "lucide-react";
+import { Check, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2 } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -271,7 +271,7 @@ export default function App() {
             </TabsContent>
 
             <TabsContent value="models" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
-              <ModelsPane draft={draft} />
+              <ModelsPane />
             </TabsContent>
 
             <TabsContent value="about" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
@@ -682,38 +682,546 @@ function FileNameLabel({ fileName }: { fileName: string }) {
   );
 }
 
-function ModelsPane({ draft }: { draft: SettingsRecord }) {
+type ModelRole = "stt" | "formatting";
+
+type ProviderSettingsView = {
+  id: string;
+  name: string;
+  kind: string;
+  config: Record<string, unknown>;
+  override_config: Record<string, unknown>;
+  effective_config: Record<string, unknown>;
+  config_schema: Record<string, unknown>;
+};
+
+type CatalogModelView = {
+  id: string;
+  provider_id: string;
+  role: ModelRole;
+  external_model_id: string;
+  display_name: string;
+  config: Record<string, unknown>;
+  config_schema: Record<string, unknown>;
+};
+
+type UserModelView = {
+  id: string;
+  role: ModelRole;
+  provider_id: string;
+  provider_name: string;
+  provider_kind: string;
+  provider_config: Record<string, unknown>;
+  provider_override_config: Record<string, unknown>;
+  provider_effective_config: Record<string, unknown>;
+  provider_config_schema: Record<string, unknown>;
+  model_id: string;
+  external_model_id: string;
+  model_display_name: string;
+  display_name: string;
+  config: Record<string, unknown>;
+  override_config: Record<string, unknown>;
+  effective_config: Record<string, unknown>;
+  config_schema: Record<string, unknown>;
+  is_active: boolean;
+};
+
+type RoleModelSettings = {
+  role: ModelRole;
+  model_id: string | null;
+  providers: ProviderSettingsView[];
+  models: CatalogModelView[];
+  user_models: UserModelView[];
+};
+
+type ProviderModelOption = {
+  id: string;
+  name: string;
+};
+
+function ModelsPane() {
   const { t } = useTranslation();
-  const provider = draft["models.stt.provider"] as string;
-  const providerName = useMemo(() => providerLabel(provider, t), [provider, t]);
 
   return (
     <div className="grid gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("models.sttTitle")}</CardTitle>
-          <CardDescription>{t("models.sttDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <ProviderItem name={providerName} detail={(draft["models.stt.openrouter.model"] as string) || t("models.noModel")} />
-          <Button variant="outline" size="sm" disabled>
-            {t("models.addProvider")}
-          </Button>
-        </CardContent>
-      </Card>
+      <ModelRoleCard
+        role="stt"
+        title={t("models.sttTitle")}
+        description={t("models.sttDescription")}
+      />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("models.formattingTitle")}</CardTitle>
-          <CardDescription>{t("models.formattingDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <ProviderItem name={t("models.noProvider")} detail={t("common.unavailable")} disabled />
-          <Button variant="outline" size="sm" disabled>
-            {t("models.addProvider")}
+      <ModelRoleCard
+        role="formatting"
+        title={t("models.formattingTitle")}
+        description={t("models.formattingDescription")}
+      />
+    </div>
+  );
+}
+
+function ModelRoleCard({
+  role,
+  title,
+  description,
+}: {
+  role: ModelRole;
+  title: string;
+  description: string;
+}) {
+  const { t } = useTranslation();
+  const [settings, setSettings] = useState<RoleModelSettings | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!isTauri()) {
+      return;
+    }
+    setError(null);
+    try {
+      setSettings(await tauriInvoke<RoleModelSettings>("list_model_settings", { role }));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  }, [role]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const providers = settings?.providers ?? [];
+  const catalogModels = settings?.models ?? [];
+  const userModels = settings?.user_models ?? [];
+
+  const handleSaved = (modelId: string) => {
+    setIsAdding(false);
+    setEditingModelId(null);
+    void load();
+  };
+
+  const handleSelected = () => {
+    void load();
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {userModels.length === 0 && !isAdding ? (
+          <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+            {t("models.noModel")}
+          </div>
+        ) : null}
+        {userModels.map((model) => (
+          <ModelItem
+            key={model.id}
+            role={role}
+            model={model}
+            catalogModels={catalogModels}
+            providers={providers}
+            isSelected={model.is_active}
+            isLocked={editingModelId !== null && editingModelId !== model.id}
+            onSaved={handleSaved}
+            onSelected={handleSelected}
+            onEditingChange={(editing) => setEditingModelId(editing ? model.id : null)}
+            onDeleted={() => {
+              void load();
+            }}
+          />
+        ))}
+        {isAdding ? (
+          <ModelItem
+            role={role}
+            model={null}
+            catalogModels={catalogModels}
+            providers={providers}
+            isSelected={false}
+            isLocked={editingModelId !== null && editingModelId !== "__new__"}
+            onSaved={handleSaved}
+            onSelected={handleSelected}
+            onEditingChange={(editing) => setEditingModelId(editing ? "__new__" : null)}
+            onCancel={() => {
+              setEditingModelId(null);
+              setIsAdding(false);
+            }}
+          />
+        ) : (
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={editingModelId !== null}
+              onClick={() => {
+                setEditingModelId("__new__");
+                setIsAdding(true);
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              {t("models.addModel")}
+            </Button>
+          </div>
+        )}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ModelItem({
+  role,
+  model,
+  catalogModels,
+  providers,
+  isSelected,
+  isLocked,
+  onSaved,
+  onSelected,
+  onEditingChange,
+  onDeleted,
+  onCancel,
+}: {
+  role: ModelRole;
+  model: UserModelView | null;
+  catalogModels: CatalogModelView[];
+  providers: ProviderSettingsView[];
+  isSelected: boolean;
+  isLocked: boolean;
+  onSaved: (modelId: string) => void;
+  onSelected: () => void;
+  onEditingChange: (editing: boolean) => void;
+  onDeleted?: () => void;
+  onCancel?: () => void;
+}) {
+  const { t } = useTranslation();
+  const [isEditing, setIsEditing] = useState(model === null);
+  const initialProviderId = model?.provider_id ?? providers[0]?.id ?? "";
+  const [providerId, setProviderId] = useState(initialProviderId);
+  const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0];
+  const initialProviderConfig = model
+    ? nonEmptyObject(model.provider_override_config) ? model.provider_override_config : model.provider_config
+    : selectedProvider?.config ?? {};
+  const [providerConfigText, setProviderConfigText] = useState(formatJson(initialProviderConfig));
+  const [modelConfigText, setModelConfigText] = useState(formatJson(model?.override_config ?? {}));
+  const [selectedCatalogModelId, setSelectedCatalogModelId] = useState(model?.model_id ?? "");
+  const [displayName, setDisplayName] = useState(model?.display_name ?? "");
+  const modelOptionsForProvider = useCallback(
+    (nextProviderId: string): ProviderModelOption[] =>
+      catalogModels
+        .filter((item) => item.provider_id === nextProviderId)
+        .map((item) => ({
+          id: item.id,
+          name: item.display_name || item.external_model_id,
+        })),
+    [catalogModels]
+  );
+  const [options, setOptions] = useState<ProviderModelOption[]>(() => modelOptionsForProvider(initialProviderId));
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const autoRefreshAttempted = useRef<Set<string>>(new Set());
+
+  const providerConfig = parseJsonObject(providerConfigText);
+  const modelConfig = parseJsonObject(modelConfigText);
+  const authType = getNestedString(providerConfig.value, ["auth", "type"]);
+  const apiKey = getNestedString(providerConfig.value, ["auth", "api_key"]);
+  const requiresApiKey = authType === "bearer_api_key";
+  const canRefreshModels = Boolean(providerId && providerConfig.value && (!requiresApiKey || apiKey.trim().length > 0));
+
+  const updateProviderConfig = (next: Record<string, unknown>) => {
+    setProviderConfigText(formatJson(next));
+  };
+
+  const updateProviderField = (path: string[], value: string) => {
+    const source = providerConfig.value ?? {};
+    updateProviderConfig(setNestedValue(source, path, value));
+  };
+
+  const changeProvider = (nextProviderId: string) => {
+    setProviderId(nextProviderId);
+    const provider = providers.find((item) => item.id === nextProviderId);
+    setProviderConfigText(formatJson(provider?.config ?? {}));
+    setSelectedCatalogModelId("");
+    setDisplayName("");
+    setOptions(modelOptionsForProvider(nextProviderId));
+  };
+
+  const refreshModels = useCallback(async () => {
+    if (!providerId || !providerConfig.value || !canRefreshModels) {
+      setError(t("models.invalidJson"));
+      return;
+    }
+    setIsRefreshing(true);
+    setError(null);
+    try {
+      const refreshed = await tauriInvoke<ProviderModelOption[]>("refresh_provider_models", {
+        role,
+        providerId,
+        providerConfigOverride: providerConfig.value,
+      });
+      setOptions(mergeModelOptions(modelOptionsForProvider(providerId), refreshed));
+    } catch (error) {
+      setError(`${t("models.refreshError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [providerId, providerConfig.value, canRefreshModels, role, t, modelOptionsForProvider]);
+
+  useEffect(() => {
+    if (!isEditing || !providerId || !canRefreshModels || options.length > 0 || autoRefreshAttempted.current.has(providerId)) {
+      return;
+    }
+    autoRefreshAttempted.current.add(providerId);
+    void refreshModels();
+  }, [isEditing, providerId, canRefreshModels, options.length, refreshModels]);
+
+  useEffect(() => {
+    if (selectedCatalogModelId || options.length === 0) {
+      return;
+    }
+    const first = options[0];
+    setSelectedCatalogModelId(first.id);
+    setDisplayName(first.name);
+  }, [selectedCatalogModelId, options]);
+
+  const save = async () => {
+    if (!providerConfig.value || !modelConfig.value) {
+      setError(t("models.invalidJson"));
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      const modelId = await tauriInvoke<string>("save_model_item", {
+        role,
+        providerId,
+        modelId: selectedCatalogModelId,
+        displayName: displayName || null,
+        providerConfigOverride: providerConfig.value,
+        modelConfigOverride: modelConfig.value,
+      });
+      setIsEditing(false);
+      onSaved(modelId);
+    } catch (error) {
+      setError(`${t("models.saveError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!model || isLocked) {
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      await tauriInvoke<void>("delete_model_item", { role, modelId: model.id });
+      onDeleted?.();
+    } catch (error) {
+      setError(`${t("models.saveError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const select = async () => {
+    if (!model || isSelected || isLocked) {
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      await tauriInvoke<void>("select_model", { role, modelId: model.id });
+      onSelected();
+    } catch (error) {
+      setError(`${t("models.saveError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (!isEditing && model) {
+    return (
+      <div
+        className={`group flex cursor-pointer items-center justify-between gap-3 rounded-lg border bg-card/50 p-3 transition-colors ${
+          isSelected
+            ? "border-border hover:border-border/50"
+            : isLocked
+              ? "border-transparent opacity-60"
+              : "border-transparent hover:border-border/50"
+        }`}
+        role={isLocked ? undefined : "button"}
+        tabIndex={isLocked ? -1 : 0}
+        onClick={isLocked ? undefined : () => void select()}
+        onKeyDown={
+          isLocked
+            ? undefined
+            : (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void select();
+                }
+              }
+        }
+      >
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="truncate text-sm font-medium">{model.provider_name}</div>
+          </div>
+          <div className="truncate text-xs text-muted-foreground">
+            {model.display_name || model.model_display_name || model.external_model_id}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className={`flex items-center gap-2 transition-opacity ${
+            isLocked ? "pointer-events-none opacity-0" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+          }`}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("common.edit")}
+              title={t("common.edit")}
+              onClick={(event) => {
+                event.stopPropagation();
+                setIsEditing(true);
+                onEditingChange(true);
+              }}
+            >
+              <SquarePen className="size-4" aria-hidden="true" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={isSaving}
+              aria-label={t("common.remove")}
+              title={t("common.remove")}
+              onClick={(event) => {
+                event.stopPropagation();
+                void remove();
+              }}
+            >
+              <Trash2 className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+          {isSelected ? <Check className="size-4 text-success" aria-label={t("models.selected")} /> : null}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg bg-muted/35 p-3">
+      <div className="grid gap-3 sm:grid-cols-2 sm:items-end">
+        <div className="min-w-0 space-y-1">
+          <Label>{t("models.provider")}</Label>
+          <Select value={providerId} onValueChange={changeProvider}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={t("models.noProvider")} />
+            </SelectTrigger>
+            <SelectContent>
+              {providers.map((provider) => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  {provider.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+          <div className="min-w-0 space-y-1">
+            <Label>{t("models.model")}</Label>
+            <Select
+              value={selectedCatalogModelId}
+              disabled={options.length === 0}
+              onValueChange={(value) => {
+                setSelectedCatalogModelId(value);
+                setDisplayName(options.find((option) => option.id === value)?.name ?? value);
+              }}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder={t("models.refreshModels")} />
+              </SelectTrigger>
+              <SelectContent>
+                {options.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {option.name === option.id ? option.id : `${option.name} (${option.id})`}
+                  </SelectItem>
+                ))}
+                {selectedCatalogModelId && !options.some((option) => option.id === selectedCatalogModelId) ? (
+                  <SelectItem value={selectedCatalogModelId}>{selectedCatalogModelId}</SelectItem>
+                ) : null}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            variant="outline"
+            size="icon"
+            disabled={!canRefreshModels || isRefreshing}
+            onClick={() => void refreshModels()}
+            aria-label={t("models.refreshModels")}
+            title={t("models.refreshModels")}
+          >
+            <RefreshCw className={`size-4 ${isRefreshing ? "animate-spin" : ""}`} aria-hidden="true" />
           </Button>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
+
+      {requiresApiKey ? (
+        <div className="space-y-1">
+          <Label>{t("models.apiKey")}</Label>
+          <Input
+            type="password"
+            value={apiKey}
+            onChange={(event) => updateProviderField(["auth", "api_key"], event.target.value)}
+          />
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <Label>{t("models.providerOverride")}</Label>
+          <textarea
+            className="min-h-28 w-full rounded-md bg-background p-2 font-mono text-xs outline-none ring-1 ring-border focus:ring-ring"
+            value={providerConfigText}
+            onChange={(event) => setProviderConfigText(event.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>{t("models.modelOverride")}</Label>
+          <textarea
+            className="min-h-28 w-full rounded-md bg-background p-2 font-mono text-xs outline-none ring-1 ring-border focus:ring-ring"
+            value={modelConfigText}
+            onChange={(event) => setModelConfigText(event.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div />
+        <div className="flex gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              if (model) {
+                setIsEditing(false);
+                onEditingChange(false);
+              } else {
+                onCancel?.();
+              }
+            }}
+          >
+            {t("common.cancel")}
+          </Button>
+          <Button size="sm" disabled={isSaving || !providerId || !selectedCatalogModelId.trim()} onClick={() => void save()}>
+            {t("common.save")}
+          </Button>
+        </div>
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }
@@ -775,38 +1283,61 @@ function StatRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ProviderItem({
-  name,
-  detail,
-  disabled = false,
-}: {
-  name: string;
-  detail: string;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-card/50 p-3 opacity-100 data-[disabled=true]:opacity-50" data-disabled={disabled}>
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium">{name}</div>
-        <div className="truncate text-xs text-muted-foreground">{detail}</div>
-      </div>
-      <div className="flex shrink-0 gap-2">
-        <Button variant="outline" size="sm" disabled>
-          {t("common.edit")}
-        </Button>
-        <Button variant="ghost" size="sm" disabled>
-          {t("common.remove")}
-        </Button>
-      </div>
-    </div>
-  );
+function formatJson(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
 }
 
-function providerLabel(provider: string, t: (key: string) => string) {
-  if (provider === "openrouter") {
-    return t("provider.openrouter");
+function mergeModelOptions(base: ProviderModelOption[], next: ProviderModelOption[]): ProviderModelOption[] {
+  const byId = new Map<string, ProviderModelOption>();
+  for (const option of base) {
+    byId.set(option.id, option);
   }
-  return provider || t("provider.fallback");
+  for (const option of next) {
+    byId.set(option.id, option);
+  }
+  return Array.from(byId.values());
+}
+
+function parseJsonObject(raw: string): { value: Record<string, unknown> | null } {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { value: parsed as Record<string, unknown> };
+    }
+    return { value: null };
+  } catch {
+    return { value: null };
+  }
+}
+
+function nonEmptyObject(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length > 0;
+}
+
+function getNestedString(source: Record<string, unknown> | null, path: string[]): string {
+  let current: unknown = source;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return "";
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "string" ? current : "";
+}
+
+function setNestedValue(source: Record<string, unknown>, path: string[], value: string): Record<string, unknown> {
+  const clone = structuredClone(source);
+  let current: Record<string, unknown> = clone;
+  path.forEach((key, index) => {
+    if (index === path.length - 1) {
+      current[key] = value;
+      return;
+    }
+    const next = current[key];
+    if (!next || typeof next !== "object" || Array.isArray(next)) {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  });
+  return clone;
 }
