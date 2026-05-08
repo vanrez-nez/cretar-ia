@@ -67,14 +67,21 @@ impl ProviderFactory {
             &format!("provider '{}' config", selection.provider_id),
         )?;
         validate_json(
-            &selection.model_config_schema,
-            &selection.model_config,
-            &format!("model '{}' config", selection.model_id),
+            &selection.model_request_config_schema,
+            &selection.model_request_config,
+            &format!("model '{}' request config", selection.model_id),
+        )?;
+        validate_json(
+            &selection.model_adapter_config_schema,
+            &selection.model_adapter_config,
+            &format!("model '{}' adapter config", selection.model_id),
         )?;
 
+        let mut runtime_model_config = selection.model_adapter_config.clone();
+        merge_config_values(&mut runtime_model_config, &selection.model_request_config);
         let provider_config: RuntimeProviderConfig = serde_json::from_value(selection.provider_config.clone())
             .with_context(|| format!("parsing provider '{}' runtime config", selection.provider_id))?;
-        let model_config: RuntimeModelConfig = serde_json::from_value(selection.model_config.clone())
+        let model_config: RuntimeModelConfig = serde_json::from_value(runtime_model_config)
             .with_context(|| format!("parsing model '{}' runtime config", selection.model_id))?;
 
         let driver = SttDriver::from_config(&model_config)?;
@@ -110,14 +117,21 @@ impl ProviderFactory {
             &format!("provider '{}' config", selection.provider_id),
         )?;
         validate_json(
-            &selection.model_config_schema,
-            &selection.model_config,
-            &format!("model '{}' config", selection.model_id),
+            &selection.model_request_config_schema,
+            &selection.model_request_config,
+            &format!("model '{}' request config", selection.model_id),
+        )?;
+        validate_json(
+            &selection.model_adapter_config_schema,
+            &selection.model_adapter_config,
+            &format!("model '{}' adapter config", selection.model_id),
         )?;
 
+        let mut runtime_model_config = selection.model_adapter_config.clone();
+        merge_config_values(&mut runtime_model_config, &selection.model_request_config);
         let provider_config: RuntimeProviderConfig = serde_json::from_value(selection.provider_config.clone())
             .with_context(|| format!("parsing provider '{}' runtime config", selection.provider_id))?;
-        let model_config: RuntimeModelConfig = serde_json::from_value(selection.model_config.clone())
+        let model_config: RuntimeModelConfig = serde_json::from_value(runtime_model_config)
             .with_context(|| format!("parsing model '{}' runtime config", selection.model_id))?;
 
         let user_model_id = selection.user_model_id.clone();
@@ -162,6 +176,8 @@ impl ProviderFactory {
                 m.external_model_id AS external_model_id,
                 m.config_json AS model_config_json,
                 m.config_schema_json AS model_config_schema_json,
+                m.adapter_config_json AS model_adapter_config_json,
+                m.adapter_config_schema_json AS model_adapter_config_schema_json,
                 um.provider_config_override_json AS provider_override_json,
                 um.model_config_override_json AS model_override_json
              FROM user_models um
@@ -188,9 +204,8 @@ impl ProviderFactory {
         let mut provider_config = parse_json_column(&row, "provider_config_json")?;
         let provider_override = parse_json_column(&row, "provider_override_json")?;
         merge_config_values(&mut provider_config, &provider_override);
-        let mut model_config = parse_json_column(&row, "model_config_json")?;
-        let model_override = parse_json_column(&row, "model_override_json")?;
-        merge_config_values(&mut model_config, &model_override);
+        let model_request_config = parse_json_column(&row, "model_override_json")?;
+        let model_adapter_config = parse_json_column(&row, "model_adapter_config_json")?;
         Ok(Some(ProviderModelSelection {
             user_model_id: row.try_get("user_model_id").context("reading user_model_id")?,
             provider_id: row.try_get("provider_id").context("reading provider_id")?,
@@ -199,9 +214,10 @@ impl ProviderFactory {
             provider_override,
             model_id: row.try_get("model_id").context("reading model_id")?,
             external_model_id: row.try_get("external_model_id").context("reading external_model_id")?,
-            model_config,
-            model_config_schema: parse_json_column(&row, "model_config_schema_json")?,
-            model_override,
+            model_request_config,
+            model_request_config_schema: parse_json_column(&row, "model_config_schema_json")?,
+            model_adapter_config,
+            model_adapter_config_schema: parse_json_column(&row, "model_adapter_config_schema_json")?,
         }))
     }
 
@@ -398,17 +414,23 @@ impl ProviderFactory {
         provider_id: &str,
         options: &[ProviderModelOption],
     ) -> Result<()> {
-        let (model_config, model_schema) = operation_template_for_role(&self.pool, provider_id, role).await?;
+        let (request_config, request_schema, adapter_config, adapter_schema) =
+            operation_template_for_role(&self.pool, provider_id, role).await?;
         let now = chrono::Utc::now().to_rfc3339();
         for option in options {
             let model_id = catalog_model_id(provider_id, &option.id, role);
             sqlx::query(
                 "INSERT INTO models (
                     id, provider_id, role, external_model_id, display_name, config_json,
-                    config_schema_json, enabled, is_preset, created_at, updated_at
-                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, $8, $8)
+                    config_schema_json, adapter_config_json, adapter_config_schema_json,
+                    enabled, is_preset, created_at, updated_at
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 0, $10, $10)
                  ON CONFLICT(provider_id, external_model_id, role) DO UPDATE SET
                     display_name = excluded.display_name,
+                    config_json = excluded.config_json,
+                    config_schema_json = excluded.config_schema_json,
+                    adapter_config_json = excluded.adapter_config_json,
+                    adapter_config_schema_json = excluded.adapter_config_schema_json,
                     updated_at = excluded.updated_at",
             )
             .bind(model_id)
@@ -416,8 +438,10 @@ impl ProviderFactory {
             .bind(role)
             .bind(&option.id)
             .bind(&option.name)
-            .bind(serde_json::to_string(&model_config).context("serializing catalog model config")?)
-            .bind(serde_json::to_string(&model_schema).context("serializing catalog model schema")?)
+            .bind(serde_json::to_string(&request_config).context("serializing catalog model request config")?)
+            .bind(serde_json::to_string(&request_schema).context("serializing catalog model request schema")?)
+            .bind(serde_json::to_string(&adapter_config).context("serializing catalog model adapter config")?)
+            .bind(serde_json::to_string(&adapter_schema).context("serializing catalog model adapter schema")?)
             .bind(&now)
             .execute(&self.pool)
             .await
@@ -459,16 +483,12 @@ impl ProviderFactory {
         .await
         .with_context(|| format!("loading catalog model '{model_id}'"))?;
 
-        let mut provider_effective = parse_json_column(&row, "provider_config_json")?;
         let provider_schema = parse_json_column(&row, "provider_config_schema_json")?;
-        merge_config_values(&mut provider_effective, &provider_override_config);
-        validate_json(&provider_schema, &provider_effective, &format!("provider '{provider_id}' effective config"))?;
-        ensure_provider_supports_role(&provider_effective, role, provider_id)?;
+        validate_json(&provider_schema, &provider_override_config, &format!("provider '{provider_id}' settings config"))?;
+        ensure_provider_supports_role(&provider_override_config, role, provider_id)?;
 
-        let mut model_effective = parse_json_column(&row, "model_config_json")?;
         let model_schema = parse_json_column(&row, "model_config_schema_json")?;
-        merge_config_values(&mut model_effective, &model_override_config);
-        validate_json(&model_schema, &model_effective, &format!("model '{model_id}' effective config"))?;
+        validate_json(&model_schema, &model_override_config, &format!("model '{model_id}' request config"))?;
 
         let now = chrono::Utc::now().to_rfc3339();
         let user_model_id = user_model_id(provider_id, model_id, role);
@@ -585,9 +605,10 @@ struct ProviderModelSelection {
     provider_override: Value,
     model_id: String,
     external_model_id: String,
-    model_config: Value,
-    model_config_schema: Value,
-    model_override: Value,
+    model_request_config: Value,
+    model_request_config_schema: Value,
+    model_adapter_config: Value,
+    model_adapter_config_schema: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1305,9 +1326,9 @@ async fn operation_template_for_role(
     pool: &SqlitePool,
     provider_id: &str,
     role: &str,
-) -> Result<(Value, Value)> {
+) -> Result<(Value, Value, Value, Value)> {
     let row = sqlx::query(
-        "SELECT config_json, config_schema_json
+        "SELECT config_json, config_schema_json, adapter_config_json, adapter_config_schema_json
          FROM models
          WHERE provider_id = $1 AND role = $2
          ORDER BY is_preset DESC, updated_at DESC
@@ -1323,6 +1344,8 @@ async fn operation_template_for_role(
         return Ok((
             parse_json_column(&row, "config_json")?,
             parse_json_column(&row, "config_schema_json")?,
+            parse_json_column(&row, "adapter_config_json")?,
+            parse_json_column(&row, "adapter_config_schema_json")?,
         ));
     }
 
@@ -1333,51 +1356,71 @@ async fn operation_template_for_role(
     }
 }
 
-fn stt_operation_template() -> (Value, Value) {
+fn stt_operation_template() -> (Value, Value, Value, Value) {
     (
         json!({
-            "endpoint_kind": "audio_transcriptions",
-            "format": "wav",
             "language": null,
             "prompt": null,
-            "max_audio_bytes": 25165824u64,
-            "operation_driver": "http_json_audio_transcription",
-            "response_text_paths": ["/text", "/choices/0/text"],
             "parameters": {}
         }),
         json!({
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "additionalProperties": false,
-            "required": ["operation_driver", "endpoint_kind", "format", "language", "prompt", "max_audio_bytes", "response_text_paths", "parameters"],
+            "required": ["language", "prompt", "parameters"],
+            "properties": {
+                "language": { "type": ["string", "null"] },
+                "prompt": { "type": ["string", "null"] },
+                "parameters": { "type": "object" }
+            }
+        }),
+        json!({
+            "endpoint_kind": "audio_transcriptions",
+            "format": "wav",
+            "max_audio_bytes": 25165824u64,
+            "operation_driver": "http_json_audio_transcription",
+            "response_text_paths": ["/text", "/choices/0/text"]
+        }),
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["operation_driver", "endpoint_kind", "format", "max_audio_bytes", "response_text_paths"],
             "properties": {
                 "endpoint_kind": { "type": "string", "minLength": 1 },
                 "format": { "type": "string", "minLength": 1 },
-                "language": { "type": ["string", "null"] },
-                "prompt": { "type": ["string", "null"] },
                 "max_audio_bytes": { "type": "integer", "minimum": 1 },
                 "operation_driver": { "type": "string", "minLength": 1 },
-                "response_text_paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
-                "parameters": { "type": "object" }
+                "response_text_paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
             }
         }),
     )
 }
 
-fn formatting_operation_template() -> (Value, Value) {
+fn formatting_operation_template() -> (Value, Value, Value, Value) {
     (
         json!({
-            "endpoint_kind": "chat_completions",
             "parameters": {}
         }),
         json!({
             "$schema": "http://json-schema.org/draft-07/schema#",
             "type": "object",
             "additionalProperties": false,
-            "required": ["endpoint_kind", "parameters"],
+            "required": ["parameters"],
             "properties": {
-                "endpoint_kind": { "type": "string", "minLength": 1 },
                 "parameters": { "type": "object" }
+            }
+        }),
+        json!({
+            "endpoint_kind": "chat_completions"
+        }),
+        json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["endpoint_kind"],
+            "properties": {
+                "endpoint_kind": { "type": "string", "minLength": 1 }
             }
         }),
     )

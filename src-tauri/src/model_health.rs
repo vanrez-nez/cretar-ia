@@ -256,14 +256,16 @@ async fn check_target_health(client: &Client, target: &ModelHealthTarget) -> Res
         return Ok(ModelHealthStatus::Unknown);
     };
     let url = join_url(base_url, endpoint);
-    let mut request = client.get(&url);
+    let query_params = model_fetch_query_params(&config, &target.role);
+    let mut request = client.get(&url).query(&query_params);
     let auth_type = config.pointer("/auth/type").and_then(Value::as_str).unwrap_or("none");
     log::debug!(
-        "model health request model={} provider={} external_model={} url={} auth_type={}",
+        "model health request model={} provider={} external_model={} url={} query_params={:?} auth_type={}",
         target.id,
         target.provider_name,
         target.external_model_id,
         url,
+        query_params,
         auth_type
     );
     match auth_type {
@@ -326,6 +328,19 @@ fn response_contains_model(payload: &Value, external_model_id: &str) -> bool {
             .get("models")
             .and_then(Value::as_array)
             .is_some_and(|models| models.iter().any(|model| model.get("name").and_then(Value::as_str) == Some(external_model_id)))
+}
+
+fn model_fetch_query_params(config: &Value, role: &str) -> Vec<(String, String)> {
+    config
+        .pointer(&format!("/model_fetch/query_by_role/{role}"))
+        .and_then(Value::as_object)
+        .map(|params| {
+            params
+                .iter()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn join_url(base: &str, endpoint: &str) -> String {

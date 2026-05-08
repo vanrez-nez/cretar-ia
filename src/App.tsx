@@ -861,6 +861,21 @@ function ModelRoleCard({
     void load();
   };
 
+  const reloadSettings = useCallback(async () => {
+    if (!isTauri()) {
+      return undefined;
+    }
+    setError(null);
+    try {
+      const next = await tauriInvoke<RoleModelSettings>("list_model_settings", { role });
+      setSettings(next);
+      return next;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+  }, [role]);
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
@@ -900,6 +915,7 @@ function ModelRoleCard({
             onSaved={handleSaved}
             onSelected={handleSelected}
             onEditingChange={(editing) => setEditingModelId(editing ? model.id : null)}
+            reloadSettings={reloadSettings}
             onDeleted={() => {
               void load();
             }}
@@ -917,6 +933,7 @@ function ModelRoleCard({
             onSaved={handleSaved}
             onSelected={handleSelected}
             onEditingChange={(editing) => setEditingModelId(editing ? "__new__" : null)}
+            reloadSettings={reloadSettings}
             onCancel={() => {
               setEditingModelId(null);
               setIsAdding(false);
@@ -955,6 +972,7 @@ function ModelItem({
   onSaved,
   onSelected,
   onEditingChange,
+  reloadSettings,
   onDeleted,
   onCancel,
 }: {
@@ -968,6 +986,7 @@ function ModelItem({
   onSaved: (modelId: string) => void;
   onSelected: () => void;
   onEditingChange: (editing: boolean) => void;
+  reloadSettings: () => Promise<RoleModelSettings | undefined>;
   onDeleted?: () => void;
   onCancel?: () => void;
 }) {
@@ -976,21 +995,34 @@ function ModelItem({
   const initialProviderId = model?.provider_id ?? providers[0]?.id ?? "";
   const [providerId, setProviderId] = useState(initialProviderId);
   const selectedProvider = providers.find((provider) => provider.id === providerId) ?? providers[0];
+  const initialCatalogModel = model
+    ? catalogModels.find((item) => item.id === model.model_id)
+    : catalogModels.find((item) => item.provider_id === initialProviderId);
   const initialProviderConfig = model
     ? nonEmptyObject(model.provider_override_config) ? model.provider_override_config : model.provider_config
     : selectedProvider?.config ?? {};
+  const initialModelConfig = model
+    ? nonEmptyObject(model.override_config) ? model.override_config : model.config
+    : initialCatalogModel?.config ?? {};
   const [providerConfigText, setProviderConfigText] = useState(formatJson(initialProviderConfig));
-  const [modelConfigText, setModelConfigText] = useState(formatJson(model?.override_config ?? {}));
-  const [selectedCatalogModelId, setSelectedCatalogModelId] = useState(model?.model_id ?? "");
-  const [displayName, setDisplayName] = useState(model?.display_name ?? "");
+  const [modelConfigText, setModelConfigText] = useState(formatJson(initialModelConfig));
+  const [selectedCatalogModelId, setSelectedCatalogModelId] = useState(model?.model_id ?? initialCatalogModel?.id ?? "");
+  const [displayName, setDisplayName] = useState(
+    model?.display_name ?? initialCatalogModel?.display_name ?? initialCatalogModel?.external_model_id ?? ""
+  );
   const modelOptionsForProvider = useCallback(
-    (nextProviderId: string): ProviderModelOption[] =>
-      catalogModels
+    (nextProviderId: string, sourceModels: CatalogModelView[] = catalogModels): ProviderModelOption[] =>
+      sourceModels
         .filter((item) => item.provider_id === nextProviderId)
         .map((item) => ({
           id: item.id,
           name: item.display_name || item.external_model_id,
         })),
+    [catalogModels]
+  );
+  const catalogModelById = useCallback(
+    (catalogModelId: string, sourceModels: CatalogModelView[] = catalogModels) =>
+      sourceModels.find((item) => item.id === catalogModelId),
     [catalogModels]
   );
   const [options, setOptions] = useState<ProviderModelOption[]>(() => modelOptionsForProvider(initialProviderId));
@@ -1018,10 +1050,14 @@ function ModelItem({
   const changeProvider = (nextProviderId: string) => {
     setProviderId(nextProviderId);
     const provider = providers.find((item) => item.id === nextProviderId);
+    const nextOptions = modelOptionsForProvider(nextProviderId);
+    const firstOption = nextOptions[0];
+    const firstCatalogModel = firstOption ? catalogModelById(firstOption.id) : undefined;
     setProviderConfigText(formatJson(provider?.config ?? {}));
-    setSelectedCatalogModelId("");
-    setDisplayName("");
-    setOptions(modelOptionsForProvider(nextProviderId));
+    setSelectedCatalogModelId(firstOption?.id ?? "");
+    setDisplayName(firstOption?.name ?? "");
+    setModelConfigText(formatJson(firstCatalogModel?.config ?? {}));
+    setOptions(nextOptions);
   };
 
   const refreshModels = useCallback(async () => {
@@ -1037,13 +1073,35 @@ function ModelItem({
         providerId,
         providerConfigOverride: providerConfig.value,
       });
-      setOptions(mergeModelOptions(modelOptionsForProvider(providerId), refreshed));
+      const reloaded = await reloadSettings();
+      const reloadedCatalogModels = reloaded?.models ?? catalogModels;
+      const nextOptions = mergeModelOptions(modelOptionsForProvider(providerId, reloadedCatalogModels), refreshed);
+      const nextSelectedModelId =
+        selectedCatalogModelId && nextOptions.some((option) => option.id === selectedCatalogModelId)
+          ? selectedCatalogModelId
+          : nextOptions[0]?.id ?? "";
+      const nextSelectedModel = nextSelectedModelId ? catalogModelById(nextSelectedModelId, reloadedCatalogModels) : undefined;
+      setOptions(nextOptions);
+      setSelectedCatalogModelId(nextSelectedModelId);
+      setDisplayName(nextSelectedModel?.display_name || nextSelectedModel?.external_model_id || "");
+      setModelConfigText(formatJson(nextSelectedModel?.config ?? {}));
     } catch (error) {
       setError(`${t("models.refreshError")}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsRefreshing(false);
     }
-  }, [providerId, providerConfig.value, canRefreshModels, role, t, modelOptionsForProvider]);
+  }, [
+    providerId,
+    providerConfig.value,
+    canRefreshModels,
+    role,
+    t,
+    modelOptionsForProvider,
+    reloadSettings,
+    catalogModels,
+    selectedCatalogModelId,
+    catalogModelById,
+  ]);
 
   useEffect(() => {
     if (!isEditing || !providerId || !canRefreshModels || options.length > 0 || autoRefreshAttempted.current.has(providerId)) {
@@ -1060,7 +1118,8 @@ function ModelItem({
     const first = options[0];
     setSelectedCatalogModelId(first.id);
     setDisplayName(first.name);
-  }, [selectedCatalogModelId, options]);
+    setModelConfigText(formatJson(catalogModelById(first.id)?.config ?? {}));
+  }, [selectedCatalogModelId, options, catalogModelById]);
 
   const save = async () => {
     if (!providerConfig.value || !modelConfig.value) {
@@ -1191,8 +1250,8 @@ function ModelItem({
 
   return (
     <div className="space-y-3 rounded-lg bg-muted/35 p-3">
-      <div className="grid gap-3 sm:grid-cols-2 sm:items-end">
-        <div className="min-w-0 space-y-1">
+      <div className="grid gap-3 sm:grid-cols-[minmax(10rem,max-content)_minmax(14rem,1fr)] sm:items-end">
+        <div className="min-w-0 max-w-full space-y-1">
           <Label>{t("models.provider")}</Label>
           <Select value={providerId} onValueChange={changeProvider}>
             <SelectTrigger className="w-full">
@@ -1207,15 +1266,17 @@ function ModelItem({
             </SelectContent>
           </Select>
         </div>
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+        <div className="grid min-w-0 grid-cols-[minmax(14rem,1fr)_auto] items-end gap-2">
           <div className="min-w-0 space-y-1">
             <Label>{t("models.model")}</Label>
             <Select
               value={selectedCatalogModelId}
               disabled={options.length === 0}
               onValueChange={(value) => {
+                const selectedModel = catalogModelById(value);
                 setSelectedCatalogModelId(value);
-                setDisplayName(options.find((option) => option.id === value)?.name ?? value);
+                setDisplayName(selectedModel?.display_name || selectedModel?.external_model_id || value);
+                setModelConfigText(formatJson(selectedModel?.config ?? {}));
               }}
             >
               <SelectTrigger className="w-full">
@@ -1224,7 +1285,7 @@ function ModelItem({
               <SelectContent>
                 {options.map((option) => (
                   <SelectItem key={option.id} value={option.id}>
-                    {option.name === option.id ? option.id : `${option.name} (${option.id})`}
+                    {option.name}
                   </SelectItem>
                 ))}
                 {selectedCatalogModelId && !options.some((option) => option.id === selectedCatalogModelId) ? (

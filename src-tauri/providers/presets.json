@@ -21,7 +21,7 @@
           "dynamic": true,
           "query_by_role": {
             "stt": {
-              "output_modalities": "transcription"
+              "output_modalities": "all"
             },
             "formatting": {
               "output_modalities": "text"
