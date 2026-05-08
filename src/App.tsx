@@ -245,10 +245,10 @@ export default function App() {
             </CardHeader>
           </Card>
         ) : (
-          <Tabs defaultValue="system" orientation="vertical" className="h-full w-full gap-0 overflow-x-hidden">
+          <Tabs defaultValue="system" orientation="vertical" className="grid h-full w-full grid-cols-[max-content_minmax(0,1fr)] gap-0 overflow-hidden">
             <SettingsNavigation />
 
-            <TabsContent value="system" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+            <TabsContent value="system" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
               <SystemPane
                 draft={draft}
                 updateDraft={updateDraft}
@@ -257,7 +257,7 @@ export default function App() {
               />
             </TabsContent>
 
-            <TabsContent value="recording" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+            <TabsContent value="recording" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
               <RecordingPane
                 draft={draft}
                 updateDraft={updateDraft}
@@ -273,15 +273,15 @@ export default function App() {
               />
             </TabsContent>
 
-            <TabsContent value="transcripts" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+            <TabsContent value="transcripts" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
               <ModelRolePane role="stt" draft={draft} updateDraft={updateDraft} />
             </TabsContent>
 
-            <TabsContent value="transforms" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+            <TabsContent value="transforms" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
               <ModelRolePane role="formatting" draft={draft} updateDraft={updateDraft} />
             </TabsContent>
 
-            <TabsContent value="about" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+            <TabsContent value="about" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
               <AboutPane />
             </TabsContent>
           </Tabs>
@@ -1122,12 +1122,12 @@ function ModelItem({
   if (!isEditing && model) {
     return (
       <div
-        className={`group flex cursor-pointer items-center justify-between gap-3 rounded-lg border bg-card/50 p-3 transition-colors ${
+        className={`group flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3 transition-colors ${
           isLocked
-            ? "cursor-default border-transparent opacity-60 hover:border-transparent"
+            ? "cursor-default border-transparent bg-muted/40 opacity-60 hover:border-transparent"
             : isSelected
-            ? "border-border hover:border-border/50"
-            : "border-transparent hover:border-border/50"
+            ? "border-border bg-muted/40 hover:border-border/50"
+            : "border-transparent bg-muted/60 hover:border-border/50"
         }`}
         aria-disabled={isLocked || undefined}
         role={isLocked ? undefined : "button"}
