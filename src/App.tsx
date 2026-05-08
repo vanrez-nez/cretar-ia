@@ -233,7 +233,7 @@ export default function App() {
   const draft = draftSettings;
 
   return (
-    <main className="h-screen overflow-hidden bg-background text-foreground">
+    <main className="h-screen select-none overflow-hidden bg-background text-foreground">
       <div className="h-full w-full overflow-x-hidden">
         {!draft ? (
           <Card className="m-5">
@@ -273,8 +273,12 @@ export default function App() {
               />
             </TabsContent>
 
-            <TabsContent value="models" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
-              <ModelsPane draft={draft} updateDraft={updateDraft} />
+            <TabsContent value="transcripts" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+              <ModelRolePane role="stt" draft={draft} updateDraft={updateDraft} />
+            </TabsContent>
+
+            <TabsContent value="transforms" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
+              <ModelRolePane role="formatting" draft={draft} updateDraft={updateDraft} />
             </TabsContent>
 
             <TabsContent value="about" className="ml-44 h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5 pl-0">
@@ -751,30 +755,27 @@ type ProviderModelOption = {
   name: string;
 };
 
-function ModelsPane({
+function ModelRolePane({
+  role,
   draft,
   updateDraft,
 }: {
+  role: ModelRole;
   draft: SettingsRecord;
   updateDraft: (key: string, value: SettingValue) => void;
 }) {
   const { t } = useTranslation();
   const transformEnabled = draft["models.formatting.enabled"] !== false;
+  const isFormatting = role === "formatting";
 
   return (
     <div className="grid gap-4">
       <ModelRoleCard
-        role="stt"
-        title={t("models.sttTitle")}
-        description={t("models.sttDescription")}
-      />
-
-      <ModelRoleCard
-        role="formatting"
-        title={t("models.formattingTitle")}
-        description={t("models.formattingDescription")}
-        transformEnabled={transformEnabled}
-        onTransformEnabledChange={(checked) => updateDraft("models.formatting.enabled", checked)}
+        role={role}
+        title={t("models.cardTitle")}
+        description={isFormatting ? t("models.formattingDescription") : t("models.sttDescription")}
+        transformEnabled={isFormatting ? transformEnabled : undefined}
+        onTransformEnabledChange={isFormatting ? (checked) => updateDraft("models.formatting.enabled", checked) : undefined}
       />
     </div>
   );
@@ -863,7 +864,7 @@ function ModelRoleCard({
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
-        <div className="min-w-0 space-y-1.5">
+        <div className="min-w-0 select-none space-y-1.5">
           <CardTitle>{title}</CardTitle>
           <CardDescription>{description}</CardDescription>
         </div>
@@ -1122,12 +1123,13 @@ function ModelItem({
     return (
       <div
         className={`group flex cursor-pointer items-center justify-between gap-3 rounded-lg border bg-card/50 p-3 transition-colors ${
-          isSelected
+          isLocked
+            ? "cursor-default border-transparent opacity-60 hover:border-transparent"
+            : isSelected
             ? "border-border hover:border-border/50"
-            : isLocked
-              ? "border-transparent opacity-60"
-              : "border-transparent hover:border-border/50"
+            : "border-transparent hover:border-border/50"
         }`}
+        aria-disabled={isLocked || undefined}
         role={isLocked ? undefined : "button"}
         tabIndex={isLocked ? -1 : 0}
         onClick={isLocked ? undefined : () => void select()}
@@ -1142,7 +1144,7 @@ function ModelItem({
               }
         }
       >
-        <div className="min-w-0">
+        <div className="min-w-0 select-none">
           <div className="flex min-w-0 items-center gap-2">
             <div className="truncate text-sm font-medium">{model.provider_name}</div>
           </div>
@@ -1151,36 +1153,36 @@ function ModelItem({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <div className={`flex items-center gap-2 transition-opacity ${
-            isLocked ? "pointer-events-none opacity-0" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-          }`}>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={t("common.edit")}
-              title={t("common.edit")}
-              onClick={(event) => {
-                event.stopPropagation();
-                setIsEditing(true);
-                onEditingChange(true);
-              }}
-            >
-              <SquarePen className="size-4" aria-hidden="true" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              disabled={isSaving}
-              aria-label={t("common.remove")}
-              title={t("common.remove")}
-              onClick={(event) => {
-                event.stopPropagation();
-                void remove();
-              }}
-            >
-              <Trash2 className="size-4" aria-hidden="true" />
-            </Button>
-          </div>
+          {!isLocked ? (
+            <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("common.edit")}
+                title={t("common.edit")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setIsEditing(true);
+                  onEditingChange(true);
+                }}
+              >
+                <SquarePen className="size-4" aria-hidden="true" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={isSaving}
+                aria-label={t("common.remove")}
+                title={t("common.remove")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void remove();
+                }}
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+              </Button>
+            </div>
+          ) : null}
           <ModelHealthIcon health={health} isSelected={isSelected} />
         </div>
       </div>

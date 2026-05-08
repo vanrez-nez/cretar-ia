@@ -23,6 +23,8 @@
     "system": "Sistema",
     "recording": "Grabación",
     "models": "Modelos",
+    "transcripts": "Transcripciones",
+    "transforms": "Transformaciones",
     "about": "Acerca de"
   },
   "loading": {
@@ -107,10 +109,11 @@
     "caps": "MAYÚS"
   },
   "models": {
+    "cardTitle": "Modelos",
     "sttTitle": "Transcripción",
-    "sttDescription": "Proveedores de transcripción.",
+    "sttDescription": "Configura el modelo usado para transformar tu voz en texto.",
     "formattingTitle": "Transformación",
-    "formattingDescription": "Proveedores de transformación.",
+    "formattingDescription": "Configura el modelo usado para dar formato a las transcripciones.",
     "enabled": "Activado",
     "transformEnabled": "Transformación",
     "disableTransform": "Desactivar",

@@ -23,6 +23,8 @@
     "system": "System",
     "recording": "Recording",
     "models": "Models",
+    "transcripts": "Transcripts",
+    "transforms": "Transforms",
     "about": "About"
   },
   "loading": {
@@ -107,10 +109,11 @@
     "caps": "CAPS"
   },
   "models": {
+    "cardTitle": "Models",
     "sttTitle": "Transcript",
-    "sttDescription": "Transcript providers.",
+    "sttDescription": "Configure the model used to transform your voice into text.",
     "formattingTitle": "Transform",
-    "formattingDescription": "Transform providers.",
+    "formattingDescription": "Configure the model used for transcript formatting.",
     "enabled": "Enabled",
     "transformEnabled": "Transforming",
     "disableTransform": "Disable",
