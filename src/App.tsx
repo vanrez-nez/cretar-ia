@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
+import { JsonTextarea } from "@/components/json-textarea";
 import { SettingsBadge } from "@/components/settings-badge";
 import { tauriInvoke, useTauriEvent } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
@@ -1321,18 +1322,16 @@ function ModelItem({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label>{t("models.providerOverride")}</Label>
-          <textarea
-            className="min-h-28 w-full rounded-md bg-background p-2 font-mono text-xs outline-none ring-1 ring-border focus:ring-ring"
+          <JsonTextarea
             value={providerConfigText}
-            onChange={(event) => setProviderConfigText(event.target.value)}
+            onChange={setProviderConfigText}
           />
         </div>
         <div className="space-y-1">
           <Label>{t("models.modelOverride")}</Label>
-          <textarea
-            className="min-h-28 w-full rounded-md bg-background p-2 font-mono text-xs outline-none ring-1 ring-border focus:ring-ring"
+          <JsonTextarea
             value={modelConfigText}
-            onChange={(event) => setModelConfigText(event.target.value)}
+            onChange={setModelConfigText}
           />
         </div>
       </div>
