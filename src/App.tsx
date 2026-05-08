@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
 import { JsonTextarea } from "@/components/json-textarea";
@@ -1029,6 +1029,7 @@ function ModelItem({
   const [options, setOptions] = useState<ProviderModelOption[]>(() => modelOptionsForProvider(initialProviderId));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoRefreshAttempted = useRef<Set<string>>(new Set());
 
@@ -1319,25 +1320,47 @@ function ModelItem({
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1">
-          <Label>{t("models.providerOverride")}</Label>
-          <JsonTextarea
-            value={providerConfigText}
-            onChange={setProviderConfigText}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label>{t("models.modelOverride")}</Label>
-          <JsonTextarea
-            value={modelConfigText}
-            onChange={setModelConfigText}
-          />
-        </div>
+      {showAdvancedConfig ? (
+      <div className="space-y-3">
+          <Tabs defaultValue="provider" orientation="horizontal" className="advanced-json-tabs w-full">
+            <TabsList variant="line" className="advanced-json-tabs-list">
+              <TabsTrigger value="provider" className="advanced-json-tabs-trigger text-xs">
+                {t("models.provider")}
+              </TabsTrigger>
+              <TabsTrigger value="model" className="advanced-json-tabs-trigger text-xs">
+                {t("models.model")}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="provider" className="pt-3">
+              <JsonTextarea
+                value={providerConfigText}
+                onChange={setProviderConfigText}
+              />
+            </TabsContent>
+            <TabsContent value="model" className="pt-3">
+              <JsonTextarea
+                value={modelConfigText}
+                onChange={setModelConfigText}
+              />
+            </TabsContent>
+          </Tabs>
       </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div />
+        <div>
+          {!showAdvancedConfig ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="px-2"
+              onClick={() => setShowAdvancedConfig(true)}
+            >
+              {t("models.advanced")}
+            </Button>
+          ) : null}
+        </div>
         <div className="flex gap-2">
           <Button
             variant="ghost"
