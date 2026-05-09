@@ -170,7 +170,7 @@
     "fallback": "Provider"
   },
   "tray": {
-    "settings": "Settings",
+    "settings": "Settings...",
     "models": "Models",
     "noModels": "No models configured",
     "quit": "Quit",
