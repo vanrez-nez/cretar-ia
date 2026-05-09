@@ -42,7 +42,7 @@ import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
-import { Check, Eye, MoreHorizontal, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Download, Eye, MoreHorizontal, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -573,6 +573,7 @@ function HistoryPane() {
   const totalPages = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE));
   const paginationItems = historyPaginationItems(page, totalPages);
   const selectedText = selectedRecord ? historyRecordText(selectedRecord) : null;
+  const canSaveSelectedRecord = Boolean(selectedRecord?.audioFilePath && waveform);
   const historyEnabled = Boolean(settings?.["system.history_enabled"]);
   const hasPendingExport =
     exportState.status === "packing" ||
@@ -727,6 +728,65 @@ function HistoryPane() {
       setActionError(message);
     }
   }, [t]);
+
+  const deleteSelectedRecord = useCallback(async () => {
+    if (!selectedRecord) {
+      return;
+    }
+
+    const confirmed = await confirm(t("history.deleteRecordConfirmDescription"), {
+      title: t("history.deleteRecordConfirmTitle"),
+      kind: "warning",
+      okLabel: t("history.deleteRecord"),
+      cancelLabel: t("common.cancel"),
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      await tauriInvoke("delete_history_record", { historyId: selectedRecord.id });
+      setSelectedRecord(null);
+      setWaveform(null);
+      if (items.length <= 1 && page > 1) {
+        setPage((current) => Math.max(1, current - 1));
+      } else {
+        void load();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setActionError(`${t("history.deleteRecordError")}: ${message}`);
+    }
+  }, [items.length, load, page, selectedRecord, t]);
+
+  const saveSelectedRecord = useCallback(async () => {
+    if (!selectedRecord?.audioFilePath) {
+      return;
+    }
+
+    const destinationPath = await save({
+      title: t("history.saveRecordTitle"),
+      defaultPath: `transcript-${new Date().toISOString().slice(0, 10)}.zip`,
+      filters: [{ name: "ZIP", extensions: ["zip"] }],
+    });
+
+    if (!destinationPath) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      await tauriInvoke<HistoryExportSaveResult>("save_history_record_export", {
+        historyId: selectedRecord.id,
+        destinationPath,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setActionError(`${t("history.saveRecordError")}: ${message}`);
+    }
+  }, [selectedRecord, t]);
 
   return (
     <div className="grid gap-4">
@@ -898,6 +958,27 @@ function HistoryPane() {
           {selectedRecord ? (
             <CardDescription>{formatRelativeTime(selectedRecord.createdAt, i18n.resolvedLanguage)}</CardDescription>
           ) : null}
+          <CardAction className="flex gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              disabled={!selectedRecord}
+              onClick={() => void deleteSelectedRecord()}
+            >
+              <Trash2 aria-hidden="true" />
+              {t("history.deleteRecord")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!canSaveSelectedRecord}
+              onClick={() => void saveSelectedRecord()}
+            >
+              <Download aria-hidden="true" />
+              {t("history.saveRecord")}
+            </Button>
+          </CardAction>
         </CardHeader>
         <CardContent className="space-y-3 pb-4">
           {!isLoading && !isWaveformLoading && !selectedRecord ? (

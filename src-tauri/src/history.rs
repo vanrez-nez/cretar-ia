@@ -250,6 +250,66 @@ pub async fn all_records(pool: &SqlitePool) -> Result<Vec<HistoryRecord>> {
     Ok(items)
 }
 
+pub async fn record(pool: &SqlitePool, history_id: &str) -> Result<Option<HistoryRecord>> {
+    let Some(row) = sqlx::query(
+        "SELECT id, audio_file_path, audio_duration_ms, transcript_text, transform_text, error_message, created_at
+         FROM history
+         WHERE id = ?",
+    )
+    .bind(history_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let duration_ms: i64 = row.try_get("audio_duration_ms")?;
+    Ok(Some(HistoryRecord {
+        id: row.try_get("id")?,
+        audio_file_path: row.try_get("audio_file_path")?,
+        audio_duration_ms: duration_ms.max(0) as u64,
+        transcript_text: row.try_get("transcript_text")?,
+        transform_text: row.try_get("transform_text")?,
+        error_message: row.try_get("error_message")?,
+        created_at: row.try_get("created_at")?,
+    }))
+}
+
+pub async fn delete_record(pool: &SqlitePool, history_id: &str) -> Result<HistoryDeleteResult> {
+    let audio_file_path = sqlx::query("SELECT audio_file_path FROM history WHERE id = ?")
+        .bind(history_id)
+        .fetch_optional(pool)
+        .await?
+        .and_then(|row| row.try_get::<Option<String>, _>("audio_file_path").ok())
+        .flatten();
+
+    let result = sqlx::query("DELETE FROM history WHERE id = ?")
+        .bind(history_id)
+        .execute(pool)
+        .await?;
+
+    let mut audio_files_deleted = 0;
+    if result.rows_affected() > 0 {
+        if let Some(path) = audio_file_path {
+            let path = Path::new(&path);
+            if path.is_file() {
+                match std::fs::remove_file(path) {
+                    Ok(()) => audio_files_deleted += 1,
+                    Err(err) => log::warn!(
+                        "failed to delete retained history audio {}: {err}",
+                        path.display()
+                    ),
+                }
+            }
+        }
+    }
+
+    Ok(HistoryDeleteResult {
+        records_deleted: result.rows_affected(),
+        audio_files_deleted,
+    })
+}
+
 pub async fn delete_all(pool: &SqlitePool) -> Result<HistoryDeleteResult> {
     let rows = sqlx::query(
         "SELECT audio_file_path FROM history

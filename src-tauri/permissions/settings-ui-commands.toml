@@ -23,6 +23,8 @@ commands.allow = [
   "get_latest_history_audio",
   "list_history_records",
   "get_history_audio_waveform",
+  "delete_history_record",
+  "save_history_record_export",
   "start_history_export",
   "save_history_export",
   "delete_history_export",

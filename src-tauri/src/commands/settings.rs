@@ -123,6 +123,51 @@ pub async fn get_history_audio_waveform(
 }
 
 #[tauri::command]
+pub async fn delete_history_record(
+    app: AppHandle,
+    history_id: String,
+    storage: State<'_, SettingsDb>,
+) -> Result<crate::history::HistoryDeleteResult, String> {
+    let result = crate::history::delete_record(&storage.pool(), &history_id)
+        .await
+        .map_err(command_error)?;
+    emit_history_changed(&app);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn save_history_record_export(
+    history_id: String,
+    destination_path: String,
+    storage: State<'_, SettingsDb>,
+) -> Result<HistoryExportSaveResult, String> {
+    let record = crate::history::record(&storage.pool(), &history_id)
+        .await
+        .map_err(command_error)?
+        .ok_or_else(|| "history record is not available".to_string())?;
+    if !record
+        .audio_file_path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).is_file())
+    {
+        return Err("history record has no retained audio file".to_string());
+    }
+
+    let destination = zip_destination_path(destination_path);
+    let write_path = destination.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        write_single_history_record_zip(&record, &write_path)
+    })
+    .await
+    .map_err(|err| format!("history record export worker failed: {err}"))?
+    .map_err(command_error)?;
+
+    Ok(HistoryExportSaveResult {
+        path: destination.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
 pub async fn start_history_export(
     app: AppHandle,
     storage: State<'_, SettingsDb>,
@@ -178,10 +223,7 @@ pub async fn save_history_export(
             .cloned()
             .ok_or_else(|| "history export is not available".to_string())?
     };
-    let mut destination = PathBuf::from(destination_path);
-    if destination.extension().and_then(|value| value.to_str()).is_none() {
-        destination.set_extension("zip");
-    }
+    let destination = zip_destination_path(destination_path);
 
     fs::copy(&temp_path, &destination)
         .with_context(|| format!("copying export to {}", destination.display()))
@@ -590,10 +632,44 @@ where
         }
 
         zip.start_file(format!("transcript_{number}.md"), options)?;
-        zip.write_all(history_record_markdown(record, index, audio_file_name.as_deref()).as_bytes())?;
+        zip.write_all(
+            history_record_markdown(record, index, audio_file_name.as_deref()).as_bytes(),
+        )?;
         on_progress(index + 1);
     }
 
+    zip.finish()?;
+    Ok(())
+}
+
+fn write_single_history_record_zip(
+    record: &crate::history::HistoryRecord,
+    destination: &Path,
+) -> anyhow::Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating history export directory {}", parent.display()))?;
+    }
+
+    let source = record
+        .audio_file_path
+        .as_deref()
+        .filter(|path| Path::new(path).is_file())
+        .ok_or_else(|| anyhow!("history record has no retained audio file"))?;
+    let file = File::create(destination)
+        .with_context(|| format!("creating history record export {}", destination.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let audio_file_name = "transcript.wav";
+
+    zip.start_file(audio_file_name, options)?;
+    let mut audio =
+        File::open(source).with_context(|| format!("opening retained audio file {source}"))?;
+    io::copy(&mut audio, &mut zip)?;
+
+    zip.start_file("transcript.md", options)?;
+    zip.write_all(history_record_markdown(record, 0, Some(audio_file_name)).as_bytes())?;
     zip.finish()?;
     Ok(())
 }
@@ -604,6 +680,14 @@ fn export_audio_file_name(record: &crate::history::HistoryRecord, number: &str) 
         .as_deref()
         .filter(|path| Path::new(path).is_file())
         .map(|_| format!("transcript_{number}.wav"))
+}
+
+fn zip_destination_path(destination_path: String) -> PathBuf {
+    let mut destination = PathBuf::from(destination_path);
+    if destination.extension().and_then(|value| value.to_str()).is_none() {
+        destination.set_extension("zip");
+    }
+    destination
 }
 
 fn history_record_markdown(

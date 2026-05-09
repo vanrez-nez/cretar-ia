@@ -221,6 +221,8 @@ pub fn run() -> Result<()> {
             settings::get_latest_history_audio,
             settings::list_history_records,
             settings::get_history_audio_waveform,
+            settings::delete_history_record,
+            settings::save_history_record_export,
             settings::start_history_export,
             settings::save_history_export,
             settings::delete_history_export,
