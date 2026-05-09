@@ -11,7 +11,7 @@ use crate::recording::command_bus::{CommandBus, CommandBusTx};
 use crate::recording::fsm::{transition, NoopReason, RecordedEvent, Transition, TransitionResult};
 use crate::recording::workers::{
     audio_worker::AudioWorker,
-    processor_worker::ProcessorWorker,
+    processor_worker::{ProcessorWorker, TransformRuntime},
     recovery::RecoveryWorker,
 };
 use crate::recording::state::RecordingState;
@@ -33,7 +33,20 @@ pub fn start(
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, cue, stt_provider, true)
+    start_with_transform(cfg, cue, stt_provider, TransformRuntime::disabled())
+}
+
+pub fn start_with_transform(
+    cfg: AppConfig,
+    cue: CuePlayer,
+    stt_provider: Option<DynSpeechToTextProvider>,
+    transform: TransformRuntime,
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    JoinHandle<Result<()>>,
+) {
+    start_with_worker_mode(cfg, cue, stt_provider, transform, true)
 }
 
 #[cfg(test)]
@@ -46,13 +59,14 @@ pub fn start_without_workers_for_tests(
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, cue, stt_provider, false)
+    start_with_worker_mode(cfg, cue, stt_provider, TransformRuntime::disabled(), false)
 }
 
 fn start_with_worker_mode(
     cfg: AppConfig,
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
+    transform: TransformRuntime,
     start_workers: bool,
 ) -> (
     CommandBusTx,
@@ -91,6 +105,7 @@ fn start_with_worker_mode(
         let mut runner = Orchestrator {
             cfg,
             stt_provider,
+            transform,
             cue,
             media_pause: MediaPauseController::new(),
             bus,
@@ -118,6 +133,7 @@ fn start_with_worker_mode(
 struct Orchestrator {
     cfg: AppConfig,
     stt_provider: Option<DynSpeechToTextProvider>,
+    transform: TransformRuntime,
     cue: CuePlayer,
     media_pause: MediaPauseController,
     bus: CommandBus,
@@ -169,6 +185,15 @@ impl Orchestrator {
     fn on_event(&mut self, event: RecordedEvent) {
         if let RecordedEvent::Hotkey(HotkeyEvent::ModeUpdate(mode)) = event {
             self.cfg.interaction.set_mode(mode);
+        }
+
+        if let RecordedEvent::Worker(RecordingEvent::TransformFailed { reason }) = &event {
+            self.publish_status(
+                format!("transform_failed:{reason}"),
+                None,
+                RecoveryHint::NoRecovery,
+            );
+            return;
         }
 
         if let RecordedEvent::Worker(RecordingEvent::AudioStopped { path }) = &event {
@@ -476,6 +501,7 @@ impl Orchestrator {
         let audio_cfg = self.cfg.audio.clone();
         let output_cfg = self.cfg.output.clone();
         let stt_provider = self.stt_provider.clone();
+        let transform = self.transform.clone();
         let Some(processor_worker) = self.processor_worker.as_ref() else {
             self.publish_status(
                 "processing_after_shutdown_ignored",
@@ -485,7 +511,7 @@ impl Orchestrator {
             return Ok(());
         };
 
-        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, stt_provider) {
+        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, stt_provider, transform) {
             self.publish_status(
                 "processing_start_command_failed",
                 Some(RecordingErrorCode::Processing),

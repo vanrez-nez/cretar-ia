@@ -5,9 +5,11 @@ use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
 use crate::model_health::ModelHealthCache;
+use crate::prompts;
 use crate::providers::ProviderFactory;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
+use crate::recording::workers::processor_worker::TransformRuntime;
 use crate::settings_db::{SettingsDb, SETTINGS_DB_URL};
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
@@ -339,27 +341,65 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     let tray = app.state::<AppTray>().inner().clone();
     let cue = audio_cues::CuePlayer::new(&cfg.audio_cues, &cfg);
     cue.run_self_test_if_requested();
-    let stt_provider = match app.try_state::<SettingsDb>() {
+    let (stt_provider, transform) = match app.try_state::<SettingsDb>() {
         Some(storage) => {
+            let pool = storage.pool();
             let factory = match app.try_state::<ModelHealthCache>() {
                 Some(health_cache) => ProviderFactory::with_health(
-                    storage.pool(),
+                    pool.clone(),
                     health_cache.clone_cache(),
                     app.clone(),
                 ),
-                None => ProviderFactory::new(storage.pool()),
+                None => ProviderFactory::new(pool.clone()),
             };
-            match factory.speech_to_text().await {
+            let stt_provider = match factory.speech_to_text().await {
                 Ok(provider) => provider,
                 Err(err) => {
                     log::warn!("provider factory error: {err}");
                     None
                 }
-            }
+            };
+
+            let transform = if cfg.models.formatting_enabled {
+                let formatter = match factory.formatting().await {
+                    Ok(provider) => provider,
+                    Err(err) => {
+                        log::warn!("formatting provider factory error: {err}");
+                        None
+                    }
+                };
+                let prompt = match prompts::active_prompt(&pool).await {
+                    Ok(prompt) => prompt,
+                    Err(err) => {
+                        log::warn!("active transform prompt load failed: {err}");
+                        None
+                    }
+                };
+                let health = app
+                    .try_state::<ModelHealthCache>()
+                    .and_then(|health_cache| {
+                        health_cache
+                            .role_snapshot("formatting")
+                            .into_iter()
+                            .find(|model| model.is_active)
+                            .map(|model| model.health)
+                    });
+                if formatter.is_none() {
+                    log::warn!("transform enabled but no formatting model is configured");
+                }
+                if prompt.is_none() {
+                    log::warn!("transform enabled but no active prompt is configured");
+                }
+                TransformRuntime::new(true, formatter, prompt, health)
+            } else {
+                TransformRuntime::disabled()
+            };
+
+            (stt_provider, transform)
         }
         None => {
             log::warn!("provider factory unavailable because settings db state is missing");
-            None
+            (None, TransformRuntime::disabled())
         }
     };
 
@@ -368,7 +408,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     }
 
     let (bus_tx, status_rx, orchestrator) =
-        recording::orchestrator::start(cfg.clone(), cue.clone(), stt_provider);
+        recording::orchestrator::start_with_transform(cfg.clone(), cue.clone(), stt_provider, transform);
     let status_task = spawn_status_task(status_rx, tray, cue, cfg.clone());
     let shortcut = register_shortcut(app, &cfg)?;
 
@@ -513,7 +553,8 @@ fn spawn_status_task(
                     is_recording = render.should_pulse;
                     tray.set_status(render.tooltip, render.icon_state);
                     if let Some(cue_kind) = render.cue {
-                        if Some(status.source.as_str()) != last_cued_event.as_deref() {
+                        let cue_key = format!("{}:{}", status.session_id, status.source);
+                        if Some(cue_key.as_str()) != last_cued_event.as_deref() {
                             match cue_kind {
                                 audio_cues::CueKind::Start if cfg.recording.pause_media => {
                                     log::debug!("cue skipped in status task because recording pause_media owns start cue");
@@ -522,7 +563,7 @@ fn spawn_status_task(
                                 audio_cues::CueKind::Stop => cue.play_stop(),
                                 audio_cues::CueKind::Error => cue.play_error(),
                             }
-                            last_cued_event = Some(status.source.clone());
+                            last_cued_event = Some(cue_key);
                         }
                     }
                 }

@@ -29,7 +29,7 @@ pub trait SpeechToTextProvider: Send + Sync {
 }
 
 pub trait FormattingProvider: Send + Sync {
-    fn format<'a>(&'a self, text: &'a str) -> ProviderFuture<'a, String>;
+    fn format<'a>(&'a self, text: &'a str, prompt: &'a str) -> ProviderFuture<'a, String>;
 }
 
 #[derive(Clone)]
@@ -1005,20 +1005,96 @@ struct GenericFormattingProvider {
 }
 
 impl FormattingProvider for GenericFormattingProvider {
-    fn format<'a>(&'a self, text: &'a str) -> ProviderFuture<'a, String> {
+    fn format<'a>(&'a self, text: &'a str, prompt: &'a str) -> ProviderFuture<'a, String> {
         Box::pin(async move {
-            let _ = (&self.client, &self.provider_config, &self.model_config, text);
-            let result: Result<String> = Err(anyhow!(
-                "formatting provider '{}' model_id='{}' model '{}' is loaded but formatting runtime is not wired yet",
-                self.provider_id,
-                self.model_id,
-                self.external_model_id
-            ));
+            let result = async {
+                let start = std::time::Instant::now();
+                let url = self.endpoint_url()?;
+                let mut payload = json!({
+                    "model": self.external_model_id,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": prompt
+                        },
+                        {
+                            "role": "user",
+                            "content": text
+                        }
+                    ]
+                });
+                insert_parameters(&mut payload, &self.model_config.parameters);
+
+                let context = ProviderRequestLogContext::new("formatting_chat", &self.provider_id, &url)
+                    .user_model_id(&self.user_model_id)
+                    .model_id(&self.model_id)
+                    .external_model_id(&self.external_model_id);
+                log_raw_provider_request(
+                    &context,
+                    json!({
+                        "method": "POST",
+                        "url": url,
+                        "headers": provider_request_headers_for_log(&self.provider_config.auth, "application/json"),
+                        "body": payload.clone()
+                    }),
+                );
+                let request = apply_auth(self.client.post(&url).json(&payload), &self.provider_config.auth)?;
+                let response = request.send().await.context("posting formatting request")?;
+                let response = read_json_response(response, &context).await?;
+                let formatted_text = extract_text(&response, &self.response_text_paths())?.trim().to_string();
+                if formatted_text.is_empty() {
+                    return Err(anyhow!("formatting response text is empty"));
+                }
+                log::info!(
+                    "formatting completed provider={} user_model_id={} model_id={} model={} elapsed={:?} input_len={} output_len={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    start.elapsed(),
+                    text.len(),
+                    formatted_text.len()
+                );
+                Ok(formatted_text)
+            }
+            .await;
             if let Some(reporter) = &self.health_reporter {
-                reporter.record_failure();
+                if result.is_ok() {
+                    reporter.record_success();
+                } else {
+                    reporter.record_failure();
+                }
             }
             result
         })
+    }
+}
+
+impl GenericFormattingProvider {
+    fn endpoint_url(&self) -> Result<String> {
+        let endpoint_kind = self
+            .model_config
+            .endpoint_kind
+            .as_deref()
+            .unwrap_or("chat_completions");
+        let endpoint = self
+            .provider_config
+            .endpoints
+            .get(endpoint_kind)
+            .with_context(|| format!("provider '{}' missing endpoint '{endpoint_kind}'", self.provider_id))?;
+        Ok(join_url(&self.provider_config.base_url, endpoint))
+    }
+
+    fn response_text_paths(&self) -> Vec<&str> {
+        if self.model_config.response_text_paths.is_empty() {
+            vec!["/choices/0/message/content", "/message/content", "/text"]
+        } else {
+            self.model_config
+                .response_text_paths
+                .iter()
+                .map(String::as_str)
+                .collect()
+        }
     }
 }
 

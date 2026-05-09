@@ -100,6 +100,9 @@ pub enum RecordingEvent {
         code: RecordingErrorCode,
         reason: String,
     },
+    TransformFailed {
+        reason: String,
+    },
     QueueSaturated {
         source: String,
         dropped: u32,
@@ -204,6 +207,9 @@ impl fmt::Display for RecordingEvent {
             Self::ProcessCompleted => "recording.process_completed",
             Self::ProcessFailed { code, reason } => {
                 return write!(f, "recording.process_failed:{code}:{reason}");
+            }
+            Self::TransformFailed { reason } => {
+                return write!(f, "recording.transform_failed:{reason}");
             }
             Self::QueueSaturated { source, dropped } => {
                 return write!(f, "recording.queue_saturated:{source}:{dropped}");

@@ -730,6 +730,7 @@ fn recorded_event_name(event: &RecordedEvent) -> &'static str {
         RecordedEvent::Worker(RecordingEvent::ProcessStarted) => "process_started",
         RecordedEvent::Worker(RecordingEvent::ProcessCompleted) => "process_completed",
         RecordedEvent::Worker(RecordingEvent::ProcessFailed { .. }) => "process_failed",
+        RecordedEvent::Worker(RecordingEvent::TransformFailed { .. }) => "transform_failed",
         RecordedEvent::Worker(RecordingEvent::QueueSaturated { .. }) => "queue_saturated",
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => "timeout_expired",
         RecordedEvent::Worker(RecordingEvent::RecoveryCompleted) => "recovery_completed",

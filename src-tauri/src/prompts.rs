@@ -92,6 +92,21 @@ pub async fn list_prompts(pool: &SqlitePool) -> Result<Vec<PromptView>> {
     rows.into_iter().map(prompt_from_row).collect()
 }
 
+pub async fn active_prompt(pool: &SqlitePool) -> Result<Option<PromptView>> {
+    let row = sqlx::query(
+        "SELECT id, key, name, description, template, is_active, is_preset, created_at, updated_at
+         FROM prompts
+         WHERE is_active = 1
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("loading active prompt")?;
+
+    row.map(prompt_from_row).transpose()
+}
+
 pub async fn save_prompt(
     pool: &SqlitePool,
     prompt_id: Option<String>,

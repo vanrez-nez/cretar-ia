@@ -2,7 +2,9 @@ use crate::config::{AudioCaptureConfig, OutputConfig};
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::inject;
-use crate::providers::DynSpeechToTextProvider;
+use crate::model_health::ModelHealthStatus;
+use crate::prompts::PromptView;
+use crate::providers::{DynFormattingProvider, DynSpeechToTextProvider};
 use crate::recording::command_bus::CommandBusTx;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -15,12 +17,46 @@ use tokio::time::{self, timeout};
 
 const PROCESSOR_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[derive(Clone)]
+pub struct TransformRuntime {
+    enabled: bool,
+    formatter: Option<DynFormattingProvider>,
+    prompt: Option<PromptView>,
+    health: Option<ModelHealthStatus>,
+}
+
+impl TransformRuntime {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            formatter: None,
+            prompt: None,
+            health: None,
+        }
+    }
+
+    pub fn new(
+        enabled: bool,
+        formatter: Option<DynFormattingProvider>,
+        prompt: Option<PromptView>,
+        health: Option<ModelHealthStatus>,
+    ) -> Self {
+        Self {
+            enabled,
+            formatter,
+            prompt,
+            health,
+        }
+    }
+}
+
 enum ProcessorWorkerCommand {
     Run {
         audio_cfg: AudioCaptureConfig,
         output_cfg: OutputConfig,
         wav_file: PathBuf,
         stt_provider: Option<DynSpeechToTextProvider>,
+        transform: TransformRuntime,
     },
     Cancel,
     Shutdown {
@@ -69,6 +105,7 @@ impl ProcessorWorker {
         output_cfg: OutputConfig,
         wav_file: PathBuf,
         stt_provider: Option<DynSpeechToTextProvider>,
+        transform: TransformRuntime,
     ) -> bool {
         self.command_tx
             .send(ProcessorWorkerCommand::Run {
@@ -76,6 +113,7 @@ impl ProcessorWorker {
                 output_cfg,
                 wav_file,
                 stt_provider,
+                transform,
             })
             .is_ok()
     }
@@ -110,6 +148,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                         output_cfg,
                         wav_file,
                         stt_provider,
+                        transform,
                     } => {
                         if processing_task.is_some() {
                             if tx.send_worker(RecordingEvent::ProcessFailed {
@@ -128,9 +167,18 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
 
                         let start = StdInstant::now();
                         let result_tx = result_tx.clone();
+                        let event_tx = tx.clone();
                         processing_task = Some(tokio::spawn(async move {
                             let result =
-                                process_recording_work(audio_cfg, output_cfg, wav_file, stt_provider).await;
+                                process_recording_work(
+                                    audio_cfg,
+                                    output_cfg,
+                                    wav_file,
+                                    stt_provider,
+                                    transform,
+                                    event_tx,
+                                )
+                                .await;
                             let success = result.is_ok();
                             if let Err((code, reason)) = &result {
                                 log::warn!(
@@ -188,6 +236,8 @@ async fn process_recording_work(
     output_cfg: crate::config::OutputConfig,
     wav_file: PathBuf,
     stt_provider: Option<DynSpeechToTextProvider>,
+    transform: TransformRuntime,
+    tx: CommandBusTx,
 ) -> Result<(), (RecordingErrorCode, String)> {
     if wav_file.as_os_str().is_empty() {
         return Err((
@@ -199,16 +249,19 @@ async fn process_recording_work(
     let work = async {
         match stt_provider {
             Some(client) => match client.transcribe(&wav_file).await {
-                Ok(text) => match inject::deliver_text(&audio_cfg, &output_cfg, &text).await {
-                    Ok(_) => Ok(()),
-                    Err(err) => {
-                        log::warn!("processing inject failed: {err:?}");
-                        Err((
-                            RecordingErrorCode::Processing,
-                            format!("inject error: {err:#}"),
-                        ))
+                Ok(text) => {
+                    let text = transform_text_or_fallback(text, transform, &tx).await;
+                    match inject::deliver_text(&audio_cfg, &output_cfg, &text).await {
+                        Ok(_) => Ok(()),
+                        Err(err) => {
+                            log::warn!("processing inject failed: {err:?}");
+                            Err((
+                                RecordingErrorCode::Processing,
+                                format!("inject error: {err:#}"),
+                            ))
+                        }
                     }
-                },
+                }
                 Err(err) => {
                     log::warn!("processing transcription failed: {err:?}");
                     Err((RecordingErrorCode::Processing, format!("transcription error: {err:#}")))
@@ -249,4 +302,75 @@ async fn process_recording_work(
     }
 
     result
+}
+
+async fn transform_text_or_fallback(
+    transcript: String,
+    transform: TransformRuntime,
+    tx: &CommandBusTx,
+) -> String {
+    if !transform.enabled {
+        return transcript;
+    }
+
+    let Some(formatter) = transform.formatter else {
+        log::warn!("transform skipped: no formatting model configured");
+        return transcript;
+    };
+
+    let Some(prompt) = transform.prompt else {
+        log::warn!("transform skipped: no active prompt configured");
+        return transcript;
+    };
+
+    if matches!(transform.health, Some(ModelHealthStatus::Unhealthy)) {
+        emit_transform_failed(
+            tx,
+            "active formatting model is unhealthy; falling back to transcript".to_string(),
+        );
+        return transcript;
+    }
+
+    log::info!(
+        "transform request started prompt_id={} prompt_name={} transcript_len={} health={:?}",
+        prompt.id,
+        prompt.name,
+        transcript.len(),
+        transform.health.unwrap_or(ModelHealthStatus::Unknown)
+    );
+
+    match formatter.format(&transcript, &prompt.template).await {
+        Ok(text) => {
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                emit_transform_failed(
+                    tx,
+                    "formatting provider returned empty text; falling back to transcript".to_string(),
+                );
+                transcript
+            } else {
+                log::info!(
+                    "transform completed prompt_id={} transcript_len={} transformed_len={}",
+                    prompt.id,
+                    transcript.len(),
+                    text.len()
+                );
+                text
+            }
+        }
+        Err(err) => {
+            emit_transform_failed(
+                tx,
+                format!("formatting error: {err:#}; falling back to transcript"),
+            );
+            transcript
+        }
+    }
+}
+
+fn emit_transform_failed(tx: &CommandBusTx, reason: String) {
+    log::warn!("transform failed: {reason}");
+    if tx.send_worker(RecordingEvent::TransformFailed { reason }).is_some() {
+        log::warn!("transform failure event dropped because worker queue was full");
+    }
 }
