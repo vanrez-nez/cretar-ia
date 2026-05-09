@@ -42,6 +42,27 @@ pub struct HistoryAudioItem {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HistoryRecord {
+    pub id: String,
+    pub audio_file_path: Option<String>,
+    pub audio_duration_ms: u64,
+    pub transcript_text: Option<String>,
+    pub transform_text: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub items: Vec<HistoryRecord>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioWaveform {
     pub duration: f64,
     pub peaks: Vec<Vec<f32>>,
@@ -150,6 +171,50 @@ pub async fn latest_audio(pool: &SqlitePool) -> Result<Option<HistoryAudioItem>>
     }
 
     Ok(None)
+}
+
+pub async fn list_records(pool: &SqlitePool, page: u32, page_size: u32) -> Result<HistoryPage> {
+    let page = page.max(1);
+    let page_size = page_size.clamp(5, 50);
+    let offset = i64::from(page.saturating_sub(1)) * i64::from(page_size);
+    let limit = i64::from(page_size);
+
+    let total: i64 = sqlx::query("SELECT COUNT(*) AS count FROM history")
+        .fetch_one(pool)
+        .await?
+        .try_get("count")?;
+
+    let rows = sqlx::query(
+        "SELECT id, audio_file_path, audio_duration_ms, transcript_text, transform_text, error_message, created_at
+         FROM history
+         ORDER BY created_at DESC, id DESC
+         LIMIT ? OFFSET ?",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let duration_ms: i64 = row.try_get("audio_duration_ms")?;
+        items.push(HistoryRecord {
+            id: row.try_get("id")?,
+            audio_file_path: row.try_get("audio_file_path")?,
+            audio_duration_ms: duration_ms.max(0) as u64,
+            transcript_text: row.try_get("transcript_text")?,
+            transform_text: row.try_get("transform_text")?,
+            error_message: row.try_get("error_message")?,
+            created_at: row.try_get("created_at")?,
+        });
+    }
+
+    Ok(HistoryPage {
+        items,
+        page,
+        page_size,
+        total,
+    })
 }
 
 pub async fn waveform(pool: &SqlitePool, history_id: &str, samples: Option<u32>) -> Result<AudioWaveform> {

@@ -11,6 +11,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
 import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
 import { JsonTextarea } from "@/components/json-textarea";
@@ -30,6 +40,7 @@ import { Check, Eye, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Tra
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
 const SYSTEM_DEFAULT_INPUT_DEVICE = "__system_default__";
+const HISTORY_PAGE_SIZE = 7;
 
 type SettingsChangedEvent = {
   source: string;
@@ -42,13 +53,21 @@ type HistoryOverview = {
   minutes: number;
 };
 
-type HistoryAudioItem = {
+type HistoryRecord = {
   id: string;
-  audioFilePath: string;
+  audioFilePath: string | null;
   audioDurationMs: number;
   transcriptText: string | null;
   transformText: string | null;
+  errorMessage: string | null;
   createdAt: string;
+};
+
+type HistoryPage = {
+  items: HistoryRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
 };
 
 type SoundOption = {
@@ -416,14 +435,43 @@ function SystemPane({
 
 function HistoryPane() {
   const { t } = useTranslation();
-  const [item, setItem] = useState<HistoryAudioItem | null>(null);
+  const [historyPage, setHistoryPage] = useState<HistoryPage | null>(null);
+  const [page, setPage] = useState(1);
+  const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
   const [waveform, setWaveform] = useState<AudioWaveform | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isWaveformLoading, setIsWaveformLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const loadWaveform = useCallback(async (record: HistoryRecord | null) => {
+    setWaveform(null);
+    if (!record?.audioFilePath) {
+      return;
+    }
+
+    setIsWaveformLoading(true);
+    try {
+      setWaveform(
+        await tauriInvoke<AudioWaveform>("get_history_audio_waveform", {
+          historyId: record.id,
+          samples: 1024,
+        })
+      );
+    } catch (error) {
+      logger.warn("Failed to load history waveform", {
+        id: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      setWaveform(null);
+    } finally {
+      setIsWaveformLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     if (!isTauri()) {
-      setItem(null);
+      setHistoryPage(null);
+      setSelectedRecord(null);
       setWaveform(null);
       return;
     }
@@ -431,26 +479,23 @@ function HistoryPane() {
     setIsLoading(true);
     setError(null);
     try {
-      const latest = await tauriInvoke<HistoryAudioItem | null>("get_latest_history_audio");
-      setItem(latest);
-      if (!latest) {
-        setWaveform(null);
-        return;
-      }
-      setWaveform(
-        await tauriInvoke<AudioWaveform>("get_history_audio_waveform", {
-          historyId: latest.id,
-          samples: 1024,
-        })
-      );
+      const nextPage = await tauriInvoke<HistoryPage>("list_history_records", {
+        page,
+        pageSize: HISTORY_PAGE_SIZE,
+      });
+      setHistoryPage(nextPage);
+      const nextSelected = nextPage.items.find((record) => record.audioFilePath) ?? nextPage.items[0] ?? null;
+      setSelectedRecord(nextSelected);
+      await loadWaveform(nextSelected);
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
-      setItem(null);
+      setHistoryPage(null);
+      setSelectedRecord(null);
       setWaveform(null);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [loadWaveform, page]);
 
   useEffect(() => {
     void load();
@@ -462,7 +507,16 @@ function HistoryPane() {
     }
   });
 
-  const previewText = item?.transformText ?? item?.transcriptText ?? null;
+  const selectRecord = useCallback((record: HistoryRecord) => {
+    setSelectedRecord(record);
+    void loadWaveform(record);
+  }, [loadWaveform]);
+
+  const items = historyPage?.items ?? [];
+  const total = historyPage?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE));
+  const paginationItems = historyPaginationItems(page, totalPages);
+  const selectedText = selectedRecord ? historyRecordText(selectedRecord) : null;
 
   return (
     <div className="grid gap-4">
@@ -472,29 +526,129 @@ function HistoryPane() {
           <CardDescription>{t("history.description")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <Table className="table-fixed">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-44">{t("history.time")}</TableHead>
+                <TableHead className="w-24">{t("history.duration")}</TableHead>
+                <TableHead>{t("history.text")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((record) => {
+                const isSelected = selectedRecord?.id === record.id;
+                return (
+                  <TableRow
+                    key={record.id}
+                    data-state={isSelected ? "selected" : undefined}
+                    onClick={() => selectRecord(record)}
+                  >
+                    <TableCell>{formatDateTime(record.createdAt)}</TableCell>
+                    <TableCell>{formatDurationMs(record.audioDurationMs)}</TableCell>
+                    <TableCell className="max-w-0 overflow-hidden">
+                      <div className="truncate">
+                        {historyRecordText(record) || t("common.unavailable")}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+          {!isLoading && items.length === 0 ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.empty")}
+            </div>
+          ) : null}
           {isLoading ? (
             <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
               {t("history.loading")}
             </div>
           ) : null}
-          {!isLoading && !item ? (
-            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
-              {t("history.noAudio")}
-            </div>
-          ) : null}
-          {item && waveform ? (
-            <div className="space-y-3">
-              <div className="select-none space-y-1">
-                <div className="text-sm font-medium">{t("history.latestRecording")}</div>
-                <div className="text-xs text-muted-foreground">{formatDateTime(item.createdAt)}</div>
-              </div>
-              <AudioMiniPlayer audioFilePath={item.audioFilePath} waveform={waveform} />
-              {previewText ? (
-                <p className="line-clamp-3 select-text text-sm text-muted-foreground">{previewText}</p>
-              ) : null}
-            </div>
-          ) : null}
           {error ? <p className="text-xs text-destructive">{t("history.loadError")}: {error}</p> : null}
+          <Pagination className="justify-end">
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious
+                  disabled={page <= 1}
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (page > 1) {
+                      setPage((current) => Math.max(1, current - 1));
+                    }
+                  }}
+                />
+              </PaginationItem>
+              {paginationItems.map((item, index) => (
+                <PaginationItem key={`${item}-${index}`}>
+                  {item === "ellipsis" ? (
+                    <PaginationEllipsis />
+                  ) : (
+                    <PaginationLink
+                      href="#"
+                      isActive={item === page}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setPage(item);
+                      }}
+                    >
+                      {item}
+                    </PaginationLink>
+                  )}
+                </PaginationItem>
+              ))}
+              <PaginationItem>
+                <PaginationNext
+                  disabled={page >= totalPages || totalPages <= 0}
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (page < totalPages && totalPages > 0) {
+                      setPage((current) => Math.min(totalPages, current + 1));
+                    }
+                  }}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("history.transcript")}</CardTitle>
+          {selectedRecord ? (
+            <CardDescription>{formatRelativeTime(selectedRecord.createdAt, i18n.resolvedLanguage)}</CardDescription>
+          ) : null}
+        </CardHeader>
+        <CardContent className="space-y-3 pb-4">
+          {!isLoading && !isWaveformLoading && !selectedRecord ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.selectRecord")}
+            </div>
+          ) : null}
+          {selectedRecord?.audioFilePath && waveform ? (
+            <AudioMiniPlayer audioFilePath={selectedRecord.audioFilePath} waveform={waveform} />
+          ) : null}
+          {selectedText ? (
+            <p className="select-text whitespace-pre-wrap break-words text-sm text-muted-foreground">{selectedText}</p>
+          ) : null}
+          {isWaveformLoading ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.loadingAudio")}
+            </div>
+          ) : null}
+          {!isWaveformLoading && selectedRecord && !selectedRecord.audioFilePath ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.audioUnavailable")}
+            </div>
+          ) : null}
+          {!isWaveformLoading && selectedRecord?.audioFilePath && !waveform ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.audioUnavailable")}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </div>
@@ -1868,6 +2022,68 @@ function formatDateTime(value: string): string {
     return value;
   }
   return date.toLocaleString();
+}
+
+function formatRelativeTime(value: string, locale?: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const divisions: Array<{ amount: number; unit: Intl.RelativeTimeFormatUnit }> = [
+    { amount: 60, unit: "second" },
+    { amount: 60, unit: "minute" },
+    { amount: 24, unit: "hour" },
+    { amount: 7, unit: "day" },
+    { amount: 4.34524, unit: "week" },
+    { amount: 12, unit: "month" },
+    { amount: Number.POSITIVE_INFINITY, unit: "year" },
+  ];
+
+  let duration = (date.getTime() - Date.now()) / 1000;
+  for (const division of divisions) {
+    if (Math.abs(duration) < division.amount) {
+      return formatter.format(Math.round(duration), division.unit);
+    }
+    duration /= division.amount;
+  }
+
+  return formatDateTime(value);
+}
+
+function formatDurationMs(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0:00";
+  }
+  const totalSeconds = Math.round(value / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function historyRecordText(record: HistoryRecord): string {
+  return record.transformText ?? record.transcriptText ?? record.errorMessage ?? "";
+}
+
+function historyPaginationItems(page: number, totalPages: number): Array<number | "ellipsis"> {
+  if (totalPages <= 5) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const visible = new Set([1, totalPages, page - 1, page, page + 1].filter((item) => item >= 1 && item <= totalPages));
+  const sorted = Array.from(visible).sort((a, b) => a - b);
+  const items: Array<number | "ellipsis"> = [];
+
+  sorted.forEach((item, index) => {
+    const previous = sorted[index - 1];
+    if (previous !== undefined && item - previous > 1) {
+      items.push("ellipsis");
+    }
+    items.push(item);
+  });
+
+  return items;
 }
 
 function mergeModelOptions(base: ProviderModelOption[], next: ProviderModelOption[]): ProviderModelOption[] {

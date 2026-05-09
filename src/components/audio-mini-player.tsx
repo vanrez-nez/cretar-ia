@@ -55,7 +55,7 @@ export function AudioMiniPlayer({ audioFilePath, waveform }: AudioMiniPlayerProp
       peaks: waveform.peaks,
       duration: waveform.duration,
       backend: "MediaElement",
-      height: 48,
+      height: 38,
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
@@ -112,14 +112,14 @@ export function AudioMiniPlayer({ audioFilePath, waveform }: AudioMiniPlayerProp
       <CardContent>
         <div ref={containerRef} className="w-full" />
       </CardContent>
-      <CardFooter className="flex min-h-10 items-center justify-between gap-3 border-t-0 py-2">
+      <CardFooter className="flex min-h-8 items-center justify-between gap-2 border-t-0 py-1.5">
         <div className="text-xs tabular-nums text-muted-foreground">
           {formatDuration(currentTime)} / {formatDuration(waveform.duration)}
         </div>
         <div className="flex items-center gap-2">
           <Button
-            size="icon"
-            variant="outline"
+            size="icon-sm"
+            variant="ghost"
             disabled={!isReady || isPlaying}
             aria-label={t("history.play")}
             title={t("history.play")}
@@ -128,8 +128,8 @@ export function AudioMiniPlayer({ audioFilePath, waveform }: AudioMiniPlayerProp
             <Play className="size-4" aria-hidden="true" />
           </Button>
           <Button
-            size="icon"
-            variant="outline"
+            size="icon-sm"
+            variant="ghost"
             disabled={!isReady}
             aria-label={t("history.stop")}
             title={t("history.stop")}

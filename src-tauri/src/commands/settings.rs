@@ -69,6 +69,17 @@ pub async fn get_latest_history_audio(
 }
 
 #[tauri::command]
+pub async fn list_history_records(
+    page: Option<u32>,
+    page_size: Option<u32>,
+    storage: State<'_, SettingsDb>,
+) -> Result<crate::history::HistoryPage, String> {
+    crate::history::list_records(&storage.pool(), page.unwrap_or(1), page_size.unwrap_or(10))
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub async fn get_history_audio_waveform(
     history_id: String,
     samples: Option<u32>,
