@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
 const PROMPT_PRESETS: &str = include_str!("../prompts/presets.json");
@@ -33,6 +34,40 @@ pub struct PromptView {
     pub is_preset: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone)]
+pub struct PromptCache {
+    inner: Arc<RwLock<Vec<PromptView>>>,
+}
+
+impl PromptCache {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<PromptView> {
+        self.inner
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    pub async fn sync(&self, pool: &SqlitePool) -> Result<()> {
+        let prompts = list_prompts(pool).await?;
+        if let Ok(mut guard) = self.inner.write() {
+            *guard = prompts;
+        }
+        Ok(())
+    }
+}
+
+impl Default for PromptCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub async fn seed_prompt_presets(pool: &SqlitePool) -> Result<()> {

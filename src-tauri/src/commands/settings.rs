@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::model_health::{ModelHealthCache, ModelHealthView};
 use crate::permissions::PermissionsStatus;
-use crate::prompts::PromptView;
+use crate::prompts::{PromptCache, PromptView};
 use crate::providers::{ProviderModelOption, RoleModelSettings};
 use crate::settings_db::SettingsDb;
 use rodio::Source;
@@ -243,6 +243,7 @@ pub async fn save_prompt(
     description: String,
     template: String,
     app: AppHandle,
+    prompt_cache: State<'_, PromptCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<String, String> {
     let pool = storage.pool();
@@ -252,6 +253,7 @@ pub async fn save_prompt(
     let is_active = crate::prompts::prompt_is_active(&pool, &prompt_id)
         .await
         .map_err(command_error)?;
+    prompt_cache.sync(&pool).await.map_err(command_error)?;
     emit_prompts_changed(&app);
     if is_active {
         log::info!("active prompt saved; restarting runtime prompt_id={prompt_id}");
@@ -264,12 +266,14 @@ pub async fn save_prompt(
 pub async fn delete_prompt(
     prompt_id: String,
     app: AppHandle,
+    prompt_cache: State<'_, PromptCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<(), String> {
     let pool = storage.pool();
     let was_active = crate::prompts::delete_prompt(&pool, &prompt_id)
         .await
         .map_err(command_error)?;
+    prompt_cache.sync(&pool).await.map_err(command_error)?;
     emit_prompts_changed(&app);
     if was_active {
         log::info!("active prompt deleted; restarting runtime prompt_id={prompt_id}");
@@ -282,12 +286,14 @@ pub async fn delete_prompt(
 pub async fn select_prompt(
     prompt_id: String,
     app: AppHandle,
+    prompt_cache: State<'_, PromptCache>,
     storage: State<'_, SettingsDb>,
 ) -> Result<(), String> {
     let pool = storage.pool();
     crate::prompts::select_prompt(&pool, &prompt_id)
         .await
         .map_err(command_error)?;
+    prompt_cache.sync(&pool).await.map_err(command_error)?;
     emit_prompts_changed(&app);
     log::info!("active prompt selected; restarting runtime prompt_id={prompt_id}");
     restart_runtime_after_provider_change(&app)

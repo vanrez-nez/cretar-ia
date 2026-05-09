@@ -1019,7 +1019,9 @@ impl FormattingProvider for GenericFormattingProvider {
                         },
                         {
                             "role": "user",
-                            "content": text
+                            "content": format!(
+                                "Transform the following transcript according to the system instruction.\n\nTranscript:\n\"\"\"\n{text}\n\"\"\"\n\nReturn only the final transformed transcript."
+                            )
                         }
                     ]
                 });

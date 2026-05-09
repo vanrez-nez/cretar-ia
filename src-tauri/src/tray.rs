@@ -5,12 +5,12 @@ use crate::contracts::status::SessionStatus;
 use crate::i18n;
 #[cfg(feature = "settings-ui")]
 use crate::model_health::{ModelHealthCache, ModelHealthStatus, ModelHealthView};
+#[cfg(feature = "settings-ui")]
+use crate::prompts::{PromptCache, PromptView};
 use anyhow::{Context, Result};
 use resvg::{tiny_skia, usvg};
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-#[cfg(feature = "settings-ui")]
-use tauri::menu::Submenu;
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Wry};
 #[cfg(feature = "settings-ui")]
@@ -20,6 +20,7 @@ pub const MENU_DEVICE_PREFIX: &str = "input-device:";
 pub const MENU_DEVICE_DEFAULT: &str = "input-device:system-default";
 pub const MENU_MODEL_PREFIX: &str = "model:";
 pub const MENU_MODEL_FORMATTING_DISABLE: &str = "model-formatting:disable";
+pub const MENU_PROMPT_PREFIX: &str = "prompt:";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_QUIT: &str = "quit";
 
@@ -115,17 +116,23 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
     #[cfg(feature = "settings-ui")]
     let separator_after_models = PredefinedMenuItem::separator(app)?;
     let separator_before_quit = PredefinedMenuItem::separator(app)?;
-    let devices_label = MenuItem::with_id(app, "input-device:label", i18n::t_config(&config, "tray.inputDevices"), false, None::<&str>)?;
 
     menu.append(&settings)?;
     menu.append(&separator_after_settings)?;
     #[cfg(feature = "settings-ui")]
     {
-        menu.append(&build_models_submenu(app, config)?)?;
+        menu.append(&build_transcript_models_submenu(app, config)?)?;
+        menu.append(&build_transform_models_submenu(app, config)?)?;
         menu.append(&separator_after_models)?;
     }
-    menu.append(&devices_label)?;
+    menu.append(&build_devices_submenu(app, config)?)?;
+    menu.append(&separator_before_quit)?;
+    menu.append(&quit)?;
+    Ok(menu)
+}
 
+fn build_devices_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
+    let submenu = Submenu::with_id(app, "input-devices", i18n::t_config(config, "tray.inputDevices"), true)?;
     let device_names = available_input_device_names();
     let selected_device = selected_input_device(config);
     let configured_device = configured_input_device(config);
@@ -138,68 +145,50 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
         default_checked,
         None::<&str>,
     )?;
-    menu.append(&default_item)?;
+    submenu.append(&default_item)?;
 
-    if device_names.is_empty() {
-        let empty = MenuItem::with_id(app, "input-device:none", i18n::t_config(&config, "tray.noInputDevices"), false, None::<&str>)?;
-        menu.append(&empty)?;
-    } else {
-        for device_name in device_names.iter() {
-            let checked = configured_device.is_some()
-                && selected_device
-                    .as_deref()
-                    .is_some_and(|selected| selected == device_name);
-            let item = CheckMenuItem::with_id(
-                app,
-                format!("{MENU_DEVICE_PREFIX}{device_name}"),
-                device_name,
-                true,
-                checked,
-                None::<&str>,
-            )?;
-            menu.append(&item)?;
-        }
+    for device_name in device_names.iter() {
+        let checked = configured_device.is_some()
+            && selected_device
+                .as_deref()
+                .is_some_and(|selected| selected == device_name);
+        let item = CheckMenuItem::with_id(
+            app,
+            format!("{MENU_DEVICE_PREFIX}{device_name}"),
+            device_name,
+            true,
+            checked,
+            None::<&str>,
+        )?;
+        submenu.append(&item)?;
     }
 
-    if let Some(configured) = configured_device {
-        let configured_available = device_names.iter().any(|name| name == &configured);
-        if !configured_available {
-            let unavailable = MenuItem::with_id(
-                app,
-                "input-device:unavailable",
-                configured,
-                false,
-                None::<&str>,
-            )?;
-            menu.append(&unavailable)?;
-        }
-    }
-
-    menu.append(&separator_before_quit)?;
-    menu.append(&quit)?;
-    Ok(menu)
+    Ok(submenu)
 }
 
 #[cfg(feature = "settings-ui")]
-fn build_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
-    let submenu = Submenu::with_id(app, "models", i18n::t_config(config, "tray.models"), true)?;
-    let transcript_label = MenuItem::with_id(app, "model:transcript-label", i18n::t_config(config, "models.sttTitle"), false, None::<&str>)?;
-    let transform_label = MenuItem::with_id(app, "model:transform-label", i18n::t_config(config, "models.formattingTitle"), false, None::<&str>)?;
-    submenu.append(&transcript_label)?;
+fn build_transcript_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
+    let submenu = Submenu::with_id(app, "transcript-models", i18n::t_config(config, "models.sttTitle"), true)?;
     append_model_items(app, &submenu, config, "stt")?;
-    submenu.append(&PredefinedMenuItem::separator(app)?)?;
-    submenu.append(&transform_label)?;
-    append_model_items(app, &submenu, config, "formatting")?;
-    let disable_title = if config.models.formatting_enabled {
-        i18n::t_config(config, "models.disableTransform")
-    } else {
-        format!("✓ {}", i18n::t_config(config, "models.disableTransform"))
-    };
-    let disable_transform = MenuItem::with_id(
+    Ok(submenu)
+}
+
+#[cfg(feature = "settings-ui")]
+fn build_transform_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
+    let submenu = Submenu::with_id(app, "transform-models", i18n::t_config(config, "models.formattingTitle"), true)?;
+    let mut has_items = append_model_items(app, &submenu, config, "formatting")?;
+    let prompts_added = append_prompt_items(app, &submenu)?;
+    has_items = has_items || prompts_added;
+
+    if has_items {
+        submenu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    let disable_transform = CheckMenuItem::with_id(
         app,
         MENU_MODEL_FORMATTING_DISABLE,
-        disable_title,
+        i18n::t_config(config, "models.disableTransform"),
         true,
+        !config.models.formatting_enabled,
         None::<&str>,
     )?;
     submenu.append(&disable_transform)?;
@@ -207,35 +196,60 @@ fn build_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<W
 }
 
 #[cfg(feature = "settings-ui")]
-fn append_model_items(app: &AppHandle, menu: &Submenu<Wry>, config: &AppConfig, role: &str) -> Result<()> {
+fn append_model_items(app: &AppHandle, menu: &Submenu<Wry>, config: &AppConfig, role: &str) -> Result<bool> {
     let models = tray_model_snapshot(app);
     let role_models = models
         .iter()
         .filter(|model| model.role == role)
         .collect::<Vec<_>>();
     if role_models.is_empty() {
-        let empty = MenuItem::with_id(
-            app,
-            format!("model:{role}:empty"),
-            i18n::t_config(config, "tray.noModels"),
-            false,
-            None::<&str>,
-        )?;
-        menu.append(&empty)?;
-        return Ok(());
+        return Ok(false);
     }
 
     for model in role_models {
-        let item = MenuItem::with_id(
+        let checked = model.is_active
+            && !(model.role == "formatting" && !config.models.formatting_enabled);
+        let item = CheckMenuItem::with_id(
             app,
             format!("{MENU_MODEL_PREFIX}{role}:{}", model.id),
             model_menu_title(model, config),
             true,
+            checked,
             None::<&str>,
         )?;
         menu.append(&item)?;
     }
-    Ok(())
+    Ok(true)
+}
+
+#[cfg(feature = "settings-ui")]
+fn append_prompt_items(app: &AppHandle, menu: &Submenu<Wry>) -> Result<bool> {
+    let prompts = tray_prompt_snapshot(app);
+    if prompts.is_empty() {
+        return Ok(false);
+    }
+
+    if !tray_model_snapshot(app)
+        .iter()
+        .filter(|model| model.role == "formatting")
+        .collect::<Vec<_>>()
+        .is_empty()
+    {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+
+    for prompt in prompts {
+        let item = CheckMenuItem::with_id(
+            app,
+            format!("{MENU_PROMPT_PREFIX}{}", prompt.id),
+            prompt_menu_title(&prompt),
+            true,
+            prompt.is_active,
+            None::<&str>,
+        )?;
+        menu.append(&item)?;
+    }
+    Ok(true)
 }
 
 #[cfg(feature = "settings-ui")]
@@ -246,16 +260,29 @@ fn tray_model_snapshot(app: &AppHandle) -> Vec<ModelHealthView> {
 }
 
 #[cfg(feature = "settings-ui")]
+fn tray_prompt_snapshot(app: &AppHandle) -> Vec<PromptView> {
+    app.try_state::<PromptCache>()
+        .map(|cache| cache.snapshot())
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "settings-ui")]
 fn model_menu_title(model: &ModelHealthView, config: &AppConfig) -> String {
-    let is_selected = model.is_active
-        && !(model.role == "formatting" && !config.models.formatting_enabled);
-    let prefix = match (model.health, is_selected) {
-        (ModelHealthStatus::Unhealthy, _) => "⚠ ",
-        (_, true) => "✓ ",
-        (ModelHealthStatus::Healthy, false) => "",
-        (ModelHealthStatus::Unknown, false) => "",
-    };
-    format!("{prefix}{} ({})", model.display_name, model.provider_name)
+    if matches!(model.health, ModelHealthStatus::Unhealthy) {
+        format!(
+            "{} - {} ({})",
+            model.provider_name,
+            model.display_name,
+            i18n::t_config(config, "models.unavailable")
+        )
+    } else {
+        format!("{} - {}", model.provider_name, model.display_name)
+    }
+}
+
+#[cfg(feature = "settings-ui")]
+fn prompt_menu_title(prompt: &PromptView) -> String {
+    prompt.name.clone()
 }
 
 fn selected_input_device(config: &AppConfig) -> Option<String> {

@@ -5,7 +5,7 @@ use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
 use crate::model_health::ModelHealthCache;
-use crate::prompts;
+use crate::prompts::{self, PromptCache};
 use crate::providers::ProviderFactory;
 use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
@@ -229,11 +229,15 @@ pub fn run() -> Result<()> {
             let health_cache = ModelHealthCache::new();
             tauri::async_runtime::block_on(health_cache.sync_metadata(&storage.pool()))
                 .map_err(|err| anyhow!(err.to_string()))?;
+            let prompt_cache = PromptCache::new();
+            tauri::async_runtime::block_on(prompt_cache.sync(&storage.pool()))
+                .map_err(|err| anyhow!(err.to_string()))?;
             let health_pool = storage.pool();
             let health_cache_task = health_cache.clone();
             let health_app = app_handle.clone();
             app.manage(storage);
             app.manage(health_cache);
+            app.manage(prompt_cache);
             let tray = tray::create_tray(&app_handle, &cfg)
                 .map_err(|err| anyhow!(err.to_string()))?;
             app.manage(tray);
@@ -601,7 +605,45 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
             return;
         }
         save_model_selection_from_tray(app, selection);
+    } else if let Some(prompt_id) = id.strip_prefix(tray::MENU_PROMPT_PREFIX) {
+        save_prompt_selection_from_tray(app, prompt_id);
     }
+}
+
+fn save_prompt_selection_from_tray(app: &AppHandle, prompt_id: &str) {
+    let app = app.clone();
+    let prompt_id = prompt_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(storage) = app.try_state::<SettingsDb>() else {
+            log::warn!("failed to save prompt selection from tray: settings database unavailable");
+            return;
+        };
+        if let Err(err) = prompts::select_prompt(&storage.pool(), &prompt_id).await {
+            log::warn!("failed to save prompt selection from tray: {err}");
+            return;
+        }
+        if let Some(prompt_cache) = app.try_state::<PromptCache>() {
+            if let Err(err) = prompt_cache.sync(&storage.pool()).await {
+                log::warn!("failed to sync prompt cache after tray prompt selection: {err}");
+            }
+        }
+        let Some(config) = current_config(&app) else {
+            return;
+        };
+        refresh_tray_menu(&app, &config);
+        if let Err(err) = restart_runtime(&app, config) {
+            log::error!("failed to apply tray prompt selection: {err}");
+        }
+        if let Err(err) = app.emit(
+            "settings:changed",
+            serde_json::json!({
+                "source": "tray",
+                "keys": ["prompts.active"],
+            }),
+        ) {
+            log::warn!("failed to emit settings change after tray prompt selection: {err}");
+        }
+    });
 }
 
 fn save_model_selection_from_tray(app: &AppHandle, selection: &str) {
