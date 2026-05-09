@@ -70,8 +70,10 @@ pub fn normalize_settings(settings: &mut Value) {
 
 pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
     validate_settings(settings)?;
+    let history_enabled = setting::<bool>(settings, "system.history_enabled")?;
 
     let cfg = AppConfig {
+        history_enabled,
         ui: UiConfig {
             language: setting(settings, "system.language")?,
         },
@@ -123,7 +125,7 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
         output: OutputConfig {
             mode: setting(settings, "output.mode")?,
             paste_delay_ms: setting(settings, "output.paste_delay_ms")?,
-            cleanup_recording_after_processing: !setting::<bool>(settings, "system.save_input_audio")?,
+            cleanup_recording_after_processing: !history_enabled,
             processing_timeout_ms: setting(settings, "output.processing_timeout_ms")?,
         },
         tray: TrayConfig {

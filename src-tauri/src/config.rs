@@ -468,7 +468,7 @@ impl OutputConfig {
     }
 
     fn default_cleanup_recording_after_processing() -> bool {
-        false
+        true
     }
 
     fn default_processing_timeout_ms() -> u64 {
@@ -536,6 +536,8 @@ impl Default for TrayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
+    pub history_enabled: bool,
+    #[serde(default)]
     pub ui: UiConfig,
     #[serde(default)]
     pub provider: ProviderConfig,
@@ -560,6 +562,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            history_enabled: false,
             ui: UiConfig::default(),
             provider: ProviderConfig::default(),
             interaction: InteractionConfig::default(),

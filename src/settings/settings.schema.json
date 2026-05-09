@@ -7,8 +7,7 @@
   "required": [
     "system.language",
     "system.launch_at_start",
-    "system.save_text_history",
-    "system.save_input_audio",
+    "system.history_enabled",
     "recording.mode",
     "recording.hotkey",
     "recording.hotkey_repeat_debounce_ms",
@@ -67,20 +66,12 @@
         "label": "system.launchAtStart.title"
       }
     },
-    "system.save_text_history": {
+    "system.history_enabled": {
       "type": "boolean",
       "default": false,
       "x-ui": {
-        "section": "system",
-        "label": "system.saveTextHistory.title"
-      }
-    },
-    "system.save_input_audio": {
-      "type": "boolean",
-      "default": true,
-      "x-ui": {
-        "section": "system",
-        "label": "system.saveInputAudio.title"
+        "section": "history",
+        "label": "history.enable"
       }
     },
     "recording.mode": {

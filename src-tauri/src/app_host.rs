@@ -377,20 +377,24 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
                 ),
                 None => ProviderFactory::new(pool.clone()),
             };
-            let history = HistoryStore::with_notifier(pool.clone(), {
-                let app = app.clone();
-                std::sync::Arc::new(move || {
-                    if let Err(err) = app.emit(
-                        "settings:changed",
-                        serde_json::json!({
-                            "source": "history",
-                            "keys": ["history.overview"],
-                        }),
-                    ) {
-                        log::warn!("failed to emit history overview change: {err}");
-                    }
-                })
-            });
+            let history = if cfg.history_enabled {
+                Some(HistoryStore::with_notifier(pool.clone(), {
+                    let app = app.clone();
+                    std::sync::Arc::new(move || {
+                        if let Err(err) = app.emit(
+                            "settings:changed",
+                            serde_json::json!({
+                                "source": "history",
+                                "keys": ["history.overview"],
+                            }),
+                        ) {
+                            log::warn!("failed to emit history overview change: {err}");
+                        }
+                    })
+                }))
+            } else {
+                None
+            };
             let stt_provider = match factory.speech_to_text().await {
                 Ok(provider) => provider,
                 Err(err) => {
@@ -441,7 +445,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
                 TransformRuntime::disabled()
             };
 
-            (stt_provider, transform, Some(history))
+            (stt_provider, transform, history)
         }
         None => {
             log::warn!("provider factory unavailable because settings db state is missing");
@@ -520,6 +524,7 @@ fn register_shortcut(app: &AppHandle, cfg: &AppConfig) -> Result<Option<Shortcut
 fn runtime_fingerprint(cfg: &AppConfig) -> String {
     serde_json::json!({
         "language": cfg.ui.language,
+        "history_enabled": cfg.history_enabled,
         "mode": cfg.interaction.mode,
         "shortcut": cfg.interaction.shortcut,
         "input_device": cfg.audio.input_device,

@@ -43,14 +43,6 @@
       "title": "Abrir al iniciar",
       "description": "La integración de inicio llegará en una fase posterior."
     },
-    "saveTextHistory": {
-      "title": "Guardar historial de texto",
-      "description": "El historial de transcripciones llegará en una fase posterior."
-    },
-    "saveInputAudio": {
-      "title": "Guardar audio de entrada",
-      "description": "Conserva grabaciones después de procesarlas correctamente."
-    },
     "stats": {
       "title": "Estadísticas generales",
       "transcripts": "Transcripciones",

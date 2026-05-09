@@ -37,6 +37,7 @@ export function assertValidSettings(value: unknown): asserts value is SettingsRe
 
 export function settingFingerprint(settings: SettingsRecord): Record<string, SettingValue> {
   return {
+    "system.history_enabled": settings["system.history_enabled"],
     "system.language": settings["system.language"],
     "recording.mode": settings["recording.mode"],
     "recording.hotkey": settings["recording.hotkey"],

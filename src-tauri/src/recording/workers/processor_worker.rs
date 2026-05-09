@@ -296,8 +296,10 @@ async fn process_recording_work(
         }
     };
 
-    if result.is_ok() && output_cfg.cleanup_recording_after_processing {
-        if let Err(err) = std::fs::remove_file(&wav_file) {
+    if output_cfg.cleanup_recording_after_processing {
+        if !wav_file.exists() {
+            log::trace!("audio artifact already removed: {:?}", wav_file);
+        } else if let Err(err) = std::fs::remove_file(&wav_file) {
             log::warn!("failed to cleanup audio artifact {:?}: {:?}", wav_file, err);
         } else {
             log::debug!("removed audio artifact {:?}", wav_file);

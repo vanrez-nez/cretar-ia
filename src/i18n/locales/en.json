@@ -43,14 +43,6 @@
       "title": "Launch at start",
       "description": "Startup integration is planned for a later phase."
     },
-    "saveTextHistory": {
-      "title": "Save text history",
-      "description": "Transcript history storage is planned for a later phase."
-    },
-    "saveInputAudio": {
-      "title": "Save input audio",
-      "description": "Keep recordings after successful processing."
-    },
     "stats": {
       "title": "Overview Stats",
       "transcripts": "Transcripts Count",

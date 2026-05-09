@@ -755,6 +755,7 @@ fn requires_runtime_restart(previous: Option<&AppConfig>, next: &AppConfig) -> b
 
 fn runtime_config_value(config: &AppConfig) -> Value {
     serde_json::json!({
+        "history_enabled": config.history_enabled,
         "provider": &config.provider,
         "interaction": &config.interaction,
         "pipeline": &config.pipeline,
@@ -768,6 +769,7 @@ fn runtime_config_value(config: &AppConfig) -> Value {
 
 fn settings_fingerprint(settings: &Value) -> String {
     serde_json::json!({
+        "system.history_enabled": settings.get("system.history_enabled"),
         "system.language": settings.get("system.language"),
         "recording.mode": settings.get("recording.mode"),
         "recording.hotkey": settings.get("recording.hotkey"),
@@ -783,6 +785,7 @@ fn settings_fingerprint(settings: &Value) -> String {
 
 fn config_fingerprint(config: &AppConfig) -> String {
     serde_json::json!({
+        "history_enabled": config.history_enabled,
         "system.language": config.ui.language,
         "recording.mode": config.interaction.mode,
         "recording.hotkey": config.interaction.shortcut,

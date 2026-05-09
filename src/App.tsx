@@ -450,15 +450,6 @@ function SystemPane({
               onCheckedChange={(checked) => void updateLaunchAtStart(checked)}
             />
           </SettingRow>
-          <SettingRow title={t("system.saveTextHistory.title")} description={t("system.saveTextHistory.description")}>
-            <Switch checked={false} disabled />
-          </SettingRow>
-          <SettingRow title={t("system.saveInputAudio.title")} description={t("system.saveInputAudio.description")}>
-            <Switch
-              checked={draft["system.save_input_audio"] as boolean}
-              onCheckedChange={(checked) => updateDraft("system.save_input_audio", checked)}
-            />
-          </SettingRow>
         </CardContent>
       </Card>
 
@@ -582,7 +573,7 @@ function HistoryPane() {
   const totalPages = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE));
   const paginationItems = historyPaginationItems(page, totalPages);
   const selectedText = selectedRecord ? historyRecordText(selectedRecord) : null;
-  const historyEnabled = Boolean(settings?.["system.save_text_history"]);
+  const historyEnabled = Boolean(settings?.["system.history_enabled"]);
   const hasPendingExport =
     exportState.status === "packing" ||
     exportState.status === "complete" ||
@@ -596,7 +587,7 @@ function HistoryPane() {
     setActionError(null);
     void saveSettings({
       ...settings,
-      "system.save_text_history": enabled,
+      "system.history_enabled": enabled,
     }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       setActionError(message);
