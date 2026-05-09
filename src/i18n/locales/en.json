@@ -1,6 +1,7 @@
 {
   "common": {
     "edit": "Edit",
+    "view": "View",
     "remove": "Remove",
     "refresh": "Refresh",
     "refreshing": "Refreshing...",
@@ -137,6 +138,16 @@
     "refreshError": "Could not refresh models",
     "saveError": "Could not save model",
     "invalidJson": "Invalid JSON"
+  },
+  "prompts": {
+    "cardTitle": "Prompts",
+    "description": "Configure reusable templates for transcript transformation.",
+    "noPrompt": "No prompts configured",
+    "addPrompt": "Add Prompt",
+    "name": "Name",
+    "descriptionField": "Description",
+    "template": "Template",
+    "saveError": "Could not save prompt"
   },
   "about": {
     "title": "About",

@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::model_health::{ModelHealthCache, ModelHealthView};
 use crate::permissions::PermissionsStatus;
+use crate::prompts::PromptView;
 use crate::providers::{ProviderModelOption, RoleModelSettings};
 use crate::settings_db::SettingsDb;
 use rodio::Source;
@@ -230,6 +231,57 @@ pub async fn select_model(
 }
 
 #[tauri::command]
+pub async fn list_prompts(storage: State<'_, SettingsDb>) -> Result<Vec<PromptView>, String> {
+    let pool = storage.pool();
+    crate::prompts::list_prompts(&pool).await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn save_prompt(
+    prompt_id: Option<String>,
+    name: String,
+    description: String,
+    template: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<String, String> {
+    let pool = storage.pool();
+    let prompt_id = crate::prompts::save_prompt(&pool, prompt_id, name, description, template)
+        .await
+        .map_err(command_error)?;
+    emit_prompts_changed(&app);
+    Ok(prompt_id)
+}
+
+#[tauri::command]
+pub async fn delete_prompt(
+    prompt_id: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    let pool = storage.pool();
+    crate::prompts::delete_prompt(&pool, &prompt_id)
+        .await
+        .map_err(command_error)?;
+    emit_prompts_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn select_prompt(
+    prompt_id: String,
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<(), String> {
+    let pool = storage.pool();
+    crate::prompts::select_prompt(&pool, &prompt_id)
+        .await
+        .map_err(command_error)?;
+    emit_prompts_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn save_provider_config_override(
     role: String,
     provider_id: String,
@@ -358,6 +410,18 @@ fn refresh_tray_and_emit_model_health(app: &AppHandle) {
         }),
     ) {
         log::warn!("failed to emit model health change: {err}");
+    }
+}
+
+fn emit_prompts_changed(app: &AppHandle) {
+    if let Err(err) = app.emit(
+        "settings:changed",
+        serde_json::json!({
+            "source": "prompts",
+            "keys": ["prompts.list", "prompts.active"],
+        }),
+    ) {
+        log::warn!("failed to emit prompts change: {err}");
     }
 }
 

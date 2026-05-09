@@ -134,7 +134,50 @@ fn settings_migrations() -> Vec<Migration> {
             CREATE INDEX IF NOT EXISTS user_models_provider_model_idx ON user_models(provider_id, model_id);
             CREATE UNIQUE INDEX IF NOT EXISTS user_models_active_role_idx
                 ON user_models(role)
-                WHERE is_active = 1;",
+                WHERE is_active = 1;
+            CREATE TABLE IF NOT EXISTS prompts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                template TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                is_preset INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS prompts_active_idx
+                ON prompts(is_active)
+                WHERE is_active = 1;
+            INSERT OR IGNORE INTO prompts (
+                id,
+                name,
+                description,
+                template,
+                is_active,
+                is_preset,
+                created_at,
+                updated_at
+            ) VALUES
+            (
+                'prompt-correct-punctuation-grammar',
+                'Correct punctuation and grammar',
+                'Clean up punctuation and grammar while preserving wording.',
+                'Correct punctuation and grammar in the transcript with minimal wording changes. Preserve meaning, tone, and word choice. Return only the corrected text.',
+                1,
+                1,
+                '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z'
+            ),
+            (
+                'prompt-concise-rewrite',
+                'Concise rewrite',
+                'Rewrite the transcript into concise, clear wording.',
+                'Correct punctuation and grammar, then rewrite the transcript concisely for clarity. Remove filler, repetition, and rambling while preserving the intended meaning. Return only the rewritten text.',
+                0,
+                1,
+                '2026-01-01T00:00:01Z',
+                '2026-01-01T00:00:01Z'
+            );",
             kind: MigrationKind::Up,
         },
     ]
@@ -208,6 +251,10 @@ pub fn run() -> Result<()> {
             settings::save_model_item,
             settings::delete_model_item,
             settings::select_model,
+            settings::list_prompts,
+            settings::save_prompt,
+            settings::delete_prompt,
+            settings::select_prompt,
             settings::save_provider_config_override,
             settings::save_model_config_override,
             settings::reset_provider_config_override,

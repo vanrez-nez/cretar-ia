@@ -1,6 +1,7 @@
 {
   "common": {
     "edit": "Editar",
+    "view": "Ver",
     "remove": "Eliminar",
     "refresh": "Actualizar",
     "refreshing": "Actualizando...",
@@ -137,6 +138,16 @@
     "refreshError": "No se pudieron actualizar los modelos",
     "saveError": "No se pudo guardar el modelo",
     "invalidJson": "JSON inválido"
+  },
+  "prompts": {
+    "cardTitle": "Prompts",
+    "description": "Configura plantillas reutilizables para transformar transcripciones.",
+    "noPrompt": "No hay prompts configurados",
+    "addPrompt": "Agregar prompt",
+    "name": "Nombre",
+    "descriptionField": "Descripción",
+    "template": "Plantilla",
+    "saveError": "No se pudo guardar el prompt"
   },
   "about": {
     "title": "Acerca de",

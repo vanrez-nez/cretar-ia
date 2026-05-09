@@ -15,6 +15,8 @@ import { SettingsNavigation } from "@/components/sidebar-settings";
 import { HotkeyCapture } from "@/components/hotkey";
 import { JsonTextarea } from "@/components/json-textarea";
 import { SettingsBadge } from "@/components/settings-badge";
+import { SettingsItemCard } from "@/components/settings-item-card";
+import { SettingsItemEditor } from "@/components/settings-item-editor";
 import { tauriInvoke, useTauriEvent } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
 import { logger } from "@/lib/logger";
@@ -22,7 +24,7 @@ import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
-import { Check, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Eye, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -756,6 +758,17 @@ type ProviderModelOption = {
   name: string;
 };
 
+type PromptView = {
+  id: string;
+  name: string;
+  description: string;
+  template: string;
+  is_active: boolean;
+  is_preset: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 function ModelRolePane({
   role,
   draft,
@@ -778,6 +791,7 @@ function ModelRolePane({
         transformEnabled={isFormatting ? transformEnabled : undefined}
         onTransformEnabledChange={isFormatting ? (checked) => updateDraft("models.formatting.enabled", checked) : undefined}
       />
+      {isFormatting ? <PromptsCard transformEnabled={transformEnabled} /> : null}
     </div>
   );
 }
@@ -959,6 +973,288 @@ function ModelRoleCard({
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </CardContent>
     </Card>
+  );
+}
+
+function PromptsCard({ transformEnabled }: { transformEnabled?: boolean }) {
+  const { t } = useTranslation();
+  const [prompts, setPrompts] = useState<PromptView[]>([]);
+  const [isAdding, setIsAdding] = useState(false);
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const isDisabled = transformEnabled === false;
+
+  const load = useCallback(async () => {
+    if (!isTauri()) {
+      return;
+    }
+    setError(null);
+    try {
+      setPrompts(await tauriInvoke<PromptView[]>("list_prompts"));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
+    if (event.keys.includes("prompts.list") || event.keys.includes("prompts.active")) {
+      void load();
+    }
+  });
+
+  const handleSaved = () => {
+    setIsAdding(false);
+    setEditingPromptId(null);
+    void load();
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div className="min-w-0 select-none space-y-1.5">
+          <CardTitle>{t("prompts.cardTitle")}</CardTitle>
+          <CardDescription>{t("prompts.description")}</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent className={`space-y-3 ${isDisabled ? "opacity-50" : ""}`}>
+        {prompts.length === 0 && !isAdding ? (
+          <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+            {t("prompts.noPrompt")}
+          </div>
+        ) : null}
+        {prompts.map((prompt) => (
+          <PromptItem
+            key={prompt.id}
+            prompt={prompt}
+            isLocked={isDisabled || (editingPromptId !== null && editingPromptId !== prompt.id)}
+            onSaved={handleSaved}
+            onSelected={() => void load()}
+            onEditingChange={(editing) => setEditingPromptId(editing ? prompt.id : null)}
+            onDeleted={() => void load()}
+          />
+        ))}
+        {isAdding ? (
+          <PromptItem
+            prompt={null}
+            isLocked={isDisabled || (editingPromptId !== null && editingPromptId !== "__new__")}
+            onSaved={handleSaved}
+            onSelected={() => void load()}
+            onEditingChange={(editing) => setEditingPromptId(editing ? "__new__" : null)}
+            onCancel={() => {
+              setEditingPromptId(null);
+              setIsAdding(false);
+            }}
+          />
+        ) : (
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isDisabled || editingPromptId !== null}
+              onClick={() => {
+                setEditingPromptId("__new__");
+                setIsAdding(true);
+              }}
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              {t("prompts.addPrompt")}
+            </Button>
+          </div>
+        )}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PromptItem({
+  prompt,
+  isLocked,
+  onSaved,
+  onSelected,
+  onEditingChange,
+  onDeleted,
+  onCancel,
+}: {
+  prompt: PromptView | null;
+  isLocked: boolean;
+  onSaved: () => void;
+  onSelected: () => void;
+  onEditingChange: (editing: boolean) => void;
+  onDeleted?: () => void;
+  onCancel?: () => void;
+}) {
+  const { t } = useTranslation();
+  const [isEditing, setIsEditing] = useState(prompt === null);
+  const [name, setName] = useState(prompt?.name ?? "");
+  const [description, setDescription] = useState(prompt?.description ?? "");
+  const [template, setTemplate] = useState(prompt?.template ?? "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const isPreset = prompt?.is_preset ?? false;
+  const isReadOnly = Boolean(prompt && isPreset);
+
+  const save = async () => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await tauriInvoke<string>("save_prompt", {
+        promptId: prompt?.id ?? null,
+        name,
+        description,
+        template,
+      });
+      setIsEditing(false);
+      onEditingChange(false);
+      onSaved();
+    } catch (error) {
+      setError(`${t("prompts.saveError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!prompt || isLocked || isPreset) {
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      await tauriInvoke<void>("delete_prompt", { promptId: prompt.id });
+      onDeleted?.();
+    } catch (error) {
+      setError(`${t("prompts.saveError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const select = async () => {
+    if (!prompt || prompt.is_active || isLocked) {
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      await tauriInvoke<void>("select_prompt", { promptId: prompt.id });
+      onSelected();
+    } catch (error) {
+      setError(`${t("prompts.saveError")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setIsEditing(false);
+    onEditingChange(false);
+    onCancel?.();
+  };
+
+  if (!isEditing && prompt) {
+    return (
+      <SettingsItemCard
+        isLocked={isLocked}
+        isSelected={prompt.is_active}
+        onSelect={() => void select()}
+        actions={
+          isPreset ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("common.view")}
+              title={t("common.view")}
+              onClick={(event) => {
+                event.stopPropagation();
+                setIsEditing(true);
+                onEditingChange(true);
+              }}
+            >
+              <Eye className="size-4" aria-hidden="true" />
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("common.edit")}
+                title={t("common.edit")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setIsEditing(true);
+                  onEditingChange(true);
+                }}
+              >
+                <SquarePen className="size-4" aria-hidden="true" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={isSaving}
+                aria-label={t("common.remove")}
+                title={t("common.remove")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void remove();
+                }}
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+              </Button>
+            </>
+          )
+        }
+        status={prompt.is_active ? <Check className="size-4 text-emerald-500" aria-hidden="true" /> : null}
+      >
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="truncate text-sm font-medium">{prompt.name}</div>
+          </div>
+          <div className="truncate text-xs text-muted-foreground">{prompt.description}</div>
+      </SettingsItemCard>
+    );
+  }
+
+  return (
+    <SettingsItemEditor isLocked={isLocked}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>{t("prompts.name")}</Label>
+          <Input value={name} disabled={isReadOnly || isLocked || isSaving} onChange={(event) => setName(event.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t("prompts.descriptionField")}</Label>
+          <Input
+            value={description}
+            disabled={isReadOnly || isLocked || isSaving}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label>{t("prompts.template")}</Label>
+        <textarea
+          value={template}
+          disabled={isReadOnly || isLocked || isSaving}
+          onChange={(event) => setTemplate(event.target.value)}
+          className="min-h-32 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        />
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" size="sm" disabled={isSaving} onClick={cancel}>
+          {t("common.cancel")}
+        </Button>
+        {isReadOnly ? null : (
+          <Button size="sm" disabled={isLocked || isSaving} onClick={() => void save()}>
+            {t("common.save")}
+          </Button>
+        )}
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </SettingsItemEditor>
   );
 }
 
@@ -1182,76 +1478,54 @@ function ModelItem({
 
   if (!isEditing && model) {
     return (
-      <div
-        className={`group flex cursor-pointer items-center justify-between gap-3 rounded-lg border p-3 transition-colors ${
-          isLocked
-            ? "cursor-default border-transparent bg-muted/40 opacity-60 hover:border-transparent"
-            : isSelected
-            ? "border-border bg-muted/40 hover:border-border/50"
-            : "border-transparent bg-muted/60 hover:border-border/50"
-        }`}
-        aria-disabled={isLocked || undefined}
-        role={isLocked ? undefined : "button"}
-        tabIndex={isLocked ? -1 : 0}
-        onClick={isLocked ? undefined : () => void select()}
-        onKeyDown={
-          isLocked
-            ? undefined
-            : (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  void select();
-                }
-              }
+      <SettingsItemCard
+        isLocked={isLocked}
+        isSelected={isSelected}
+        onSelect={() => void select()}
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("common.edit")}
+              title={t("common.edit")}
+              onClick={(event) => {
+                event.stopPropagation();
+                setIsEditing(true);
+                onEditingChange(true);
+              }}
+            >
+              <SquarePen className="size-4" aria-hidden="true" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={isSaving}
+              aria-label={t("common.remove")}
+              title={t("common.remove")}
+              onClick={(event) => {
+                event.stopPropagation();
+                void remove();
+              }}
+            >
+              <Trash2 className="size-4" aria-hidden="true" />
+            </Button>
+          </>
         }
+        status={<ModelHealthIcon health={health} isSelected={isSelected} />}
       >
-        <div className="min-w-0 select-none">
           <div className="flex min-w-0 items-center gap-2">
             <div className="truncate text-sm font-medium">{model.provider_name}</div>
           </div>
           <div className="truncate text-xs text-muted-foreground">
             {model.display_name || model.model_display_name || model.external_model_id}
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {!isLocked ? (
-            <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={t("common.edit")}
-                title={t("common.edit")}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setIsEditing(true);
-                  onEditingChange(true);
-                }}
-              >
-                <SquarePen className="size-4" aria-hidden="true" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={isSaving}
-                aria-label={t("common.remove")}
-                title={t("common.remove")}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void remove();
-                }}
-              >
-                <Trash2 className="size-4" aria-hidden="true" />
-              </Button>
-            </div>
-          ) : null}
-          <ModelHealthIcon health={health} isSelected={isSelected} />
-        </div>
-      </div>
+      </SettingsItemCard>
     );
   }
 
   return (
-    <div className="space-y-3 rounded-lg bg-muted/35 p-3">
+    <SettingsItemEditor>
       <div className="grid gap-3 sm:grid-cols-[minmax(10rem,max-content)_minmax(14rem,1fr)] sm:items-end">
         <div className="min-w-0 max-w-full space-y-1">
           <Label>{t("models.provider")}</Label>
@@ -1382,7 +1656,7 @@ function ModelItem({
         </div>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-    </div>
+    </SettingsItemEditor>
   );
 }
 

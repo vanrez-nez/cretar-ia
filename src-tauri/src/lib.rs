@@ -12,6 +12,8 @@ mod model_health;
 #[cfg(feature = "settings-ui")]
 mod providers;
 #[cfg(feature = "settings-ui")]
+mod prompts;
+#[cfg(feature = "settings-ui")]
 mod permissions;
 #[cfg(feature = "settings-ui")]
 mod app_host;
