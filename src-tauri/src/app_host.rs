@@ -4,6 +4,7 @@ use crate::config::AppConfig;
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::events::HotkeyEvent;
 use crate::contracts::status::SessionStatusReceiver;
+use crate::history::HistoryStore;
 use crate::model_health::ModelHealthCache;
 use crate::prompts::{self, PromptCache};
 use crate::providers::ProviderFactory;
@@ -126,7 +127,19 @@ fn settings_migrations() -> Vec<Migration> {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS prompts_active_idx
                 ON prompts(is_active)
-                WHERE is_active = 1;",
+                WHERE is_active = 1;
+            CREATE TABLE IF NOT EXISTS history (
+                id TEXT PRIMARY KEY,
+                audio_file_path TEXT,
+                audio_duration_ms INTEGER NOT NULL DEFAULT 0,
+                transcript_text TEXT,
+                transform_text TEXT,
+                error_message TEXT,
+                word_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS history_created_at_idx ON history(created_at);",
             kind: MigrationKind::Up,
         },
     ]
@@ -204,6 +217,7 @@ pub fn run() -> Result<()> {
             settings::save_prompt,
             settings::delete_prompt,
             settings::select_prompt,
+            settings::get_history_overview,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
@@ -345,7 +359,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     let tray = app.state::<AppTray>().inner().clone();
     let cue = audio_cues::CuePlayer::new(&cfg.audio_cues, &cfg);
     cue.run_self_test_if_requested();
-    let (stt_provider, transform) = match app.try_state::<SettingsDb>() {
+    let (stt_provider, transform, history) = match app.try_state::<SettingsDb>() {
         Some(storage) => {
             let pool = storage.pool();
             let factory = match app.try_state::<ModelHealthCache>() {
@@ -356,6 +370,20 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
                 ),
                 None => ProviderFactory::new(pool.clone()),
             };
+            let history = HistoryStore::with_notifier(pool.clone(), {
+                let app = app.clone();
+                std::sync::Arc::new(move || {
+                    if let Err(err) = app.emit(
+                        "settings:changed",
+                        serde_json::json!({
+                            "source": "history",
+                            "keys": ["history.overview"],
+                        }),
+                    ) {
+                        log::warn!("failed to emit history overview change: {err}");
+                    }
+                })
+            });
             let stt_provider = match factory.speech_to_text().await {
                 Ok(provider) => provider,
                 Err(err) => {
@@ -406,11 +434,11 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
                 TransformRuntime::disabled()
             };
 
-            (stt_provider, transform)
+            (stt_provider, transform, Some(history))
         }
         None => {
             log::warn!("provider factory unavailable because settings db state is missing");
-            (None, TransformRuntime::disabled())
+            (None, TransformRuntime::disabled(), None)
         }
     };
 
@@ -419,7 +447,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     }
 
     let (bus_tx, status_rx, orchestrator) =
-        recording::orchestrator::start_with_transform(cfg.clone(), cue.clone(), stt_provider, transform);
+        recording::orchestrator::start_with_transform(cfg.clone(), cue.clone(), stt_provider, transform, history);
     let status_task = spawn_status_task(status_rx, tray, cue, cfg.clone());
     let shortcut = register_shortcut(app, &cfg)?;
 

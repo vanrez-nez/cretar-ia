@@ -84,7 +84,7 @@ pub enum RecordingEvent {
         reason: String,
     },
     AudioStopped {
-        path: PathBuf,
+        artifact: RecordingArtifact,
     },
     AudioStopFailed {
         code: RecordingErrorCode,
@@ -113,6 +113,12 @@ pub enum RecordingEvent {
         code: RecordingErrorCode,
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingArtifact {
+    pub path: PathBuf,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

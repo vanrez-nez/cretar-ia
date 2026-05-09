@@ -180,9 +180,9 @@ fn stop_active_recorder(recorder: Option<Recorder>, tx: CommandBusTx) -> Option<
     };
 
     match recorder.stop() {
-        Ok(path) => {
+        Ok(artifact) => {
             if tx
-                .send_worker(RecordingEvent::AudioStopped { path })
+                .send_worker(RecordingEvent::AudioStopped { artifact })
                 .is_some()
             {
                 log::warn!("audio stopped event dropped because worker queue was full");

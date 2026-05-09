@@ -35,6 +35,12 @@ type SettingsChangedEvent = {
   keys: string[];
 };
 
+type HistoryOverview = {
+  transcripts: number;
+  words: number;
+  minutes: number;
+};
+
 type SoundOption = {
   id: string;
   label: string;
@@ -57,6 +63,11 @@ export default function App() {
   const [inputDevices, setInputDevices] = useState<string[]>([]);
   const [soundOptions, setSoundOptions] = useState<SoundOption[]>([]);
   const [previewingSoundKey, setPreviewingSoundKey] = useState<string | null>(null);
+  const [historyOverview, setHistoryOverview] = useState<HistoryOverview>({
+    transcripts: 0,
+    words: 0,
+    minutes: 0,
+  });
   const hasHydrated = useRef(false);
   const skipNextAutosave = useRef(true);
 
@@ -71,6 +82,28 @@ export default function App() {
 
     setPermissions(await tauriInvoke<PermissionsStatus>("check_permissions"));
   }, []);
+
+  const refreshHistoryOverview = useCallback(async () => {
+    if (!isTauri()) {
+      setHistoryOverview({ transcripts: 0, words: 0, minutes: 0 });
+      return;
+    }
+    setHistoryOverview(await tauriInvoke<HistoryOverview>("get_history_overview"));
+  }, []);
+
+  useEffect(() => {
+    void refreshHistoryOverview().catch((error) => {
+      logger.warn("Failed to refresh history overview", error);
+    });
+  }, [refreshHistoryOverview]);
+
+  useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
+    if (event.payload.keys.includes("history.overview")) {
+      void refreshHistoryOverview().catch((error) => {
+        logger.warn("Failed to refresh history overview after change", error);
+      });
+    }
+  });
 
   const refreshPermissions = useCallback(async () => {
     setIsRefreshingPermissions(true);
@@ -257,6 +290,7 @@ export default function App() {
                 updateDraft={updateDraft}
                 isUpdatingAutostart={isUpdatingAutostart}
                 updateLaunchAtStart={updateLaunchAtStart}
+                historyOverview={historyOverview}
               />
             </TabsContent>
 
@@ -304,9 +338,11 @@ function SystemPane({
   updateDraft,
   isUpdatingAutostart,
   updateLaunchAtStart,
+  historyOverview,
 }: PaneProps & {
   isUpdatingAutostart: boolean;
   updateLaunchAtStart: (checked: boolean) => Promise<void>;
+  historyOverview: HistoryOverview;
 }) {
   const { t } = useTranslation();
 
@@ -355,9 +391,9 @@ function SystemPane({
           <CardTitle>{t("system.stats.title")}</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-3 items-start gap-3">
-          <StatRow label={t("system.stats.transcripts")} value="0" />
-          <StatRow label={t("system.stats.words")} value="0" />
-          <StatRow label={t("system.stats.minutes")} value="0" />
+          <StatRow label={t("system.stats.transcripts")} value={String(historyOverview.transcripts)} />
+          <StatRow label={t("system.stats.words")} value={String(historyOverview.words)} />
+          <StatRow label={t("system.stats.minutes")} value={String(historyOverview.minutes)} />
         </CardContent>
       </Card>
     </div>

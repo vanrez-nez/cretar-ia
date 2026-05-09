@@ -1,6 +1,7 @@
 use crate::config::{AudioCaptureConfig, OutputConfig};
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
+use crate::history::{HistoryEntry, HistoryStore};
 use crate::inject;
 use crate::model_health::ModelHealthStatus;
 use crate::prompts::PromptView;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-use tokio::time::{self, timeout};
+use tokio::time::timeout;
 
 const PROCESSOR_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -57,6 +58,7 @@ enum ProcessorWorkerCommand {
         wav_file: PathBuf,
         stt_provider: Option<DynSpeechToTextProvider>,
         transform: TransformRuntime,
+        history: Option<HistoryStore>,
     },
     Cancel,
     Shutdown {
@@ -106,6 +108,7 @@ impl ProcessorWorker {
         wav_file: PathBuf,
         stt_provider: Option<DynSpeechToTextProvider>,
         transform: TransformRuntime,
+        history: Option<HistoryStore>,
     ) -> bool {
         self.command_tx
             .send(ProcessorWorkerCommand::Run {
@@ -114,6 +117,7 @@ impl ProcessorWorker {
                 wav_file,
                 stt_provider,
                 transform,
+                history,
             })
             .is_ok()
     }
@@ -149,6 +153,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                         wav_file,
                         stt_provider,
                         transform,
+                        history,
                     } => {
                         if processing_task.is_some() {
                             if tx.send_worker(RecordingEvent::ProcessFailed {
@@ -167,7 +172,6 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
 
                         let start = StdInstant::now();
                         let result_tx = result_tx.clone();
-                        let event_tx = tx.clone();
                         processing_task = Some(tokio::spawn(async move {
                             let result =
                                 process_recording_work(
@@ -176,7 +180,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                                     wav_file,
                                     stt_provider,
                                     transform,
-                                    event_tx,
+                                    history,
                                 )
                                 .await;
                             let success = result.is_ok();
@@ -232,12 +236,12 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
 }
 
 async fn process_recording_work(
-    audio_cfg: crate::config::AudioCaptureConfig,
-    output_cfg: crate::config::OutputConfig,
+    audio_cfg: AudioCaptureConfig,
+    output_cfg: OutputConfig,
     wav_file: PathBuf,
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
-    tx: CommandBusTx,
+    history: Option<HistoryStore>,
 ) -> Result<(), (RecordingErrorCode, String)> {
     if wav_file.as_os_str().is_empty() {
         return Err((
@@ -245,49 +249,50 @@ async fn process_recording_work(
             "missing recording path".to_string(),
         ));
     }
+    let audio_duration_ms = wav_duration_ms(&wav_file).unwrap_or(0);
 
-    let work = async {
-        match stt_provider {
-            Some(client) => match client.transcribe(&wav_file).await {
-                Ok(text) => {
-                    let text = transform_text_or_fallback(text, transform, &tx).await;
-                    match inject::deliver_text(&audio_cfg, &output_cfg, &text).await {
-                        Ok(_) => Ok(()),
-                        Err(err) => {
-                            log::warn!("processing inject failed: {err:?}");
-                            Err((
-                                RecordingErrorCode::Processing,
-                                format!("inject error: {err:#}"),
-                            ))
-                        }
-                    }
+    let mut record = ProcessRecord::empty();
+    let result = match run_transcript_step(
+        stt_provider,
+        &wav_file,
+        output_cfg.processing_timeout_ms,
+    )
+    .await
+    {
+        Ok(transcript_text) => {
+            record.transcript_text = Some(transcript_text.clone());
+            let mut output_text = transcript_text.clone();
+
+            match run_transform_step(
+                &transcript_text,
+                transform,
+                output_cfg.processing_timeout_ms,
+            )
+            .await
+            {
+                TransformAttempt::Skipped => {}
+                TransformAttempt::Succeeded(text) => {
+                    output_text = text.clone();
+                    record.transform_text = Some(text);
                 }
+                TransformAttempt::Failed { friendly_message } => {
+                    record.error_message = Some(friendly_message);
+                }
+            }
+
+            match inject::deliver_text(&audio_cfg, &output_cfg, &output_text).await {
+                Ok(_) => Ok(()),
                 Err(err) => {
-                    log::warn!("processing transcription failed: {err:?}");
-                    Err((RecordingErrorCode::Processing, format!("transcription error: {err:#}")))
+                    log::warn!("processing inject failed: {err:?}");
+                    let reason = friendly_inject_error();
+                    record.error_message = Some(reason.clone());
+                    Err((RecordingErrorCode::Processing, reason))
                 }
-            },
-            None => Err((
-                RecordingErrorCode::Processing,
-                "provider not configured".to_string(),
-            )),
+            }
         }
-    };
-
-    let result = if output_cfg.processing_timeout_ms == 0 {
-        work.await
-    } else {
-        match time::timeout(
-            Duration::from_millis(output_cfg.processing_timeout_ms),
-            work,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err((
-                RecordingErrorCode::WorkerTimeout,
-                format!("processing timeout after {}ms", output_cfg.processing_timeout_ms),
-            )),
+        Err((code, reason)) => {
+            record.error_message = Some(reason.clone());
+            Err((code, reason))
         }
     };
 
@@ -301,34 +306,148 @@ async fn process_recording_work(
         log::trace!("audio artifact retained by policy: {:?}", wav_file);
     }
 
+    if let Some(history) = history {
+        if let Err(err) = history
+            .insert(HistoryEntry {
+                audio_file_path: available_audio_path(&wav_file),
+                audio_duration_ms,
+                transcript_text: record.transcript_text,
+                transform_text: record.transform_text,
+                error_message: record.error_message,
+            })
+            .await
+        {
+            log::warn!("failed to write history row: {err:#}");
+        }
+    }
+
+    let result = result.map(|_| ());
+
     result
 }
 
-async fn transform_text_or_fallback(
+#[derive(Default)]
+struct ProcessRecord {
+    transcript_text: Option<String>,
+    transform_text: Option<String>,
+    error_message: Option<String>,
+}
+
+impl ProcessRecord {
+    fn empty() -> Self {
+        Self::default()
+    }
+}
+
+enum TransformAttempt {
+    Skipped,
+    Succeeded(String),
+    Failed { friendly_message: String },
+}
+
+enum StepJoinError {
+    Timeout,
+    Join(tokio::task::JoinError),
+}
+
+async fn run_transcript_step(
+    stt_provider: Option<DynSpeechToTextProvider>,
+    wav_file: &PathBuf,
+    timeout_ms: u64,
+) -> Result<String, (RecordingErrorCode, String)> {
+    let Some(client) = stt_provider else {
+        return Err((
+            RecordingErrorCode::Processing,
+            "Choose a transcript model before recording.".to_string(),
+        ));
+    };
+
+    let wav_file = wav_file.clone();
+    let task = tokio::spawn(async move { client.transcribe(&wav_file).await });
+
+    match join_step_task(task, timeout_ms).await {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(err)) => {
+            log::warn!("processing transcription failed: {err:?}");
+            Err((RecordingErrorCode::Processing, friendly_transcription_error()))
+        }
+        Err(StepJoinError::Timeout) => {
+            log::warn!("speech-to-text step timed out after {timeout_ms}ms");
+            Err((RecordingErrorCode::WorkerTimeout, friendly_timeout_error()))
+        }
+        Err(StepJoinError::Join(err)) => {
+            log::warn!("speech-to-text step crashed: {err:?}");
+            Err((RecordingErrorCode::Processing, friendly_transcription_error()))
+        }
+    }
+}
+
+async fn run_transform_step(
+    transcript: &str,
+    transform: TransformRuntime,
+    timeout_ms: u64,
+) -> TransformAttempt {
+    let transcript = transcript.to_string();
+    let task = tokio::spawn(async move { run_transform_step_inner(transcript, transform).await });
+
+    match join_step_task(task, timeout_ms).await {
+        Ok(attempt) => attempt,
+        Err(StepJoinError::Timeout) => {
+            log::warn!("transform step timed out after {timeout_ms}ms; falling back to transcript");
+            TransformAttempt::Failed {
+                friendly_message: friendly_transform_timeout_error(),
+            }
+        }
+        Err(StepJoinError::Join(err)) => {
+            log::warn!("transform step crashed; falling back to transcript: {err:?}");
+            TransformAttempt::Failed {
+                friendly_message: friendly_transform_error(),
+            }
+        }
+    }
+}
+
+async fn join_step_task<T>(
+    mut task: JoinHandle<T>,
+    timeout_ms: u64,
+) -> std::result::Result<T, StepJoinError> {
+    if timeout_ms == 0 {
+        return task.await.map_err(StepJoinError::Join);
+    }
+
+    match timeout(Duration::from_millis(timeout_ms), &mut task).await {
+        Ok(result) => result.map_err(StepJoinError::Join),
+        Err(_) => {
+            task.abort();
+            Err(StepJoinError::Timeout)
+        }
+    }
+}
+
+async fn run_transform_step_inner(
     transcript: String,
     transform: TransformRuntime,
-    tx: &CommandBusTx,
-) -> String {
+) -> TransformAttempt {
     if !transform.enabled {
-        return transcript;
+        return TransformAttempt::Skipped;
     }
 
     let Some(formatter) = transform.formatter else {
         log::warn!("transform skipped: no formatting model configured");
-        return transcript;
+        return TransformAttempt::Skipped;
     };
 
     let Some(prompt) = transform.prompt else {
         log::warn!("transform skipped: no active prompt configured");
-        return transcript;
+        return TransformAttempt::Skipped;
     };
 
     if matches!(transform.health, Some(ModelHealthStatus::Unhealthy)) {
-        emit_transform_failed(
-            tx,
-            "active formatting model is unhealthy; falling back to transcript".to_string(),
-        );
-        return transcript;
+        let reason = "The selected transform model is unavailable, so the original transcript was used.".to_string();
+        log::warn!("transform failed: {reason}");
+        return TransformAttempt::Failed {
+            friendly_message: reason,
+        };
     }
 
     log::info!(
@@ -343,11 +462,11 @@ async fn transform_text_or_fallback(
         Ok(text) => {
             let text = text.trim().to_string();
             if text.is_empty() {
-                emit_transform_failed(
-                    tx,
-                    "formatting provider returned empty text; falling back to transcript".to_string(),
-                );
-                transcript
+                let reason = "Transform returned empty text, so the original transcript was used.".to_string();
+                log::warn!("transform failed: {reason}");
+                TransformAttempt::Failed {
+                    friendly_message: reason,
+                }
             } else {
                 log::info!(
                     "transform completed prompt_id={} transcript_len={} transformed_len={}",
@@ -355,22 +474,54 @@ async fn transform_text_or_fallback(
                     transcript.len(),
                     text.len()
                 );
-                text
+                TransformAttempt::Succeeded(text)
             }
         }
         Err(err) => {
-            emit_transform_failed(
-                tx,
-                format!("formatting error: {err:#}; falling back to transcript"),
-            );
-            transcript
+            let reason = "Transform failed, so the original transcript was used.".to_string();
+            log::warn!("transform failed: {reason} Details: {err:#}");
+            TransformAttempt::Failed {
+                friendly_message: reason,
+            }
         }
     }
 }
 
-fn emit_transform_failed(tx: &CommandBusTx, reason: String) {
-    log::warn!("transform failed: {reason}");
-    if tx.send_worker(RecordingEvent::TransformFailed { reason }).is_some() {
-        log::warn!("transform failure event dropped because worker queue was full");
+fn wav_duration_ms(path: &PathBuf) -> Option<u64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let channels = u64::from(spec.channels);
+    let sample_rate = u64::from(spec.sample_rate);
+    if channels == 0 || sample_rate == 0 {
+        return None;
     }
+    Some(u64::from(reader.duration()).saturating_mul(1_000) / channels / sample_rate)
+}
+
+fn available_audio_path(path: &PathBuf) -> Option<String> {
+    if path.exists() {
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+fn friendly_transcription_error() -> String {
+    "Transcription failed. Check your selected transcript model and provider settings.".to_string()
+}
+
+fn friendly_inject_error() -> String {
+    "The text was created but could not be pasted automatically.".to_string()
+}
+
+fn friendly_timeout_error() -> String {
+    "Processing timed out before the transcript could finish.".to_string()
+}
+
+fn friendly_transform_timeout_error() -> String {
+    "Transform timed out, so the original transcript was used.".to_string()
+}
+
+fn friendly_transform_error() -> String {
+    "Transform failed, so the original transcript was used.".to_string()
 }

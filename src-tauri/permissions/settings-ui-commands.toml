@@ -19,6 +19,7 @@ commands.allow = [
   "save_prompt",
   "delete_prompt",
   "select_prompt",
+  "get_history_overview",
   "check_permissions",
   "request_microphone_permission",
   "request_accessibility_permission",

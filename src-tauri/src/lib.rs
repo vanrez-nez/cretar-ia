@@ -4,6 +4,7 @@ mod config;
 mod domain;
 pub mod contracts;
 mod hotkey;
+mod history;
 mod i18n;
 mod inject;
 mod media_control;

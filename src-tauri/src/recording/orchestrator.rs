@@ -6,6 +6,7 @@ use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingEvent};
 use crate::contracts::status::{
     bounded_status_channel, SessionStatusReceiver, SessionStatusSender, SESSION_STATUS_QUEUE_CAPACITY,
 };
+use crate::history::HistoryStore;
 use crate::providers::DynSpeechToTextProvider;
 use crate::recording::command_bus::{CommandBus, CommandBusTx};
 use crate::recording::fsm::{transition, NoopReason, RecordedEvent, Transition, TransitionResult};
@@ -33,7 +34,7 @@ pub fn start(
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_transform(cfg, cue, stt_provider, TransformRuntime::disabled())
+    start_with_transform(cfg, cue, stt_provider, TransformRuntime::disabled(), None)
 }
 
 pub fn start_with_transform(
@@ -41,12 +42,13 @@ pub fn start_with_transform(
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
+    history: Option<HistoryStore>,
 ) -> (
     CommandBusTx,
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, cue, stt_provider, transform, true)
+    start_with_worker_mode(cfg, cue, stt_provider, transform, history, true)
 }
 
 #[cfg(test)]
@@ -59,7 +61,7 @@ pub fn start_without_workers_for_tests(
     SessionStatusReceiver,
     JoinHandle<Result<()>>,
 ) {
-    start_with_worker_mode(cfg, cue, stt_provider, TransformRuntime::disabled(), false)
+    start_with_worker_mode(cfg, cue, stt_provider, TransformRuntime::disabled(), None, false)
 }
 
 fn start_with_worker_mode(
@@ -67,6 +69,7 @@ fn start_with_worker_mode(
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
+    history: Option<HistoryStore>,
     start_workers: bool,
 ) -> (
     CommandBusTx,
@@ -106,6 +109,7 @@ fn start_with_worker_mode(
             cfg,
             stt_provider,
             transform,
+            history,
             cue,
             media_pause: MediaPauseController::new(),
             bus,
@@ -134,6 +138,7 @@ struct Orchestrator {
     cfg: AppConfig,
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
+    history: Option<HistoryStore>,
     cue: CuePlayer,
     media_pause: MediaPauseController,
     bus: CommandBus,
@@ -196,9 +201,9 @@ impl Orchestrator {
             return;
         }
 
-        if let RecordedEvent::Worker(RecordingEvent::AudioStopped { path }) = &event {
+        if let RecordedEvent::Worker(RecordingEvent::AudioStopped { artifact }) = &event {
             if matches!(self.state.phase, PipelinePhase::Stopping) {
-                self.pending_recording = Some(path.clone());
+                self.pending_recording = Some(artifact.path.clone());
             }
         }
 
@@ -511,6 +516,7 @@ impl Orchestrator {
         let output_cfg = self.cfg.output.clone();
         let stt_provider = self.stt_provider.clone();
         let transform = self.transform.clone();
+        let history = self.history.clone();
         let Some(processor_worker) = self.processor_worker.as_ref() else {
             self.publish_status(
                 "processing_after_shutdown_ignored",
@@ -520,7 +526,7 @@ impl Orchestrator {
             return Ok(());
         };
 
-        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, stt_provider, transform) {
+        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, stt_provider, transform, history) {
             self.publish_status(
                 "processing_start_command_failed",
                 Some(RecordingErrorCode::Processing),

@@ -1,4 +1,5 @@
 use crate::config::AudioCaptureConfig;
+use crate::contracts::events::RecordingArtifact;
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::recording::command_bus::CommandBusTx;
@@ -194,7 +195,7 @@ impl Recorder {
         })
     }
 
-    pub fn stop(mut self) -> Result<PathBuf> {
+    pub fn stop(mut self) -> Result<RecordingArtifact> {
         self.stop_audio_stream();
         let mut state = self
             .state
@@ -259,7 +260,10 @@ impl Recorder {
             state.persistence_checkpoints
         );
 
-        Ok(self.out_path.clone())
+        Ok(RecordingArtifact {
+            path: self.out_path.clone(),
+            duration_ms: recording_duration_ms(state.sample_count, self.sample_rate, self.channels),
+        })
     }
 
     fn stop_audio_stream(&mut self) {
@@ -291,6 +295,14 @@ impl Recorder {
         drop(stream);
         log::info!("audio input stream paused and dropped");
     }
+}
+
+fn recording_duration_ms(sample_count: usize, sample_rate: u32, channels: u16) -> u64 {
+    let frames_per_second = u64::from(sample_rate).saturating_mul(u64::from(channels));
+    if frames_per_second == 0 {
+        return 0;
+    }
+    (sample_count as u64).saturating_mul(1_000) / frames_per_second
 }
 
 impl Drop for Recorder {

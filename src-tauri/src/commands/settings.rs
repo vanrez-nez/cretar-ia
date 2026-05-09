@@ -51,6 +51,15 @@ pub async fn list_sound_options() -> Result<Vec<crate::config::SoundOption>, Str
 }
 
 #[tauri::command]
+pub async fn get_history_overview(
+    storage: State<'_, SettingsDb>,
+) -> Result<crate::history::HistoryOverview, String> {
+    crate::history::overview(&storage.pool())
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub async fn import_custom_sound(
     path: String,
     slot: String,
