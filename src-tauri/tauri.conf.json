@@ -23,6 +23,10 @@
   "app": {
     "withGlobalTauri": true,
     "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**", "$HOME/**"]
+      },
       "capabilities": [
         {
           "identifier": "settings-ui",

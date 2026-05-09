@@ -23,6 +23,7 @@
   "sidebar": {
     "system": "System",
     "recording": "Recording",
+    "history": "History",
     "models": "Models",
     "transcripts": "Transcripts",
     "transforms": "Transforms",
@@ -56,6 +57,16 @@
       "words": "Words Transcribed",
       "minutes": "Minutes Recorded"
     }
+  },
+  "history": {
+    "title": "History",
+    "description": "Review the latest retained recording and transcript output.",
+    "latestRecording": "Latest Recording",
+    "loading": "Loading latest recording...",
+    "noAudio": "No retained recording is available yet.",
+    "loadError": "Could not load recording",
+    "play": "Play",
+    "stop": "Stop"
   },
   "permissions": {
     "title": "Permissions",

@@ -60,6 +60,26 @@ pub async fn get_history_overview(
 }
 
 #[tauri::command]
+pub async fn get_latest_history_audio(
+    storage: State<'_, SettingsDb>,
+) -> Result<Option<crate::history::HistoryAudioItem>, String> {
+    crate::history::latest_audio(&storage.pool())
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_history_audio_waveform(
+    history_id: String,
+    samples: Option<u32>,
+    storage: State<'_, SettingsDb>,
+) -> Result<crate::history::AudioWaveform, String> {
+    crate::history::waveform(&storage.pool(), &history_id, samples)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
 pub async fn import_custom_sound(
     path: String,
     slot: String,

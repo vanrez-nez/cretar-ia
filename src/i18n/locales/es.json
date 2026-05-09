@@ -23,6 +23,7 @@
   "sidebar": {
     "system": "Sistema",
     "recording": "Grabación",
+    "history": "Historial",
     "models": "Modelos",
     "transcripts": "Transcripciones",
     "transforms": "Transformaciones",
@@ -56,6 +57,16 @@
       "words": "Palabras transcritas",
       "minutes": "Minutos grabados"
     }
+  },
+  "history": {
+    "title": "Historial",
+    "description": "Revisa la última grabación conservada y el resultado transcrito.",
+    "latestRecording": "Última grabación",
+    "loading": "Cargando última grabación...",
+    "noAudio": "Aún no hay una grabación conservada disponible.",
+    "loadError": "No se pudo cargar la grabación",
+    "play": "Reproducir",
+    "stop": "Detener"
   },
   "permissions": {
     "title": "Permisos",

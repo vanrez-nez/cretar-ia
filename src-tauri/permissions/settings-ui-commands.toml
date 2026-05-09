@@ -20,6 +20,8 @@ commands.allow = [
   "delete_prompt",
   "select_prompt",
   "get_history_overview",
+  "get_latest_history_audio",
+  "get_history_audio_waveform",
   "check_permissions",
   "request_microphone_permission",
   "request_accessibility_permission",

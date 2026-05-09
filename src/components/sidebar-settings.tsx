@@ -1,4 +1,4 @@
-import { FileText, Info, Mic, Settings, WandSparkles } from "lucide-react";
+import { FileText, History, Info, Mic, Settings, WandSparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,6 +15,10 @@ export function SettingsNavigation() {
       <TabsTrigger value="recording" className="h-auto flex-none px-3 py-2">
         <Mic />
         {t("sidebar.recording")}
+      </TabsTrigger>
+      <TabsTrigger value="history" className="h-auto flex-none px-3 py-2">
+        <History />
+        {t("sidebar.history")}
       </TabsTrigger>
       <TabsTrigger value="transcripts" className="h-auto flex-none px-3 py-2">
         <FileText />

@@ -218,6 +218,8 @@ pub fn run() -> Result<()> {
             settings::delete_prompt,
             settings::select_prompt,
             settings::get_history_overview,
+            settings::get_latest_history_audio,
+            settings::get_history_audio_waveform,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,

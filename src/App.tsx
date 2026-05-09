@@ -17,6 +17,7 @@ import { JsonTextarea } from "@/components/json-textarea";
 import { SettingsBadge } from "@/components/settings-badge";
 import { SettingsItemCard } from "@/components/settings-item-card";
 import { SettingsItemEditor } from "@/components/settings-item-editor";
+import { AudioMiniPlayer, type AudioWaveform } from "@/components/audio-mini-player";
 import { tauriInvoke, useTauriEvent } from "@/hooks/useTauriIPC";
 import i18n, { resolveAppLocale } from "@/i18n";
 import { logger } from "@/lib/logger";
@@ -39,6 +40,15 @@ type HistoryOverview = {
   transcripts: number;
   words: number;
   minutes: number;
+};
+
+type HistoryAudioItem = {
+  id: string;
+  audioFilePath: string;
+  audioDurationMs: number;
+  transcriptText: string | null;
+  transformText: string | null;
+  createdAt: string;
 };
 
 type SoundOption = {
@@ -98,7 +108,7 @@ export default function App() {
   }, [refreshHistoryOverview]);
 
   useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
-    if (event.payload.keys.includes("history.overview")) {
+    if (event.keys.includes("history.overview")) {
       void refreshHistoryOverview().catch((error) => {
         logger.warn("Failed to refresh history overview after change", error);
       });
@@ -294,6 +304,10 @@ export default function App() {
               />
             </TabsContent>
 
+            <TabsContent value="history" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
+              <HistoryPane />
+            </TabsContent>
+
             <TabsContent value="recording" className="h-screen overflow-x-hidden overflow-y-auto overscroll-contain p-5">
               <RecordingPane
                 draft={draft}
@@ -394,6 +408,93 @@ function SystemPane({
           <StatRow label={t("system.stats.transcripts")} value={String(historyOverview.transcripts)} />
           <StatRow label={t("system.stats.words")} value={String(historyOverview.words)} />
           <StatRow label={t("system.stats.minutes")} value={String(historyOverview.minutes)} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function HistoryPane() {
+  const { t } = useTranslation();
+  const [item, setItem] = useState<HistoryAudioItem | null>(null);
+  const [waveform, setWaveform] = useState<AudioWaveform | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!isTauri()) {
+      setItem(null);
+      setWaveform(null);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const latest = await tauriInvoke<HistoryAudioItem | null>("get_latest_history_audio");
+      setItem(latest);
+      if (!latest) {
+        setWaveform(null);
+        return;
+      }
+      setWaveform(
+        await tauriInvoke<AudioWaveform>("get_history_audio_waveform", {
+          historyId: latest.id,
+          samples: 1024,
+        })
+      );
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      setItem(null);
+      setWaveform(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useTauriEvent<SettingsChangedEvent>("settings:changed", (event) => {
+    if (event.keys.includes("history.overview")) {
+      void load();
+    }
+  });
+
+  const previewText = item?.transformText ?? item?.transcriptText ?? null;
+
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("history.title")}</CardTitle>
+          <CardDescription>{t("history.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {isLoading ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.loading")}
+            </div>
+          ) : null}
+          {!isLoading && !item ? (
+            <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
+              {t("history.noAudio")}
+            </div>
+          ) : null}
+          {item && waveform ? (
+            <div className="space-y-3">
+              <div className="select-none space-y-1">
+                <div className="text-sm font-medium">{t("history.latestRecording")}</div>
+                <div className="text-xs text-muted-foreground">{formatDateTime(item.createdAt)}</div>
+              </div>
+              <AudioMiniPlayer audioFilePath={item.audioFilePath} waveform={waveform} />
+              {previewText ? (
+                <p className="line-clamp-3 select-text text-sm text-muted-foreground">{previewText}</p>
+              ) : null}
+            </div>
+          ) : null}
+          {error ? <p className="text-xs text-destructive">{t("history.loadError")}: {error}</p> : null}
         </CardContent>
       </Card>
     </div>
@@ -1759,6 +1860,14 @@ function StatRow({ label, value }: { label: string; value: string }) {
 
 function formatJson(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2);
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }
 
 function mergeModelOptions(base: ProviderModelOption[], next: ProviderModelOption[]): ProviderModelOption[] {
