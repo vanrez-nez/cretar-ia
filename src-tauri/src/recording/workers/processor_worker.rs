@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const PROCESSOR_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const MIN_TRANSCRIPTION_AUDIO_DURATION_MS: u64 = 1_000;
 
 #[derive(Clone)]
 pub struct TransformRuntime {
@@ -252,47 +253,58 @@ async fn process_recording_work(
     let audio_duration_ms = wav_duration_ms(&wav_file).unwrap_or(0);
 
     let mut record = ProcessRecord::empty();
-    let result = match run_transcript_step(
-        stt_provider,
-        &wav_file,
-        output_cfg.processing_timeout_ms,
-    )
-    .await
-    {
-        Ok(transcript_text) => {
-            record.transcript_text = Some(transcript_text.clone());
-            let mut output_text = transcript_text.clone();
+    let result = if audio_duration_ms <= MIN_TRANSCRIPTION_AUDIO_DURATION_MS {
+        log::warn!(
+            "recording too short for transcription: duration_ms={} min_duration_ms={}",
+            audio_duration_ms,
+            MIN_TRANSCRIPTION_AUDIO_DURATION_MS
+        );
+        let reason = friendly_recording_too_short_error();
+        record.error_message = Some(reason.clone());
+        Err((RecordingErrorCode::Processing, reason))
+    } else {
+        match run_transcript_step(
+            stt_provider,
+            &wav_file,
+            output_cfg.processing_timeout_ms,
+        )
+        .await
+        {
+            Ok(transcript_text) => {
+                record.transcript_text = Some(transcript_text.clone());
+                let mut output_text = transcript_text.clone();
 
-            match run_transform_step(
-                &transcript_text,
-                transform,
-                output_cfg.processing_timeout_ms,
-            )
-            .await
-            {
-                TransformAttempt::Skipped => {}
-                TransformAttempt::Succeeded(text) => {
-                    output_text = text.clone();
-                    record.transform_text = Some(text);
+                match run_transform_step(
+                    &transcript_text,
+                    transform,
+                    output_cfg.processing_timeout_ms,
+                )
+                .await
+                {
+                    TransformAttempt::Skipped => {}
+                    TransformAttempt::Succeeded(text) => {
+                        output_text = text.clone();
+                        record.transform_text = Some(text);
+                    }
+                    TransformAttempt::Failed { friendly_message } => {
+                        record.error_message = Some(friendly_message);
+                    }
                 }
-                TransformAttempt::Failed { friendly_message } => {
-                    record.error_message = Some(friendly_message);
+
+                match inject::deliver_text(&audio_cfg, &output_cfg, &output_text).await {
+                    Ok(_) => Ok(()),
+                    Err(err) => {
+                        log::warn!("processing inject failed: {err:?}");
+                        let reason = friendly_inject_error();
+                        record.error_message = Some(reason.clone());
+                        Err((RecordingErrorCode::Processing, reason))
+                    }
                 }
             }
-
-            match inject::deliver_text(&audio_cfg, &output_cfg, &output_text).await {
-                Ok(_) => Ok(()),
-                Err(err) => {
-                    log::warn!("processing inject failed: {err:?}");
-                    let reason = friendly_inject_error();
-                    record.error_message = Some(reason.clone());
-                    Err((RecordingErrorCode::Processing, reason))
-                }
+            Err((code, reason)) => {
+                record.error_message = Some(reason.clone());
+                Err((code, reason))
             }
-        }
-        Err((code, reason)) => {
-            record.error_message = Some(reason.clone());
-            Err((code, reason))
         }
     };
 
@@ -510,6 +522,10 @@ fn available_audio_path(path: &PathBuf) -> Option<String> {
 
 fn friendly_transcription_error() -> String {
     "Transcription failed. Check your selected transcript model and provider settings.".to_string()
+}
+
+fn friendly_recording_too_short_error() -> String {
+    "Recording is too short. Hold the hotkey for more than 1 second and try again.".to_string()
 }
 
 fn friendly_inject_error() -> String {
