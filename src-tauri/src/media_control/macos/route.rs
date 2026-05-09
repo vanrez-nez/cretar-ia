@@ -42,22 +42,22 @@ pub fn capture_restore_context(input_device: Option<&str>) -> Option<RouteRestor
     })
 }
 
-pub fn wait_for_restore(context: RouteRestoreContext) {
+pub fn wait_for_restore(context: RouteRestoreContext) -> bool {
     if !context.should_wait {
         log::debug!("media route: restore gate skipped because capture did not require waiting");
-        return;
+        return true;
     }
-    wait_for_output_route_restore(&context.before);
+    wait_for_output_route_restore(&context.before)
 }
 
-fn wait_for_output_route_restore(before: &OutputRouteSnapshot) {
+fn wait_for_output_route_restore(before: &OutputRouteSnapshot) -> bool {
     let Some(current) = output_route_snapshot() else {
         log::warn!("media route: cannot read output route before resume; proceeding");
-        return;
+        return true;
     };
     if route_restored(before, &current) {
         log::debug!("media route: output route already restored before={before:?} current={current:?}");
-        return;
+        return true;
     }
 
     let (tx, rx) = mpsc::channel::<()>();
@@ -99,7 +99,7 @@ fn wait_for_output_route_restore(before: &OutputRouteSnapshot) {
         log::debug!("media route: restore event snapshot current={current:?}");
         if route_restored(before, &current) {
             log::info!("media route: output route restored current={current:?}");
-            return;
+            return true;
         }
     }
 
@@ -107,6 +107,7 @@ fn wait_for_output_route_restore(before: &OutputRouteSnapshot) {
         "media route: timed out waiting for output route restore before={before:?} current={:?}",
         output_route_snapshot()
     );
+    false
 }
 
 fn output_route_snapshot() -> Option<OutputRouteSnapshot> {

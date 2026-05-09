@@ -39,11 +39,19 @@ impl MediaPauseController {
     }
 
     pub fn resume_after_audio_stopped(&self) -> bool {
-        self.wait_for_output_route_if_needed();
+        if !self.wait_for_output_route_if_needed() {
+            log::warn!("media resume: postponed because output route has not restored");
+            return false;
+        }
         self.resume_now()
     }
 
     pub fn resume_now(&self) -> bool {
+        if !self.wait_for_output_route_if_needed() {
+            log::warn!("media resume: postponed because output route has not restored");
+            return false;
+        }
+
         if !self
             .was_playing_before_recording
             .swap(false, Ordering::SeqCst)
@@ -55,7 +63,7 @@ impl MediaPauseController {
         playback::resume_if_paused_by_us()
     }
 
-    fn wait_for_output_route_if_needed(&self) {
+    fn wait_for_output_route_if_needed(&self) -> bool {
         let context = self
             .route_restore
             .lock()
@@ -63,8 +71,14 @@ impl MediaPauseController {
             .and_then(|guard| guard.clone());
 
         let Some(context) = context else {
-            return;
+            return true;
         };
-        route::wait_for_restore(context);
+        let restored = route::wait_for_restore(context);
+        if restored {
+            if let Ok(mut guard) = self.route_restore.lock() {
+                *guard = None;
+            }
+        }
+        restored
     }
 }
