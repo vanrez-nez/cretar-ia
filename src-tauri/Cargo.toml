@@ -32,6 +32,7 @@ resvg = { version = "0.47", optional = true }
 tauri = { version = "2", optional = true , features = ["tray-icon", "image-png"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
 tauri-plugin-macos-permissions = "2"
 
 [features]

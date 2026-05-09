@@ -32,7 +32,7 @@ async fn check_microphone_permission() -> PermissionState {
     platform::check_microphone_permission().await
 }
 
-async fn check_accessibility_permission() -> PermissionState {
+pub async fn check_accessibility_permission() -> PermissionState {
     platform::check_accessibility_permission().await
 }
 
