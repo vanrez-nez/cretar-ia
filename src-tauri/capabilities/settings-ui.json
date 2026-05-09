@@ -8,6 +8,8 @@
     "log:default",
     "autostart:default",
     "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
     "sql:default",
     "sql:allow-execute",
     "settings-ui-commands"

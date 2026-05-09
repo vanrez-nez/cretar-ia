@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -35,7 +42,7 @@ import { setLaunchAtStart } from "@/settings/autostart";
 import type { SettingsRecord, SettingValue } from "@/settings/schema";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { AppLanguage, InteractionMode, PermissionState, PermissionsStatus } from "./lib/types";
-import { Check, Eye, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Eye, MoreHorizontal, Play, Plus, RefreshCw, ShieldCheck, ShieldX, SquarePen, Trash2, TriangleAlert } from "lucide-react";
 
 const AUTOSAVE_DELAY_MS = 500;
 const APP_VERSION = "0.1.0";
@@ -70,6 +77,33 @@ type HistoryPage = {
   total: number;
 };
 
+type HistoryExportStatus = "idle" | "packing" | "complete" | "saving" | "saved" | "error";
+
+type HistoryExportState = {
+  exportId: string | null;
+  status: HistoryExportStatus;
+  processed: number;
+  total: number;
+  message: string | null;
+  savedPath: string | null;
+};
+
+type HistoryExportStart = {
+  exportId: string;
+};
+
+type HistoryExportProgressEvent = {
+  exportId: string;
+  status: "packing" | "complete" | "error";
+  processed: number;
+  total: number;
+  message?: string | null;
+};
+
+type HistoryExportSaveResult = {
+  path: string;
+};
+
 type SoundOption = {
   id: string;
   label: string;
@@ -77,6 +111,15 @@ type SoundOption = {
 };
 
 type SoundSlot = "start" | "stop" | "error";
+
+const IDLE_HISTORY_EXPORT: HistoryExportState = {
+  exportId: null,
+  status: "idle",
+  processed: 0,
+  total: 0,
+  message: null,
+  savedPath: null,
+};
 
 export default function App() {
   const { t } = useTranslation();
@@ -435,6 +478,9 @@ function SystemPane({
 
 function HistoryPane() {
   const { t } = useTranslation();
+  const settings = useSettingsStore((s) => s.settings);
+  const saveSettings = useSettingsStore((s) => s.updateSettings);
+  const isSavingSettings = useSettingsStore((s) => s.isSaving);
   const [historyPage, setHistoryPage] = useState<HistoryPage | null>(null);
   const [page, setPage] = useState(1);
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
@@ -442,6 +488,8 @@ function HistoryPane() {
   const [isLoading, setIsLoading] = useState(false);
   const [isWaveformLoading, setIsWaveformLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [exportState, setExportState] = useState<HistoryExportState>(IDLE_HISTORY_EXPORT);
 
   const loadWaveform = useCallback(async (record: HistoryRecord | null) => {
     setWaveform(null);
@@ -507,6 +555,23 @@ function HistoryPane() {
     }
   });
 
+  useTauriEvent<HistoryExportProgressEvent>("history:export-progress", (event) => {
+    setExportState((current) => {
+      if (current.exportId && current.exportId !== event.exportId) {
+        return current;
+      }
+
+      return {
+        exportId: event.exportId,
+        status: event.status,
+        processed: event.processed,
+        total: event.total,
+        message: event.message ?? null,
+        savedPath: null,
+      };
+    });
+  });
+
   const selectRecord = useCallback((record: HistoryRecord) => {
     setSelectedRecord(record);
     void loadWaveform(record);
@@ -517,13 +582,233 @@ function HistoryPane() {
   const totalPages = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE));
   const paginationItems = historyPaginationItems(page, totalPages);
   const selectedText = selectedRecord ? historyRecordText(selectedRecord) : null;
+  const historyEnabled = Boolean(settings?.["system.save_text_history"]);
+  const hasPendingExport =
+    exportState.status === "packing" ||
+    exportState.status === "complete" ||
+    exportState.status === "saving";
+
+  const updateHistoryEnabled = useCallback((enabled: boolean) => {
+    if (!settings) {
+      return;
+    }
+
+    setActionError(null);
+    void saveSettings({
+      ...settings,
+      "system.save_text_history": enabled,
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setActionError(message);
+    });
+  }, [saveSettings, settings]);
+
+  const startHistoryExport = useCallback(async () => {
+    if (hasPendingExport) {
+      return;
+    }
+
+    setActionError(null);
+    setExportState({
+      ...IDLE_HISTORY_EXPORT,
+      status: "packing",
+      message: t("history.exportPreparing"),
+    });
+
+    try {
+      const result = await tauriInvoke<HistoryExportStart>("start_history_export");
+      setExportState((current) => {
+        if (current.exportId === result.exportId) {
+          return current;
+        }
+
+        return {
+          ...current,
+          exportId: result.exportId,
+          status: current.status === "idle" ? "packing" : current.status,
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExportState({
+        ...IDLE_HISTORY_EXPORT,
+        status: "error",
+        message,
+      });
+    }
+  }, [hasPendingExport, t]);
+
+  const saveHistoryExport = useCallback(async () => {
+    if (!exportState.exportId || exportState.status !== "complete") {
+      return;
+    }
+
+    const destinationPath = await save({
+      title: t("history.exportSaveTitle"),
+      defaultPath: `history-export-${new Date().toISOString().slice(0, 10)}.zip`,
+      filters: [{ name: "ZIP", extensions: ["zip"] }],
+    });
+
+    if (!destinationPath) {
+      return;
+    }
+
+    setExportState((current) => ({
+      ...current,
+      status: "saving",
+      message: t("history.exportSaving"),
+    }));
+
+    try {
+      const result = await tauriInvoke<HistoryExportSaveResult>("save_history_export", {
+        exportId: exportState.exportId,
+        destinationPath,
+      });
+      setExportState((current) => ({
+        ...current,
+        status: "saved",
+        message: t("history.exportSaved"),
+        savedPath: result.path,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExportState((current) => ({
+        ...current,
+        status: "complete",
+        message: `${t("history.exportSaveError")}: ${message}`,
+      }));
+    }
+  }, [exportState.exportId, exportState.status, t]);
+
+  const dismissHistoryExport = useCallback(() => {
+    const exportId = exportState.exportId;
+    const shouldCleanup = exportId && exportState.status !== "saved";
+    setExportState(IDLE_HISTORY_EXPORT);
+    if (shouldCleanup) {
+      void tauriInvoke<void>("delete_history_export", { exportId }).catch((error) => {
+        logger.warn("failed to delete temporary history export", {
+          exportId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  }, [exportState.exportId, exportState.status]);
+
+  const retryHistoryExport = useCallback(() => {
+    const exportId = exportState.exportId;
+    if (exportId) {
+      void tauriInvoke<void>("delete_history_export", { exportId }).catch((error) => {
+        logger.warn("failed to delete failed history export", {
+          exportId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    void startHistoryExport();
+  }, [exportState.exportId, startHistoryExport]);
+
+  const deleteAllHistory = useCallback(async () => {
+    const confirmed = await confirm(t("history.deleteAllConfirmDescription"), {
+      title: t("history.deleteAllConfirmTitle"),
+      kind: "warning",
+      okLabel: t("history.deleteAll"),
+      cancelLabel: t("common.cancel"),
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      await tauriInvoke("delete_all_history");
+      setPage(1);
+      setHistoryPage({
+        items: [],
+        page: 1,
+        pageSize: HISTORY_PAGE_SIZE,
+        total: 0,
+      });
+      setSelectedRecord(null);
+      setWaveform(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setActionError(message);
+    }
+  }, [t]);
 
   return (
     <div className="grid gap-4">
+      {exportState.status !== "idle" ? (
+        <HistoryExportProgressCard
+          state={exportState}
+          onDismiss={dismissHistoryExport}
+          onRetry={retryHistoryExport}
+          onSave={saveHistoryExport}
+        />
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>{t("history.title")}</CardTitle>
           <CardDescription>{t("history.description")}</CardDescription>
+          <CardAction>
+            <ContextMenu>
+              <ContextMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t("history.menuLabel")}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    event.currentTarget.dispatchEvent(
+                      new MouseEvent("contextmenu", {
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: event.clientX || rect.right,
+                        clientY: event.clientY || rect.bottom,
+                      })
+                    );
+                  }}
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </Button>
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ContextMenuItem
+                  disabled={hasPendingExport}
+                  onSelect={() => void startHistoryExport()}
+                >
+                  {t("history.export")}
+                </ContextMenuItem>
+                <ContextMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => void deleteAllHistory()}
+                >
+                  {t("history.deleteAll")}
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  className="justify-between gap-6"
+                  disabled={!settings || isSavingSettings}
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    updateHistoryEnabled(!historyEnabled);
+                  }}
+                >
+                  <span>{t("history.enable")}</span>
+                  <Switch
+                    size="sm"
+                    checked={historyEnabled}
+                    disabled={!settings || isSavingSettings}
+                    onClick={(event) => event.stopPropagation()}
+                    onCheckedChange={updateHistoryEnabled}
+                  />
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          </CardAction>
         </CardHeader>
         <CardContent className="space-y-3">
           <Table className="table-fixed">
@@ -565,6 +850,7 @@ function HistoryPane() {
               {t("history.loading")}
             </div>
           ) : null}
+          {actionError ? <p className="text-xs text-destructive">{actionError}</p> : null}
           {error ? <p className="text-xs text-destructive">{t("history.loadError")}: {error}</p> : null}
           <Pagination className="justify-end">
             <PaginationContent>
@@ -652,6 +938,76 @@ function HistoryPane() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function HistoryExportProgressCard({
+  state,
+  onDismiss,
+  onRetry,
+  onSave,
+}: {
+  state: HistoryExportState;
+  onDismiss: () => void;
+  onRetry: () => void;
+  onSave: () => void;
+}) {
+  const { t } = useTranslation();
+  const percent = historyExportPercent(state);
+  const message = state.message ?? historyExportMessage(t, state.status);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("history.exportTitle")}</CardTitle>
+        <CardDescription>{message}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1.5">
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary transition-[width]"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>
+              {t("history.exportProgress", {
+                processed: state.processed,
+                total: state.total,
+                percent,
+              })}
+            </span>
+            {state.savedPath ? <span className="truncate pl-3">{state.savedPath}</span> : null}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          {state.status === "error" ? (
+            <Button variant="ghost" size="sm" onClick={onRetry}>
+              {t("history.exportRetry")}
+            </Button>
+          ) : null}
+          {state.status === "complete" ? (
+            <Button size="sm" onClick={onSave}>
+              {t("history.exportSave")}
+            </Button>
+          ) : null}
+          {state.status === "saving" ? (
+            <Button size="sm" disabled>
+              {t("history.exportSaving")}
+            </Button>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={state.status === "packing" || state.status === "saving"}
+            onClick={onDismiss}
+          >
+            {t("history.exportDismiss")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2064,6 +2420,34 @@ function formatDurationMs(value: number): string {
 
 function historyRecordText(record: HistoryRecord): string {
   return record.transformText ?? record.transcriptText ?? record.errorMessage ?? "";
+}
+
+function historyExportPercent(state: HistoryExportState): number {
+  if (state.status === "complete" || state.status === "saving" || state.status === "saved") {
+    return 100;
+  }
+  if (state.total <= 0) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, Math.round((state.processed / state.total) * 100)));
+}
+
+function historyExportMessage(t: ReturnType<typeof useTranslation>["t"], status: HistoryExportStatus): string {
+  switch (status) {
+    case "packing":
+      return t("history.exportPacking");
+    case "complete":
+      return t("history.exportReady");
+    case "saving":
+      return t("history.exportSaving");
+    case "saved":
+      return t("history.exportSaved");
+    case "error":
+      return t("history.exportFailed");
+    case "idle":
+    default:
+      return "";
+  }
 }
 
 function historyPaginationItems(page: number, totalPages: number): Array<number | "ellipsis"> {

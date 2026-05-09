@@ -63,6 +63,13 @@ pub struct HistoryPage {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HistoryDeleteResult {
+    pub records_deleted: u64,
+    pub audio_files_deleted: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioWaveform {
     pub duration: f64,
     pub peaks: Vec<Vec<f32>>,
@@ -214,6 +221,65 @@ pub async fn list_records(pool: &SqlitePool, page: u32, page_size: u32) -> Resul
         page,
         page_size,
         total,
+    })
+}
+
+pub async fn all_records(pool: &SqlitePool) -> Result<Vec<HistoryRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, audio_file_path, audio_duration_ms, transcript_text, transform_text, error_message, created_at
+         FROM history
+         ORDER BY created_at DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let duration_ms: i64 = row.try_get("audio_duration_ms")?;
+        items.push(HistoryRecord {
+            id: row.try_get("id")?,
+            audio_file_path: row.try_get("audio_file_path")?,
+            audio_duration_ms: duration_ms.max(0) as u64,
+            transcript_text: row.try_get("transcript_text")?,
+            transform_text: row.try_get("transform_text")?,
+            error_message: row.try_get("error_message")?,
+            created_at: row.try_get("created_at")?,
+        });
+    }
+
+    Ok(items)
+}
+
+pub async fn delete_all(pool: &SqlitePool) -> Result<HistoryDeleteResult> {
+    let rows = sqlx::query(
+        "SELECT audio_file_path FROM history
+         WHERE audio_file_path IS NOT NULL AND audio_file_path != ''",
+    )
+    .fetch_all(pool)
+    .await?;
+    let audio_paths: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("audio_file_path").ok())
+        .collect();
+
+    let result = sqlx::query("DELETE FROM history").execute(pool).await?;
+    let mut audio_files_deleted = 0;
+    for path in audio_paths {
+        let path = Path::new(&path);
+        if path.is_file() {
+            match std::fs::remove_file(path) {
+                Ok(()) => audio_files_deleted += 1,
+                Err(err) => log::warn!(
+                    "failed to delete retained history audio {}: {err}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
+    Ok(HistoryDeleteResult {
+        records_deleted: result.rows_affected(),
+        audio_files_deleted,
     })
 }
 

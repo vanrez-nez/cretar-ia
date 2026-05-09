@@ -4,12 +4,44 @@ use crate::permissions::PermissionsStatus;
 use crate::prompts::{PromptCache, PromptView};
 use crate::providers::{ProviderModelOption, RoleModelSettings};
 use crate::settings_db::SettingsDb;
+use anyhow::{anyhow, Context};
 use rodio::Source;
+use serde::Serialize;
 use serde_json::Value;
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
+use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, State};
+use uuid::Uuid;
+use zip::write::SimpleFileOptions;
+
+static HISTORY_EXPORTS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryExportStart {
+    export_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryExportSaveResult {
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryExportProgress {
+    export_id: String,
+    status: &'static str,
+    processed: usize,
+    total: usize,
+    message: Option<String>,
+}
 
 #[tauri::command]
 pub async fn apply_settings(
@@ -88,6 +120,117 @@ pub async fn get_history_audio_waveform(
     crate::history::waveform(&storage.pool(), &history_id, samples)
         .await
         .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn start_history_export(
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<HistoryExportStart, String> {
+    let export_id = Uuid::new_v4().to_string();
+    let pool = storage.pool();
+    let export_dir = storage.app_data_dir().join("exports");
+    let temp_path = export_dir.join(format!("history-export-{export_id}.zip"));
+    let cleanup_path = temp_path.clone();
+    let task_app = app.clone();
+    let task_export_id = export_id.clone();
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) =
+            run_history_export(task_app.clone(), task_export_id.clone(), pool, temp_path).await
+        {
+            log::warn!("history export failed export_id={task_export_id}: {err:#}");
+            if let Err(remove_err) = fs::remove_file(&cleanup_path) {
+                if cleanup_path.is_file() {
+                    log::warn!(
+                        "failed to remove incomplete history export {}: {remove_err}",
+                        cleanup_path.display()
+                    );
+                }
+            }
+            emit_history_export_progress(
+                &task_app,
+                HistoryExportProgress {
+                    export_id: task_export_id,
+                    status: "error",
+                    processed: 0,
+                    total: 0,
+                    message: Some(err.to_string()),
+                },
+            );
+        }
+    });
+
+    Ok(HistoryExportStart { export_id })
+}
+
+#[tauri::command]
+pub async fn save_history_export(
+    export_id: String,
+    destination_path: String,
+) -> Result<HistoryExportSaveResult, String> {
+    let temp_path = {
+        let exports = HISTORY_EXPORTS
+            .lock()
+            .map_err(|_| "history export registry is unavailable".to_string())?;
+        exports
+            .get(&export_id)
+            .cloned()
+            .ok_or_else(|| "history export is not available".to_string())?
+    };
+    let mut destination = PathBuf::from(destination_path);
+    if destination.extension().and_then(|value| value.to_str()).is_none() {
+        destination.set_extension("zip");
+    }
+
+    fs::copy(&temp_path, &destination)
+        .with_context(|| format!("copying export to {}", destination.display()))
+        .map_err(command_error)?;
+    if let Err(err) = fs::remove_file(&temp_path) {
+        log::warn!("failed to remove temporary history export {}: {err}", temp_path.display());
+    }
+    if let Ok(mut exports) = HISTORY_EXPORTS.lock() {
+        exports.remove(&export_id);
+    }
+
+    Ok(HistoryExportSaveResult {
+        path: destination.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub async fn delete_history_export(export_id: String) -> Result<(), String> {
+    let temp_path = {
+        let mut exports = HISTORY_EXPORTS
+            .lock()
+            .map_err(|_| "history export registry is unavailable".to_string())?;
+        exports.remove(&export_id)
+    };
+
+    if let Some(path) = temp_path {
+        if let Err(err) = fs::remove_file(&path) {
+            if path.is_file() {
+                log::warn!(
+                    "failed to delete temporary history export {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_all_history(
+    app: AppHandle,
+    storage: State<'_, SettingsDb>,
+) -> Result<crate::history::HistoryDeleteResult, String> {
+    let result = crate::history::delete_all(&storage.pool())
+        .await
+        .map_err(command_error)?;
+    emit_history_changed(&app);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -352,6 +495,171 @@ pub async fn request_microphone_permission() -> Result<crate::permissions::Permi
 #[tauri::command]
 pub async fn request_accessibility_permission() -> Result<crate::permissions::PermissionState, String> {
     Ok(crate::permissions::request_accessibility_permission().await)
+}
+
+async fn run_history_export(
+    app: AppHandle,
+    export_id: String,
+    pool: SqlitePool,
+    temp_path: PathBuf,
+) -> anyhow::Result<()> {
+    let records = crate::history::all_records(&pool).await?;
+    let total = records.len();
+    emit_history_export_progress(
+        &app,
+        HistoryExportProgress {
+            export_id: export_id.clone(),
+            status: "packing",
+            processed: 0,
+            total,
+            message: None,
+        },
+    );
+
+    let zip_path = temp_path.clone();
+    let progress_app = app.clone();
+    let progress_export_id = export_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        write_history_export_zip(&records, &zip_path, |processed| {
+            emit_history_export_progress(
+                &progress_app,
+                HistoryExportProgress {
+                    export_id: progress_export_id.clone(),
+                    status: "packing",
+                    processed,
+                    total,
+                    message: None,
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|err| anyhow!("history export worker failed: {err}"))??;
+
+    {
+        let mut exports = HISTORY_EXPORTS
+            .lock()
+            .map_err(|_| anyhow!("history export registry is unavailable"))?;
+        exports.insert(export_id.clone(), temp_path);
+    }
+
+    emit_history_export_progress(
+        &app,
+        HistoryExportProgress {
+            export_id,
+            status: "complete",
+            processed: total,
+            total,
+            message: None,
+        },
+    );
+
+    Ok(())
+}
+
+fn write_history_export_zip<F>(
+    records: &[crate::history::HistoryRecord],
+    temp_path: &Path,
+    mut on_progress: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(usize),
+{
+    if let Some(parent) = temp_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating history export directory {}", parent.display()))?;
+    }
+
+    let file = File::create(temp_path)
+        .with_context(|| format!("creating temporary history export {}", temp_path.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    for (index, record) in records.iter().enumerate() {
+        let number = format!("{index:03}");
+        let audio_file_name = export_audio_file_name(record, &number);
+        if let (Some(source), Some(file_name)) = (
+            record.audio_file_path.as_deref().filter(|path| Path::new(path).is_file()),
+            audio_file_name.as_deref(),
+        ) {
+            zip.start_file(file_name, options)?;
+            let mut audio = File::open(source)
+                .with_context(|| format!("opening retained audio file {source}"))?;
+            io::copy(&mut audio, &mut zip)?;
+        }
+
+        zip.start_file(format!("transcript_{number}.md"), options)?;
+        zip.write_all(history_record_markdown(record, index, audio_file_name.as_deref()).as_bytes())?;
+        on_progress(index + 1);
+    }
+
+    zip.finish()?;
+    Ok(())
+}
+
+fn export_audio_file_name(record: &crate::history::HistoryRecord, number: &str) -> Option<String> {
+    record
+        .audio_file_path
+        .as_deref()
+        .filter(|path| Path::new(path).is_file())
+        .map(|_| format!("transcript_{number}.wav"))
+}
+
+fn history_record_markdown(
+    record: &crate::history::HistoryRecord,
+    index: usize,
+    audio_file_name: Option<&str>,
+) -> String {
+    let transcript = record.transcript_text.as_deref().unwrap_or("_Unavailable_");
+    let transform = record.transform_text.as_deref().unwrap_or("_Unavailable_");
+    let error = record.error_message.as_deref().unwrap_or("_None_");
+    let original_audio = record.audio_file_path.as_deref().unwrap_or("_Unavailable_");
+    let exported_audio = audio_file_name.unwrap_or("_Unavailable_");
+
+    format!(
+        "# Transcript {index:03}\n\n\
+         - ID: {id}\n\
+         - Created at: {created_at}\n\
+         - Duration: {duration}\n\
+         - Audio duration ms: {audio_duration_ms}\n\
+         - Original audio path: {original_audio}\n\
+         - Exported audio file: {exported_audio}\n\
+         - Error: {error}\n\n\
+         ## Transcript\n\n\
+         {transcript}\n\n\
+         ## Transform\n\n\
+         {transform}\n",
+        id = record.id,
+        created_at = record.created_at,
+        duration = format_duration_ms(record.audio_duration_ms),
+        audio_duration_ms = record.audio_duration_ms,
+    )
+}
+
+fn format_duration_ms(value: u64) -> String {
+    let total_seconds = (value + 500) / 1000;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes}:{seconds:02}")
+}
+
+fn emit_history_export_progress(app: &AppHandle, payload: HistoryExportProgress) {
+    if let Err(err) = app.emit("history:export-progress", payload) {
+        log::warn!("failed to emit history export progress: {err}");
+    }
+}
+
+fn emit_history_changed(app: &AppHandle) {
+    if let Err(err) = app.emit(
+        "settings:changed",
+        serde_json::json!({
+            "source": "history",
+            "keys": ["history.overview"],
+        }),
+    ) {
+        log::warn!("failed to emit history change: {err}");
+    }
 }
 
 pub(crate) fn apply_saved_config(
