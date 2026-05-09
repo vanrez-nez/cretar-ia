@@ -282,65 +282,6 @@ pub async fn select_prompt(
 }
 
 #[tauri::command]
-pub async fn save_provider_config_override(
-    role: String,
-    provider_id: String,
-    override_config: Value,
-    app: AppHandle,
-    storage: State<'_, SettingsDb>,
-) -> Result<(), String> {
-    crate::providers::save_provider_config_override(
-        &storage.pool(),
-        &role,
-        &provider_id,
-        override_config,
-    )
-    .await
-    .map_err(command_error)?;
-    restart_runtime_after_provider_change(&app)
-}
-
-#[tauri::command]
-pub async fn save_model_config_override(
-    role: String,
-    model_id: String,
-    override_config: Value,
-    app: AppHandle,
-    storage: State<'_, SettingsDb>,
-) -> Result<(), String> {
-    crate::providers::save_model_config_override(&storage.pool(), &role, &model_id, override_config)
-        .await
-        .map_err(command_error)?;
-    restart_runtime_after_provider_change(&app)
-}
-
-#[tauri::command]
-pub async fn reset_provider_config_override(
-    role: String,
-    provider_id: String,
-    app: AppHandle,
-    storage: State<'_, SettingsDb>,
-) -> Result<(), String> {
-    crate::providers::reset_provider_config_override(&storage.pool(), &role, &provider_id)
-        .await
-        .map_err(command_error)?;
-    restart_runtime_after_provider_change(&app)
-}
-
-#[tauri::command]
-pub async fn reset_model_config_override(
-    role: String,
-    model_id: String,
-    app: AppHandle,
-    storage: State<'_, SettingsDb>,
-) -> Result<(), String> {
-    crate::providers::reset_model_config_override(&storage.pool(), &role, &model_id)
-        .await
-        .map_err(command_error)?;
-    restart_runtime_after_provider_change(&app)
-}
-
-#[tauri::command]
 pub async fn check_permissions() -> Result<PermissionsStatus, String> {
     Ok(crate::permissions::check_permissions().await)
 }

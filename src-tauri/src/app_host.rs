@@ -94,30 +94,6 @@ fn settings_migrations() -> Vec<Migration> {
                 UNIQUE(provider_id, external_model_id, role)
             );
             CREATE INDEX IF NOT EXISTS models_provider_role_idx ON models(provider_id, role);
-            CREATE TABLE IF NOT EXISTS provider_config_overrides (
-                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
-                provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-                config_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(role, provider_id)
-            );
-            CREATE TABLE IF NOT EXISTS model_config_overrides (
-                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
-                model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
-                config_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(role, model_id)
-            );
-            CREATE TABLE IF NOT EXISTS model_provider_config_overrides (
-                role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
-                model_id TEXT NOT NULL REFERENCES models(id) ON DELETE CASCADE,
-                config_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(role, model_id)
-            );
             CREATE TABLE IF NOT EXISTS user_models (
                 id TEXT PRIMARY KEY,
                 role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
@@ -255,10 +231,6 @@ pub fn run() -> Result<()> {
             settings::save_prompt,
             settings::delete_prompt,
             settings::select_prompt,
-            settings::save_provider_config_override,
-            settings::save_model_config_override,
-            settings::reset_provider_config_override,
-            settings::reset_model_config_override,
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
