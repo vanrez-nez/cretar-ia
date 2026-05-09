@@ -1,8 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "providers": [
     {
-      "id": "openrouter",
+      "id": "2db27d4f-f2c4-4dbb-8504-965c5687ffdb",
       "name": "OpenRouter",
       "kind": "openrouter",
       "config": {
@@ -21,11 +21,17 @@
           "dynamic": true,
           "query_by_role": {
             "stt": {
-              "output_modalities": "all"
+              "output_modalities": "transcription"
             },
             "formatting": {
               "output_modalities": "text"
             }
+          },
+          "response": {
+            "items_path": "/data",
+            "id_path": "/id",
+            "name_path": "/name",
+            "fallback_name_path": "/id"
           }
         },
         "metrics": {
@@ -103,7 +109,8 @@
             "additionalProperties": false,
             "required": [
               "strategy",
-              "dynamic"
+              "dynamic",
+              "response"
             ],
             "properties": {
               "strategy": {
@@ -126,6 +133,123 @@
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
+                    }
+                  }
+                }
+              },
+              "response": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "items_path",
+                  "id_path",
+                  "name_path"
+                ],
+                "properties": {
+                  "items_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "id_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "fallback_name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "filters_by_role": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "stt": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "formatting": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -184,10 +308,130 @@
             }
           }
         }
+      },
+      "key": "openrouter",
+      "operation_templates": {
+        "stt": {
+          "request_config": {
+            "language": null,
+            "prompt": null,
+            "parameters": {}
+          },
+          "request_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "language",
+              "prompt",
+              "parameters"
+            ],
+            "properties": {
+              "language": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parameters": {
+                "type": "object"
+              }
+            }
+          },
+          "adapter_config": {
+            "endpoint_kind": "audio_transcriptions",
+            "format": "wav",
+            "max_audio_bytes": 25165824,
+            "operation_driver": "http_json_audio_transcription",
+            "response_text_paths": [
+              "/text",
+              "/choices/0/text"
+            ]
+          },
+          "adapter_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operation_driver",
+              "endpoint_kind",
+              "format",
+              "max_audio_bytes",
+              "response_text_paths"
+            ],
+            "properties": {
+              "endpoint_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "format": {
+                "type": "string",
+                "minLength": 1
+              },
+              "max_audio_bytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "operation_driver": {
+                "type": "string",
+                "minLength": 1
+              },
+              "response_text_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "formatting": {
+          "request_config": {
+            "parameters": {}
+          },
+          "request_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "type": "object"
+              }
+            }
+          },
+          "adapter_config": {
+            "endpoint_kind": "chat_completions"
+          },
+          "adapter_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint_kind"
+            ],
+            "properties": {
+              "endpoint_kind": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
       }
     },
     {
-      "id": "openai-compatible",
+      "id": "656e1371-8f28-4989-95d8-89cf4dfdf897",
       "name": "OpenAI Compatible",
       "kind": "openai_compatible",
       "config": {
@@ -203,7 +447,43 @@
         },
         "model_fetch": {
           "strategy": "openai_models",
-          "dynamic": true
+          "dynamic": true,
+          "response": {
+            "items_path": "/data",
+            "id_path": "/id",
+            "name_path": "/id",
+            "filters_by_role": {
+              "stt": {
+                "include_exact": [
+                  "whisper-1"
+                ],
+                "include_contains": [
+                  "transcribe"
+                ]
+              },
+              "formatting": {
+                "exclude_prefix": [
+                  "dall-e",
+                  "gpt-image",
+                  "omni-moderation",
+                  "text-embedding",
+                  "tts"
+                ],
+                "exclude_contains": [
+                  "audio",
+                  "computer-use",
+                  "embedding",
+                  "image",
+                  "moderation",
+                  "realtime",
+                  "search",
+                  "transcribe",
+                  "tts",
+                  "whisper"
+                ]
+              }
+            }
+          }
         },
         "metrics": {
           "strategy": "response_usage",
@@ -280,7 +560,8 @@
             "additionalProperties": false,
             "required": [
               "strategy",
-              "dynamic"
+              "dynamic",
+              "response"
             ],
             "properties": {
               "strategy": {
@@ -288,6 +569,123 @@
               },
               "dynamic": {
                 "type": "boolean"
+              },
+              "response": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "items_path",
+                  "id_path",
+                  "name_path"
+                ],
+                "properties": {
+                  "items_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "id_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "fallback_name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "filters_by_role": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "stt": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "formatting": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -340,10 +738,130 @@
             }
           }
         }
+      },
+      "key": "openai-compatible",
+      "operation_templates": {
+        "stt": {
+          "request_config": {
+            "language": null,
+            "prompt": null,
+            "parameters": {}
+          },
+          "request_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "language",
+              "prompt",
+              "parameters"
+            ],
+            "properties": {
+              "language": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parameters": {
+                "type": "object"
+              }
+            }
+          },
+          "adapter_config": {
+            "endpoint_kind": "audio_transcriptions",
+            "format": "wav",
+            "max_audio_bytes": 25165824,
+            "operation_driver": "multipart_audio_transcription",
+            "response_text_paths": [
+              "/text",
+              "/choices/0/text"
+            ]
+          },
+          "adapter_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operation_driver",
+              "endpoint_kind",
+              "format",
+              "max_audio_bytes",
+              "response_text_paths"
+            ],
+            "properties": {
+              "endpoint_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "format": {
+                "type": "string",
+                "minLength": 1
+              },
+              "max_audio_bytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "operation_driver": {
+                "type": "string",
+                "minLength": 1
+              },
+              "response_text_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              }
+            }
+          }
+        },
+        "formatting": {
+          "request_config": {
+            "parameters": {}
+          },
+          "request_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "type": "object"
+              }
+            }
+          },
+          "adapter_config": {
+            "endpoint_kind": "chat_completions"
+          },
+          "adapter_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint_kind"
+            ],
+            "properties": {
+              "endpoint_kind": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
       }
     },
     {
-      "id": "ollama-local",
+      "id": "d710cb48-bb68-48dd-84e0-275d65789709",
       "name": "Ollama Local",
       "kind": "ollama",
       "config": {
@@ -360,7 +878,12 @@
         },
         "model_fetch": {
           "strategy": "ollama_tags",
-          "dynamic": true
+          "dynamic": true,
+          "response": {
+            "items_path": "/models",
+            "id_path": "/name",
+            "name_path": "/name"
+          }
         },
         "metrics": {
           "strategy": "ollama_response_stats",
@@ -442,7 +965,8 @@
             "additionalProperties": false,
             "required": [
               "strategy",
-              "dynamic"
+              "dynamic",
+              "response"
             ],
             "properties": {
               "strategy": {
@@ -453,6 +977,123 @@
               },
               "dynamic": {
                 "type": "boolean"
+              },
+              "response": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "items_path",
+                  "id_path",
+                  "name_path"
+                ],
+                "properties": {
+                  "items_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "id_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "fallback_name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "filters_by_role": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "stt": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "formatting": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -504,10 +1145,48 @@
             }
           }
         }
+      },
+      "key": "ollama-local",
+      "operation_templates": {
+        "formatting": {
+          "request_config": {
+            "parameters": {}
+          },
+          "request_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "type": "object"
+              }
+            }
+          },
+          "adapter_config": {
+            "endpoint_kind": "openai_chat_completions"
+          },
+          "adapter_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint_kind"
+            ],
+            "properties": {
+              "endpoint_kind": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
       }
     },
     {
-      "id": "ollama-cloud",
+      "id": "816718e3-aa3c-40d7-aefb-9d1a6fa2ee71",
       "name": "Ollama Cloud",
       "kind": "ollama",
       "config": {
@@ -525,7 +1204,12 @@
         },
         "model_fetch": {
           "strategy": "ollama_tags",
-          "dynamic": true
+          "dynamic": true,
+          "response": {
+            "items_path": "/models",
+            "id_path": "/name",
+            "name_path": "/name"
+          }
         },
         "metrics": {
           "strategy": "ollama_response_stats",
@@ -611,7 +1295,8 @@
             "additionalProperties": false,
             "required": [
               "strategy",
-              "dynamic"
+              "dynamic",
+              "response"
             ],
             "properties": {
               "strategy": {
@@ -622,6 +1307,123 @@
               },
               "dynamic": {
                 "type": "boolean"
+              },
+              "response": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "items_path",
+                  "id_path",
+                  "name_path"
+                ],
+                "properties": {
+                  "items_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "id_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "fallback_name_path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "filters_by_role": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "stt": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "formatting": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "include_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "include_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_exact": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_prefix": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "exclude_contains": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -669,6 +1471,44 @@
               },
               "local": {
                 "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "key": "ollama-cloud",
+      "operation_templates": {
+        "formatting": {
+          "request_config": {
+            "parameters": {}
+          },
+          "request_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "parameters"
+            ],
+            "properties": {
+              "parameters": {
+                "type": "object"
+              }
+            }
+          },
+          "adapter_config": {
+            "endpoint_kind": "openai_chat_completions"
+          },
+          "adapter_config_schema": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint_kind"
+            ],
+            "properties": {
+              "endpoint_kind": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }

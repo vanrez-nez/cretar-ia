@@ -189,11 +189,11 @@ async fn load_model_health_target(
         "SELECT
             um.id AS id,
             um.role AS role,
-            um.display_name AS display_name,
             um.provider_config_override_json AS provider_override_json,
             um.is_active AS is_active,
             p.name AS provider_name,
             p.config_json AS provider_config_json,
+            m.display_name AS display_name,
             m.external_model_id AS external_model_id
          FROM user_models um
          JOIN providers p ON p.id = um.provider_id
@@ -214,11 +214,11 @@ async fn load_model_health_targets(pool: &SqlitePool) -> Result<Vec<ModelHealthT
         "SELECT
             um.id AS id,
             um.role AS role,
-            um.display_name AS display_name,
             um.provider_config_override_json AS provider_override_json,
             um.is_active AS is_active,
             p.name AS provider_name,
             p.config_json AS provider_config_json,
+            m.display_name AS display_name,
             m.external_model_id AS external_model_id
          FROM user_models um
          JOIN providers p ON p.id = um.provider_id

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "prompts": [
+    {
+      "id": "4605f3b2-7905-4cde-ae4d-36a105b3aa3f",
+      "key": "correct-punctuation-grammar",
+      "name": "Correct punctuation and grammar",
+      "description": "Clean up punctuation and grammar while preserving wording.",
+      "template": "Correct punctuation and grammar in the transcript with minimal wording changes. Preserve meaning, tone, and word choice. Return only the corrected text.",
+      "is_active": true
+    },
+    {
+      "id": "22761747-3fc3-4667-9f83-914e71508930",
+      "key": "concise-rewrite",
+      "name": "Concise rewrite",
+      "description": "Rewrite the transcript into concise, clear wording.",
+      "template": "Correct punctuation and grammar, then rewrite the transcript concisely for clarity. Remove filler, repetition, and rambling while preserving the intended meaning. Return only the rewritten text.",
+      "is_active": false
+    }
+  ]
+}

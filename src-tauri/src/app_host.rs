@@ -68,6 +68,7 @@ fn settings_migrations() -> Vec<Migration> {
             );
             CREATE TABLE IF NOT EXISTS providers (
                 id TEXT PRIMARY KEY,
+                key TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 config_json TEXT NOT NULL,
@@ -99,7 +100,6 @@ fn settings_migrations() -> Vec<Migration> {
                 role TEXT NOT NULL CHECK(role IN ('stt', 'formatting')),
                 provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE RESTRICT,
                 model_id TEXT NOT NULL REFERENCES models(id) ON DELETE RESTRICT,
-                display_name TEXT NOT NULL,
                 provider_config_override_json TEXT NOT NULL,
                 model_config_override_json TEXT NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 0,
@@ -113,6 +113,7 @@ fn settings_migrations() -> Vec<Migration> {
                 WHERE is_active = 1;
             CREATE TABLE IF NOT EXISTS prompts (
                 id TEXT PRIMARY KEY,
+                key TEXT UNIQUE,
                 name TEXT NOT NULL,
                 description TEXT NOT NULL,
                 template TEXT NOT NULL,
@@ -123,37 +124,7 @@ fn settings_migrations() -> Vec<Migration> {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS prompts_active_idx
                 ON prompts(is_active)
-                WHERE is_active = 1;
-            INSERT OR IGNORE INTO prompts (
-                id,
-                name,
-                description,
-                template,
-                is_active,
-                is_preset,
-                created_at,
-                updated_at
-            ) VALUES
-            (
-                'prompt-correct-punctuation-grammar',
-                'Correct punctuation and grammar',
-                'Clean up punctuation and grammar while preserving wording.',
-                'Correct punctuation and grammar in the transcript with minimal wording changes. Preserve meaning, tone, and word choice. Return only the corrected text.',
-                1,
-                1,
-                '2026-01-01T00:00:00Z',
-                '2026-01-01T00:00:00Z'
-            ),
-            (
-                'prompt-concise-rewrite',
-                'Concise rewrite',
-                'Rewrite the transcript into concise, clear wording.',
-                'Correct punctuation and grammar, then rewrite the transcript concisely for clarity. Remove filler, repetition, and rambling while preserving the intended meaning. Return only the rewritten text.',
-                0,
-                1,
-                '2026-01-01T00:00:01Z',
-                '2026-01-01T00:00:01Z'
-            );",
+                WHERE is_active = 1;",
             kind: MigrationKind::Up,
         },
     ]

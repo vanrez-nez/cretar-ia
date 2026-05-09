@@ -132,6 +132,14 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                             let result =
                                 process_recording_work(audio_cfg, output_cfg, wav_file, stt_provider).await;
                             let success = result.is_ok();
+                            if let Err((code, reason)) = &result {
+                                log::warn!(
+                                    "processing task failed in {:?}: code={} reason={}",
+                                    start.elapsed(),
+                                    code,
+                                    reason
+                                );
+                            }
                             let _ = result_tx.send(result);
                             log::debug!(
                                 "processing task completed in {:?}, success={}",
@@ -158,7 +166,10 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                 processing_task = None;
                 let outcome = match result {
                     Ok(()) => RecordingEvent::ProcessCompleted,
-                    Err((code, reason)) => RecordingEvent::ProcessFailed { code, reason },
+                    Err((code, reason)) => {
+                        log::warn!("processing outcome failed: code={} reason={}", code, reason);
+                        RecordingEvent::ProcessFailed { code, reason }
+                    }
                 };
 
                 if tx.send_worker(outcome).is_some() {
@@ -190,12 +201,18 @@ async fn process_recording_work(
             Some(client) => match client.transcribe(&wav_file).await {
                 Ok(text) => match inject::deliver_text(&audio_cfg, &output_cfg, &text).await {
                     Ok(_) => Ok(()),
-                    Err(err) => Err((
-                        RecordingErrorCode::Processing,
-                        format!("inject error: {err}"),
-                    )),
+                    Err(err) => {
+                        log::warn!("processing inject failed: {err:?}");
+                        Err((
+                            RecordingErrorCode::Processing,
+                            format!("inject error: {err:#}"),
+                        ))
+                    }
                 },
-                Err(err) => Err((RecordingErrorCode::Processing, format!("transcription error: {err}"))),
+                Err(err) => {
+                    log::warn!("processing transcription failed: {err:?}");
+                    Err((RecordingErrorCode::Processing, format!("transcription error: {err:#}")))
+                }
             },
             None => Err((
                 RecordingErrorCode::Processing,

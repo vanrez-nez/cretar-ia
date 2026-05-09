@@ -158,10 +158,10 @@ pub async fn refresh_provider_models(
 
 #[tauri::command]
 pub async fn save_model_item(
+    user_model_id: Option<String>,
     role: String,
     provider_id: String,
     model_id: String,
-    display_name: Option<String>,
     provider_config_override: Value,
     model_config_override: Value,
     app: AppHandle,
@@ -171,10 +171,10 @@ pub async fn save_model_item(
     let factory = crate::providers::ProviderFactory::new(storage.pool());
     let model_id = factory
         .save_model_item(
+            user_model_id,
             &role,
             &provider_id,
             &model_id,
-            display_name,
             provider_config_override,
             model_config_override,
         )

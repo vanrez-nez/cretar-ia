@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::prompts;
 use crate::providers;
 use crate::settings_schema;
 use anyhow::{Context, Result};
@@ -33,6 +34,7 @@ impl SettingsDb {
             .await
             .with_context(|| format!("connecting settings database {}", db_path.display()))?;
         providers::seed_provider_presets(&pool).await?;
+        prompts::seed_prompt_presets(&pool).await?;
 
         Ok(Self {
             pool,

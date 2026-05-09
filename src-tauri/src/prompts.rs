@@ -1,10 +1,31 @@
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+use std::collections::HashSet;
+use uuid::Uuid;
+
+const PROMPT_PRESETS: &str = include_str!("../prompts/presets.json");
+
+#[derive(Debug, Deserialize)]
+struct PromptPresets {
+    schema_version: u32,
+    prompts: Vec<PromptPreset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptPreset {
+    id: String,
+    key: String,
+    name: String,
+    description: String,
+    template: String,
+    is_active: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PromptView {
     pub id: String,
+    pub key: Option<String>,
     pub name: String,
     pub description: String,
     pub template: String,
@@ -14,9 +35,53 @@ pub struct PromptView {
     pub updated_at: String,
 }
 
+pub async fn seed_prompt_presets(pool: &SqlitePool) -> Result<()> {
+    let presets: PromptPresets =
+        serde_json::from_str(PROMPT_PRESETS).context("parsing prompt presets")?;
+    validate_prompt_presets(&presets)?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for prompt in &presets.prompts {
+        sqlx::query(
+            "INSERT INTO prompts (
+                id, key, name, description, template, is_active, is_preset, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                template = excluded.template,
+                is_preset = 1,
+                updated_at = excluded.updated_at",
+        )
+        .bind(&prompt.id)
+        .bind(&prompt.key)
+        .bind(&prompt.name)
+        .bind(&prompt.description)
+        .bind(&prompt.template)
+        .bind(if prompt.is_active { 1 } else { 0 })
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .with_context(|| format!("seeding prompt preset '{}'", prompt.key))?;
+    }
+
+    let active_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM prompts WHERE is_active = 1")
+        .fetch_one(pool)
+        .await
+        .context("counting active prompts after seed")?
+        .try_get("count")
+        .context("reading active prompt count after seed")?;
+    if active_count == 0 {
+        select_first_prompt(pool).await?;
+    }
+
+    Ok(())
+}
+
 pub async fn list_prompts(pool: &SqlitePool) -> Result<Vec<PromptView>> {
     let rows = sqlx::query(
-        "SELECT id, name, description, template, is_active, is_preset, created_at, updated_at
+        "SELECT id, key, name, description, template, is_active, is_preset, created_at, updated_at
          FROM prompts
          ORDER BY created_at ASC, id ASC",
     )
@@ -79,7 +144,7 @@ pub async fn save_prompt(
         return Ok(prompt_id);
     }
 
-    let id = format!("user-prompt-{}", chrono::Utc::now().timestamp_millis());
+    let id = Uuid::new_v4().to_string();
     let active_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM prompts WHERE is_active = 1")
         .fetch_one(pool)
         .await
@@ -190,6 +255,7 @@ fn prompt_from_row(row: sqlx::sqlite::SqliteRow) -> Result<PromptView> {
 
     Ok(PromptView {
         id: row.try_get("id").context("reading prompt id")?,
+        key: row.try_get("key").context("reading prompt key")?,
         name: row.try_get("name").context("reading prompt name")?,
         description: row
             .try_get("description")
@@ -200,4 +266,37 @@ fn prompt_from_row(row: sqlx::sqlite::SqliteRow) -> Result<PromptView> {
         created_at: row.try_get("created_at").context("reading prompt created_at")?,
         updated_at: row.try_get("updated_at").context("reading prompt updated_at")?,
     })
+}
+
+fn validate_prompt_presets(presets: &PromptPresets) -> Result<()> {
+    if presets.schema_version != 1 {
+        return Err(anyhow!(
+            "unsupported prompt presets schema_version {}",
+            presets.schema_version
+        ));
+    }
+
+    let mut ids = HashSet::new();
+    let mut keys = HashSet::new();
+    for prompt in &presets.prompts {
+        Uuid::parse_str(&prompt.id)
+            .with_context(|| format!("prompt preset '{}' id must be a UUID", prompt.key))?;
+        if !ids.insert(prompt.id.as_str()) {
+            return Err(anyhow!("duplicate prompt preset id '{}'", prompt.id));
+        }
+        if !keys.insert(prompt.key.as_str()) {
+            return Err(anyhow!("duplicate prompt preset key '{}'", prompt.key));
+        }
+        if prompt.name.trim().is_empty() {
+            return Err(anyhow!("prompt preset '{}' name is required", prompt.key));
+        }
+        if prompt.description.trim().is_empty() {
+            return Err(anyhow!("prompt preset '{}' description is required", prompt.key));
+        }
+        if prompt.template.trim().is_empty() {
+            return Err(anyhow!("prompt preset '{}' template is required", prompt.key));
+        }
+    }
+
+    Ok(())
 }

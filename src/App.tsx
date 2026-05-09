@@ -727,7 +727,6 @@ type UserModelView = {
   model_id: string;
   external_model_id: string;
   model_display_name: string;
-  display_name: string;
   config: Record<string, unknown>;
   override_config: Record<string, unknown>;
   effective_config: Record<string, unknown>;
@@ -1304,9 +1303,6 @@ function ModelItem({
   const [providerConfigText, setProviderConfigText] = useState(formatJson(initialProviderConfig));
   const [modelConfigText, setModelConfigText] = useState(formatJson(initialModelConfig));
   const [selectedCatalogModelId, setSelectedCatalogModelId] = useState(model?.model_id ?? initialCatalogModel?.id ?? "");
-  const [displayName, setDisplayName] = useState(
-    model?.display_name ?? initialCatalogModel?.display_name ?? initialCatalogModel?.external_model_id ?? ""
-  );
   const modelOptionsForProvider = useCallback(
     (nextProviderId: string, sourceModels: CatalogModelView[] = catalogModels): ProviderModelOption[] =>
       sourceModels
@@ -1342,7 +1338,8 @@ function ModelItem({
 
   const updateProviderField = (path: string[], value: string) => {
     const source = providerConfig.value ?? {};
-    updateProviderConfig(setNestedValue(source, path, value));
+    const nextValue = path.join(".") === "auth.api_key" ? value.trim() : value;
+    updateProviderConfig(setNestedValue(source, path, nextValue));
   };
 
   const changeProvider = (nextProviderId: string) => {
@@ -1353,7 +1350,6 @@ function ModelItem({
     const firstCatalogModel = firstOption ? catalogModelById(firstOption.id) : undefined;
     setProviderConfigText(formatJson(provider?.config ?? {}));
     setSelectedCatalogModelId(firstOption?.id ?? "");
-    setDisplayName(firstOption?.name ?? "");
     setModelConfigText(formatJson(firstCatalogModel?.config ?? {}));
     setOptions(nextOptions);
   };
@@ -1381,7 +1377,6 @@ function ModelItem({
       const nextSelectedModel = nextSelectedModelId ? catalogModelById(nextSelectedModelId, reloadedCatalogModels) : undefined;
       setOptions(nextOptions);
       setSelectedCatalogModelId(nextSelectedModelId);
-      setDisplayName(nextSelectedModel?.display_name || nextSelectedModel?.external_model_id || "");
       setModelConfigText(formatJson(nextSelectedModel?.config ?? {}));
     } catch (error) {
       setError(`${t("models.refreshError")}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1415,7 +1410,6 @@ function ModelItem({
     }
     const first = options[0];
     setSelectedCatalogModelId(first.id);
-    setDisplayName(first.name);
     setModelConfigText(formatJson(catalogModelById(first.id)?.config ?? {}));
   }, [selectedCatalogModelId, options, catalogModelById]);
 
@@ -1428,10 +1422,10 @@ function ModelItem({
     setError(null);
     try {
       const modelId = await tauriInvoke<string>("save_model_item", {
+        userModelId: model?.id ?? null,
         role,
         providerId,
         modelId: selectedCatalogModelId,
-        displayName: displayName || null,
         providerConfigOverride: providerConfig.value,
         modelConfigOverride: modelConfig.value,
       });
@@ -1518,7 +1512,7 @@ function ModelItem({
             <div className="truncate text-sm font-medium">{model.provider_name}</div>
           </div>
           <div className="truncate text-xs text-muted-foreground">
-            {model.display_name || model.model_display_name || model.external_model_id}
+            {model.model_display_name || model.external_model_id}
           </div>
       </SettingsItemCard>
     );
@@ -1551,7 +1545,6 @@ function ModelItem({
               onValueChange={(value) => {
                 const selectedModel = catalogModelById(value);
                 setSelectedCatalogModelId(value);
-                setDisplayName(selectedModel?.display_name || selectedModel?.external_model_id || value);
                 setModelConfigText(formatJson(selectedModel?.config ?? {}));
               }}
             >
@@ -1589,6 +1582,7 @@ function ModelItem({
           <Input
             type="password"
             value={apiKey}
+            autoComplete="off"
             onChange={(event) => updateProviderField(["auth", "api_key"], event.target.value)}
           />
         </div>

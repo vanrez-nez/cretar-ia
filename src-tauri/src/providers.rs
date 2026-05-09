@@ -13,8 +13,11 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
 
 const PROVIDER_PRESETS: &str = include_str!("../providers/presets.json");
+const PROVIDER_BODY_PREVIEW_LIMIT: usize = 4096;
+const PROVIDER_MODEL_SAMPLE_LIMIT: usize = 10;
 
 pub type DynSpeechToTextProvider = Arc<dyn SpeechToTextProvider>;
 pub type DynFormattingProvider = Arc<dyn FormattingProvider>;
@@ -306,7 +309,6 @@ impl ProviderFactory {
                 um.role AS role,
                 um.provider_id AS provider_id,
                 um.model_id AS model_id,
-                um.display_name AS display_name,
                 um.provider_config_override_json AS provider_override_json,
                 um.model_config_override_json AS model_override_json,
                 um.is_active AS is_active,
@@ -352,7 +354,6 @@ impl ProviderFactory {
                 model_id: row.try_get("model_id").context("reading user model catalog model id")?,
                 external_model_id: row.try_get("external_model_id").context("reading user model external model id")?,
                 model_display_name: row.try_get("model_display_name").context("reading user model catalog display name")?,
-                display_name: row.try_get("display_name").context("reading user model display name")?,
                 config,
                 override_config,
                 effective_config,
@@ -385,6 +386,7 @@ impl ProviderFactory {
         ensure_provider_supports_role(&config, role, provider_id)?;
         let provider_config: RuntimeProviderConfig = serde_json::from_value(config.clone())
             .with_context(|| format!("parsing provider '{provider_id}' refresh config"))?;
+        validate_runtime_provider_auth(&provider_config)?;
         let strategy = config
             .pointer("/model_fetch/strategy")
             .and_then(Value::as_str)
@@ -392,20 +394,20 @@ impl ProviderFactory {
         let query_params = model_fetch_query_params(&config, role);
 
         let options = match strategy {
-            "openrouter_models" | "openai_models" | "ollama_openai_models" => {
-                fetch_openai_compatible_models(&self.client, provider_id, &provider_config, &query_params).await?
+            "openrouter_models" | "openai_models" | "ollama_openai_models" | "ollama_tags" => {
+                fetch_configured_models(
+                    &self.client,
+                    provider_id,
+                    &provider_config,
+                    &config,
+                    role,
+                    &query_params,
+                )
+                .await?
             }
-            "ollama_tags" => fetch_ollama_tags(&self.client, &provider_config).await?,
             _ => Vec::new(),
         };
-        self.upsert_catalog_models(role, provider_id, &options).await?;
-        Ok(options
-            .into_iter()
-            .map(|option| ProviderModelOption {
-                id: catalog_model_id(provider_id, &option.id, role),
-                name: option.name,
-            })
-            .collect())
+        self.upsert_catalog_models(role, provider_id, &options).await
     }
 
     async fn upsert_catalog_models(
@@ -413,12 +415,13 @@ impl ProviderFactory {
         role: &str,
         provider_id: &str,
         options: &[ProviderModelOption],
-    ) -> Result<()> {
+    ) -> Result<Vec<ProviderModelOption>> {
         let (request_config, request_schema, adapter_config, adapter_schema) =
             operation_template_for_role(&self.pool, provider_id, role).await?;
         let now = chrono::Utc::now().to_rfc3339();
+        let mut saved_options = Vec::with_capacity(options.len());
         for option in options {
-            let model_id = catalog_model_id(provider_id, &option.id, role);
+            let model_id = Uuid::new_v4().to_string();
             sqlx::query(
                 "INSERT INTO models (
                     id, provider_id, role, external_model_id, display_name, config_json,
@@ -446,16 +449,29 @@ impl ProviderFactory {
             .execute(&self.pool)
             .await
             .with_context(|| format!("saving catalog model '{}'", option.id))?;
+            let row = sqlx::query(
+                "SELECT id FROM models WHERE provider_id = $1 AND external_model_id = $2 AND role = $3",
+            )
+            .bind(provider_id)
+            .bind(&option.id)
+            .bind(role)
+            .fetch_one(&self.pool)
+            .await
+            .with_context(|| format!("loading saved catalog model '{}'", option.id))?;
+            saved_options.push(ProviderModelOption {
+                id: row.try_get("id").context("reading saved catalog model id")?,
+                name: option.name.clone(),
+            });
         }
-        Ok(())
+        Ok(saved_options)
     }
 
     pub async fn save_model_item(
         &self,
+        user_model_id: Option<String>,
         role: &str,
         provider_id: &str,
         model_id: &str,
-        display_name: Option<String>,
         provider_override_config: Value,
         model_override_config: Value,
     ) -> Result<String> {
@@ -469,7 +485,6 @@ impl ProviderFactory {
             "SELECT
                 p.config_json AS provider_config_json,
                 p.config_schema_json AS provider_config_schema_json,
-                m.display_name AS model_display_name,
                 m.config_json AS model_config_json,
                 m.config_schema_json AS model_config_schema_json
              FROM models m
@@ -486,24 +501,39 @@ impl ProviderFactory {
         let provider_schema = parse_json_column(&row, "provider_config_schema_json")?;
         validate_json(&provider_schema, &provider_override_config, &format!("provider '{provider_id}' settings config"))?;
         ensure_provider_supports_role(&provider_override_config, role, provider_id)?;
+        let provider_config: RuntimeProviderConfig = serde_json::from_value(provider_override_config.clone())
+            .with_context(|| format!("parsing provider '{provider_id}' settings config"))?;
+        validate_runtime_provider_auth(&provider_config)?;
 
         let model_schema = parse_json_column(&row, "model_config_schema_json")?;
         validate_json(&model_schema, &model_override_config, &format!("model '{model_id}' request config"))?;
 
         let now = chrono::Utc::now().to_rfc3339();
-        let user_model_id = user_model_id(provider_id, model_id, role);
-        let display_name = display_name
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| row.try_get::<String, _>("model_display_name").unwrap_or_else(|_| model_id.to_string()));
+        let user_model_id = if let Some(user_model_id) = user_model_id {
+            let exists: i64 = sqlx::query("SELECT COUNT(*) AS count FROM user_models WHERE id = $1 AND role = $2")
+                .bind(&user_model_id)
+                .bind(role)
+                .fetch_one(&self.pool)
+                .await
+                .with_context(|| format!("loading user model '{user_model_id}'"))?
+                .try_get("count")
+                .context("reading user model count")?;
+            if exists == 0 {
+                return Err(anyhow!("model item '{user_model_id}' was not found for role '{role}'"));
+            }
+            user_model_id
+        } else {
+            Uuid::new_v4().to_string()
+        };
         sqlx::query(
             "INSERT INTO user_models (
-                id, role, provider_id, model_id, display_name,
+                id, role, provider_id, model_id,
                 provider_config_override_json, model_config_override_json,
                 is_active, created_at, updated_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $8)
+             ) VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $7)
              ON CONFLICT(id) DO UPDATE SET
-                display_name = excluded.display_name,
+                provider_id = excluded.provider_id,
+                model_id = excluded.model_id,
                 provider_config_override_json = excluded.provider_config_override_json,
                 model_config_override_json = excluded.model_config_override_json,
                 updated_at = excluded.updated_at",
@@ -512,7 +542,6 @@ impl ProviderFactory {
         .bind(role)
         .bind(provider_id)
         .bind(model_id)
-        .bind(&display_name)
         .bind(serde_json::to_string(&provider_override_config).context("serializing provider override config")?)
         .bind(serde_json::to_string(&model_override_config).context("serializing model override config")?)
         .bind(&now)
@@ -619,6 +648,76 @@ struct RuntimeProviderConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct ModelFetchResponseConfig {
+    items_path: String,
+    id_path: String,
+    name_path: String,
+    #[serde(default)]
+    fallback_name_path: Option<String>,
+    #[serde(default)]
+    filters_by_role: HashMap<String, ModelFetchRoleFilter>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ModelFetchRoleFilter {
+    #[serde(default)]
+    include_exact: Vec<String>,
+    #[serde(default)]
+    include_prefix: Vec<String>,
+    #[serde(default)]
+    include_contains: Vec<String>,
+    #[serde(default)]
+    exclude_exact: Vec<String>,
+    #[serde(default)]
+    exclude_prefix: Vec<String>,
+    #[serde(default)]
+    exclude_contains: Vec<String>,
+}
+
+struct ProviderRequestLogContext {
+    operation: &'static str,
+    provider_id: String,
+    user_model_id: Option<String>,
+    model_id: Option<String>,
+    external_model_id: Option<String>,
+    url: String,
+    started_at: std::time::Instant,
+}
+
+impl ProviderRequestLogContext {
+    fn new(operation: &'static str, provider_id: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            operation,
+            provider_id: provider_id.into(),
+            user_model_id: None,
+            model_id: None,
+            external_model_id: None,
+            url: url.into(),
+            started_at: std::time::Instant::now(),
+        }
+    }
+
+    fn user_model_id(mut self, user_model_id: impl Into<String>) -> Self {
+        self.user_model_id = Some(user_model_id.into());
+        self
+    }
+
+    fn model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.model_id = Some(model_id.into());
+        self
+    }
+
+    fn external_model_id(mut self, external_model_id: impl Into<String>) -> Self {
+        self.external_model_id = Some(external_model_id.into());
+        self
+    }
+
+    fn elapsed_ms(&self) -> u128 {
+        self.started_at.elapsed().as_millis()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct AuthConfig {
     #[serde(rename = "type")]
     kind: String,
@@ -719,10 +818,7 @@ impl SttDriver {
             Some("http_json_audio_transcription") => Ok(Self::HttpJsonAudioTranscription),
             Some("multipart_audio_transcription") => Ok(Self::MultipartAudioTranscription),
             Some(other) => Err(anyhow!("unsupported stt operation_driver '{other}'")),
-            None => match config.endpoint_kind.as_deref() {
-                Some("audio_transcriptions") => Ok(Self::HttpJsonAudioTranscription),
-                _ => Err(anyhow!("stt model config missing operation_driver")),
-            },
+            None => Err(anyhow!("stt model config missing operation_driver")),
         }
     }
 
@@ -753,16 +849,6 @@ impl SpeechToTextProvider for GenericSpeechToTextProvider {
                 let start = std::time::Instant::now();
                 let file_bytes = read_audio_file(wav_file, self.model_config.max_audio_bytes)?;
                 let url = self.endpoint_url()?;
-                log::info!(
-                    "stt request provider={} user_model_id={} model_id={} model={} driver={} bytes={} endpoint={}",
-                    self.provider_id,
-                    self.user_model_id,
-                    self.model_id,
-                    self.external_model_id,
-                    self.driver.as_str(),
-                    file_bytes.len(),
-                    url
-                );
 
                 let response = match self.driver {
                     SttDriver::HttpJsonAudioTranscription => self.send_json_audio(&url, &file_bytes).await?,
@@ -837,12 +923,26 @@ impl GenericSpeechToTextProvider {
         insert_optional_string(&mut payload, "language", self.model_config.language.as_deref());
         insert_parameters(&mut payload, &self.model_config.parameters);
 
+        let context = ProviderRequestLogContext::new("stt_json", &self.provider_id, url)
+            .user_model_id(&self.user_model_id)
+            .model_id(&self.model_id)
+            .external_model_id(&self.external_model_id);
+        log_raw_provider_request(
+            &context,
+            json!({
+                "method": "POST",
+                "url": url,
+                "headers": provider_request_headers_for_log(&self.provider_config.auth, "application/json"),
+                "body": payload.clone()
+            }),
+        );
         let request = apply_auth(self.client.post(url).json(&payload), &self.provider_config.auth)?;
         let response = request.send().await.context("posting json stt request")?;
-        read_json_response(response).await
+        read_json_response(response, &context).await
     }
 
     async fn send_multipart_audio(&self, url: &str, file_bytes: Vec<u8>) -> Result<Value> {
+        let audio_bytes = file_bytes.len();
         let part = reqwest::multipart::Part::bytes(file_bytes).file_name("recording.wav");
         let mut form = reqwest::multipart::Form::new()
             .text("model", self.external_model_id.clone())
@@ -859,9 +959,37 @@ impl GenericSpeechToTextProvider {
             }
         }
 
+        let context = ProviderRequestLogContext::new("stt_multipart", &self.provider_id, url)
+            .user_model_id(&self.user_model_id)
+            .model_id(&self.model_id)
+            .external_model_id(&self.external_model_id);
+        log_raw_provider_request(
+            &context,
+            json!({
+                "method": "POST",
+                "url": url,
+                "headers": provider_request_headers_for_log(&self.provider_config.auth, "multipart/form-data"),
+                "body": {
+                    "multipart": true,
+                    "fields": {
+                        "model": self.external_model_id.clone(),
+                        "prompt": self.model_config.prompt.clone(),
+                        "language": self.model_config.language.clone(),
+                        "parameters": self.model_config.parameters.clone()
+                    },
+                    "files": [
+                        {
+                            "field": "file",
+                            "filename": "recording.wav",
+                            "bytes": audio_bytes
+                        }
+                    ]
+                }
+            }),
+        );
         let request = apply_auth(self.client.post(url).multipart(form), &self.provider_config.auth)?;
         let response = request.send().await.context("posting multipart stt request")?;
-        read_json_response(response).await
+        read_json_response(response, &context).await
     }
 }
 
@@ -904,16 +1032,18 @@ struct ProviderPresets {
 #[derive(Debug, Deserialize)]
 struct ProviderPreset {
     id: String,
+    key: String,
     name: String,
     kind: String,
     config: Value,
     config_schema: Value,
+    operation_templates: HashMap<String, OperationTemplatePreset>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelPreset {
     id: String,
-    provider_id: String,
+    provider_key: String,
     role: String,
     external_model_id: String,
     display_name: String,
@@ -921,25 +1051,40 @@ struct ModelPreset {
     config_schema: Value,
 }
 
-pub async fn seed_provider_presets(pool: &SqlitePool) -> Result<()> {
+#[derive(Debug, Deserialize)]
+struct OperationTemplatePreset {
+    request_config: Value,
+    request_config_schema: Value,
+    adapter_config: Value,
+    adapter_config_schema: Value,
+}
+
+fn load_provider_presets() -> Result<ProviderPresets> {
     let presets: ProviderPresets =
         serde_json::from_str(PROVIDER_PRESETS).context("parsing provider presets")?;
     validate_presets(&presets)?;
+    Ok(presets)
+}
+
+pub async fn seed_provider_presets(pool: &SqlitePool) -> Result<()> {
+    let presets = load_provider_presets()?;
 
     let now = chrono::Utc::now().to_rfc3339();
     for provider in &presets.providers {
         sqlx::query(
             "INSERT INTO providers (
-                id, name, kind, config_json, config_schema_json, enabled, is_preset, created_at, updated_at
-             ) VALUES ($1, $2, $3, $4, $5, 1, 1, $6, $6)
-             ON CONFLICT(id) DO UPDATE SET
+                id, key, name, kind, config_json, config_schema_json, enabled, is_preset, created_at, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, 1, 1, $7, $7)
+             ON CONFLICT(key) DO UPDATE SET
                 name = excluded.name,
                 kind = excluded.kind,
+                config_json = excluded.config_json,
                 config_schema_json = excluded.config_schema_json,
                 is_preset = 1,
                 updated_at = excluded.updated_at",
         )
         .bind(&provider.id)
+        .bind(&provider.key)
         .bind(&provider.name)
         .bind(&provider.kind)
         .bind(serde_json::to_string(&provider.config).context("serializing provider config")?)
@@ -950,7 +1095,7 @@ pub async fn seed_provider_presets(pool: &SqlitePool) -> Result<()> {
         .bind(&now)
         .execute(pool)
         .await
-        .with_context(|| format!("seeding provider preset '{}'", provider.id))?;
+        .with_context(|| format!("seeding provider preset '{}'", provider.key))?;
         merge_config_defaults(pool, "providers", &provider.id, &provider.config).await?;
     }
 
@@ -974,7 +1119,7 @@ pub async fn seed_provider_presets(pool: &SqlitePool) -> Result<()> {
 }
 
 fn validate_presets(presets: &ProviderPresets) -> Result<()> {
-    if presets.schema_version != 1 {
+    if presets.schema_version != 2 {
         return Err(anyhow!(
             "unsupported provider presets schema_version {}",
             presets.schema_version
@@ -982,27 +1127,54 @@ fn validate_presets(presets: &ProviderPresets) -> Result<()> {
     }
 
     let mut provider_ids = HashSet::new();
+    let mut provider_keys = HashSet::new();
     for provider in &presets.providers {
+        Uuid::parse_str(&provider.id)
+            .with_context(|| format!("provider preset '{}' id must be a UUID", provider.key))?;
         if !provider_ids.insert(provider.id.as_str()) {
             return Err(anyhow!("duplicate provider preset id '{}'", provider.id));
+        }
+        if !provider_keys.insert(provider.key.as_str()) {
+            return Err(anyhow!("duplicate provider preset key '{}'", provider.key));
         }
         validate_json(
             &provider.config_schema,
             &provider.config,
-            &format!("provider preset '{}' config", provider.id),
+            &format!("provider preset '{}' config", provider.key),
         )?;
+        for (role, template) in &provider.operation_templates {
+            if !matches!(role.as_str(), "stt" | "formatting") {
+                return Err(anyhow!(
+                    "provider preset '{}' has invalid operation template role '{}'",
+                    provider.key,
+                    role
+                ));
+            }
+            validate_json(
+                &template.request_config_schema,
+                &template.request_config,
+                &format!("provider preset '{}' role '{}' request template", provider.key, role),
+            )?;
+            validate_json(
+                &template.adapter_config_schema,
+                &template.adapter_config,
+                &format!("provider preset '{}' role '{}' adapter template", provider.key, role),
+            )?;
+        }
     }
 
     let mut model_ids = HashSet::new();
     for model in &presets.models {
+        Uuid::parse_str(&model.id)
+            .with_context(|| format!("model preset '{}' id must be a UUID", model.id))?;
         if !model_ids.insert(model.id.as_str()) {
             return Err(anyhow!("duplicate model preset id '{}'", model.id));
         }
-        if !provider_ids.contains(model.provider_id.as_str()) {
+        if !provider_keys.contains(model.provider_key.as_str()) {
             return Err(anyhow!(
-                "model preset '{}' references missing provider '{}'",
+                "model preset '{}' references missing provider key '{}'",
                 model.id,
-                model.provider_id
+                model.provider_key
             ));
         }
         if !matches!(model.role.as_str(), "stt" | "formatting") {
@@ -1039,29 +1211,131 @@ fn parse_json_column(row: &sqlx::sqlite::SqliteRow, column: &str) -> Result<Valu
     serde_json::from_str(&raw).with_context(|| format!("parsing {column}"))
 }
 
-async fn read_json_response(response: reqwest::Response) -> Result<Value> {
-    let status = response.status();
-    let body = response.text().await.context("reading provider response body")?;
-    if !status.is_success() {
-        return Err(anyhow!("provider returned {status}: {body}"));
+fn truncate_for_log(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
     }
-    serde_json::from_str(&body).with_context(|| format!("parsing provider response json: {body}"))
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...[truncated {} bytes]", &value[..end], value.len() - end)
+}
+
+async fn read_json_response(response: reqwest::Response, context: &ProviderRequestLogContext) -> Result<Value> {
+    let status = response.status();
+    let headers = headers_to_json(response.headers());
+    let body = response.text().await.context("reading provider response body")?;
+    let body_bytes = body.len();
+    let raw_response = raw_provider_response(context, status, headers, body_bytes, &body);
+    if !status.is_success() {
+        log::warn!("provider raw response {}", truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
+        return Err(anyhow!(
+            "provider '{}' operation '{}' returned {} raw_response={}",
+            context.provider_id,
+            context.operation,
+            status,
+            truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT)
+        ));
+    }
+    log::debug!("provider raw response {}", truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
+    serde_json::from_str(&body).with_context(|| {
+        format!(
+            "parsing provider response json raw_response={}",
+            truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT)
+        )
+    })
+}
+
+fn log_raw_provider_request(context: &ProviderRequestLogContext, request: Value) {
+    let raw_request = json!({
+        "operation": context.operation,
+        "provider": context.provider_id,
+        "user_model_id": context.user_model_id,
+        "model_id": context.model_id,
+        "external_model": context.external_model_id,
+        "request": request,
+    });
+    log::debug!("provider raw request {}", truncate_for_log(&raw_request.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
+}
+
+fn raw_provider_response(
+    context: &ProviderRequestLogContext,
+    status: reqwest::StatusCode,
+    headers: Value,
+    body_bytes: usize,
+    body: &str,
+) -> Value {
+    json!({
+        "operation": context.operation,
+        "provider": context.provider_id,
+        "user_model_id": context.user_model_id,
+        "model_id": context.model_id,
+        "external_model": context.external_model_id,
+        "elapsed_ms": context.elapsed_ms(),
+        "response": {
+            "status": status.as_u16(),
+            "status_text": status.canonical_reason().unwrap_or(""),
+            "headers": headers,
+            "body_bytes": body_bytes,
+            "body": body
+        }
+    })
+}
+
+fn provider_request_headers_for_log(auth: &AuthConfig, content_type: &str) -> Value {
+    let authorization = match auth.kind.as_str() {
+        "bearer_api_key" if auth.api_key.as_deref().map(str::trim).is_some_and(|value| !value.is_empty()) => {
+            Value::String("Bearer [configured]".to_string())
+        }
+        "bearer_api_key" => Value::String("Bearer [missing]".to_string()),
+        _ => Value::Null,
+    };
+    json!({
+        "authorization": authorization,
+        "content-type": content_type
+    })
+}
+
+fn headers_to_json(headers: &reqwest::header::HeaderMap) -> Value {
+    let mut out = Map::new();
+    for (name, value) in headers {
+        out.insert(
+            name.as_str().to_string(),
+            Value::String(value.to_str().unwrap_or("<non-utf8>").to_string()),
+        );
+    }
+    Value::Object(out)
 }
 
 fn apply_auth(request: reqwest::RequestBuilder, auth: &AuthConfig) -> Result<reqwest::RequestBuilder> {
     match auth.kind.as_str() {
         "none" => Ok(request),
         "bearer_api_key" => {
-            let api_key = auth
-                .api_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("provider api key is missing"))?;
+            let api_key = sanitized_bearer_api_key(auth.api_key.as_deref())?;
             Ok(request.bearer_auth(api_key))
         }
         other => Err(anyhow!("unsupported provider auth type '{other}'")),
     }
+}
+
+fn sanitized_bearer_api_key(api_key: Option<&str>) -> Result<&str> {
+    let api_key = api_key.map(str::trim).filter(|value| !value.is_empty()).ok_or_else(|| {
+        anyhow!("provider api key is missing")
+    })?;
+    if api_key.chars().any(char::is_whitespace) {
+        return Err(anyhow!(
+            "provider api key is invalid: keys must not contain spaces, newlines, or pasted logs"
+        ));
+    }
+    Ok(api_key)
+}
+
+fn validate_runtime_provider_auth(config: &RuntimeProviderConfig) -> Result<()> {
+    if config.auth.kind == "bearer_api_key" {
+        sanitized_bearer_api_key(config.auth.api_key.as_deref())?;
+    }
+    Ok(())
 }
 
 fn extract_text<'a>(payload: &'a Value, paths: &[&str]) -> Result<&'a str> {
@@ -1227,7 +1501,6 @@ pub struct UserModelView {
     pub model_id: String,
     pub external_model_id: String,
     pub model_display_name: String,
-    pub display_name: String,
     pub config: Value,
     pub override_config: Value,
     pub effective_config: Value,
@@ -1246,6 +1519,10 @@ async fn operation_template_for_role(
     provider_id: &str,
     role: &str,
 ) -> Result<(Value, Value, Value, Value)> {
+    if let Some(template) = operation_template_from_presets(pool, provider_id, role).await? {
+        return Ok(template);
+    }
+
     let row = sqlx::query(
         "SELECT config_json, config_schema_json, adapter_config_json, adapter_config_schema_json
          FROM models
@@ -1269,151 +1546,148 @@ async fn operation_template_for_role(
     }
 
     match role {
-        "stt" => Ok(stt_operation_template()),
-        "formatting" => Ok(formatting_operation_template()),
+        "stt" | "formatting" => Err(anyhow!(
+            "provider '{}' is missing operation template for role '{}'",
+            provider_id,
+            role
+        )),
         _ => Err(anyhow!("invalid model role '{role}'")),
     }
 }
 
-fn stt_operation_template() -> (Value, Value, Value, Value) {
-    (
-        json!({
-            "language": null,
-            "prompt": null,
-            "parameters": {}
-        }),
-        json!({
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["language", "prompt", "parameters"],
-            "properties": {
-                "language": { "type": ["string", "null"] },
-                "prompt": { "type": ["string", "null"] },
-                "parameters": { "type": "object" }
-            }
-        }),
-        json!({
-            "endpoint_kind": "audio_transcriptions",
-            "format": "wav",
-            "max_audio_bytes": 25165824u64,
-            "operation_driver": "http_json_audio_transcription",
-            "response_text_paths": ["/text", "/choices/0/text"]
-        }),
-        json!({
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["operation_driver", "endpoint_kind", "format", "max_audio_bytes", "response_text_paths"],
-            "properties": {
-                "endpoint_kind": { "type": "string", "minLength": 1 },
-                "format": { "type": "string", "minLength": 1 },
-                "max_audio_bytes": { "type": "integer", "minimum": 1 },
-                "operation_driver": { "type": "string", "minLength": 1 },
-                "response_text_paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
-            }
-        }),
-    )
+async fn operation_template_from_presets(
+    pool: &SqlitePool,
+    provider_id: &str,
+    role: &str,
+) -> Result<Option<(Value, Value, Value, Value)>> {
+    let row = sqlx::query("SELECT key FROM providers WHERE id = $1 LIMIT 1")
+        .bind(provider_id)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("loading provider key for '{provider_id}'"))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let provider_key: String = row.try_get("key").context("reading provider key")?;
+    let presets = load_provider_presets()?;
+    let Some(provider) = presets.providers.iter().find(|provider| provider.key == provider_key) else {
+        return Ok(None);
+    };
+    let Some(template) = provider.operation_templates.get(role) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        template.request_config.clone(),
+        template.request_config_schema.clone(),
+        template.adapter_config.clone(),
+        template.adapter_config_schema.clone(),
+    )))
 }
 
-fn formatting_operation_template() -> (Value, Value, Value, Value) {
-    (
-        json!({
-            "parameters": {}
-        }),
-        json!({
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["parameters"],
-            "properties": {
-                "parameters": { "type": "object" }
-            }
-        }),
-        json!({
-            "endpoint_kind": "chat_completions"
-        }),
-        json!({
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["endpoint_kind"],
-            "properties": {
-                "endpoint_kind": { "type": "string", "minLength": 1 }
-            }
-        }),
-    )
-}
-
-fn catalog_model_id(provider_id: &str, external_model_id: &str, role: &str) -> String {
-    format!(
-        "{}-{}-{}",
-        slug_fragment(provider_id),
-        slug_fragment(external_model_id),
-        slug_fragment(role)
-    )
-}
-
-fn user_model_id(provider_id: &str, model_id: &str, role: &str) -> String {
-    format!(
-        "user-{}-{}-{}",
-        slug_fragment(provider_id),
-        slug_fragment(model_id),
-        slug_fragment(role)
-    )
-}
-
-fn slug_fragment(value: &str) -> String {
-    let slug = value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "model".to_string()
-    } else {
-        slug
-    }
-}
-
-async fn fetch_openai_compatible_models(
+async fn fetch_configured_models(
     client: &Client,
     provider_id: &str,
     config: &RuntimeProviderConfig,
+    raw_config: &Value,
+    role: &str,
     query_params: &[(String, String)],
 ) -> Result<Vec<ProviderModelOption>> {
+    let response_config: ModelFetchResponseConfig = serde_json::from_value(
+        raw_config
+            .pointer("/model_fetch/response")
+            .cloned()
+            .ok_or_else(|| anyhow!("provider '{provider_id}' missing model_fetch.response config"))?,
+    )
+    .with_context(|| format!("parsing provider '{provider_id}' model_fetch.response config"))?;
     let endpoint = config
         .endpoints
         .get("models")
         .ok_or_else(|| anyhow!("provider '{provider_id}' missing models endpoint"))?;
     let url = join_url(&config.base_url, endpoint);
+    let strategy = raw_config
+        .pointer("/model_fetch/strategy")
+        .and_then(Value::as_str)
+        .unwrap_or("manual");
+    let context = ProviderRequestLogContext::new("model_fetch", provider_id, &url);
+    log_raw_provider_request(
+        &context,
+        json!({
+            "method": "GET",
+            "url": &url,
+            "headers": provider_request_headers_for_log(&config.auth, "application/json"),
+            "query": query_params,
+            "body": null,
+            "model_fetch": {
+                "strategy": strategy,
+                "items_path": &response_config.items_path,
+                "id_path": &response_config.id_path,
+                "name_path": &response_config.name_path,
+                "fallback_name_path": &response_config.fallback_name_path
+            }
+        }),
+    );
     let response = apply_auth(client.get(&url).query(query_params), &config.auth)?
         .send()
         .await
         .with_context(|| format!("fetching models from provider '{provider_id}'"))?;
-    let payload = read_json_response(response).await?;
+    let payload = read_json_response(response, &context).await?;
     let models = payload
-        .get("data")
+        .pointer(&response_config.items_path)
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("provider '{provider_id}' models response missing data array"))?;
-    Ok(models
-        .iter()
-        .filter_map(|model| {
-            let id = model.get("id").and_then(Value::as_str)?;
-            let name = model
-                .get("name")
-                .or_else(|| model.get("owned_by"))
-                .and_then(Value::as_str)
-                .unwrap_or(id);
-            Some(ProviderModelOption {
-                id: id.to_string(),
-                name: name.to_string(),
+        .ok_or_else(|| {
+            anyhow!(
+                "provider '{provider_id}' models response missing array at {}",
+                response_config.items_path
+            )
+        })?;
+    let role_filter = response_config.filters_by_role.get(role);
+    let mut options = Vec::new();
+    let mut extracted_sample = Vec::new();
+    let mut filtered_sample = Vec::new();
+    let mut missing_id_count = 0usize;
+
+    for model in models {
+        let Some(id) = model.pointer(&response_config.id_path).and_then(Value::as_str) else {
+            missing_id_count += 1;
+            continue;
+        };
+        let name = model
+            .pointer(&response_config.name_path)
+            .and_then(Value::as_str)
+            .or_else(|| {
+                response_config
+                    .fallback_name_path
+                    .as_deref()
+                    .and_then(|path| model.pointer(path).and_then(Value::as_str))
             })
-        })
-        .collect())
+            .unwrap_or(id);
+        if let Some(reason) = model_role_filter_exclusion_reason(id, name, role_filter) {
+            if filtered_sample.len() < PROVIDER_MODEL_SAMPLE_LIMIT {
+                filtered_sample.push(format!("{id} reason={reason}"));
+            }
+            continue;
+        }
+        if extracted_sample.len() < PROVIDER_MODEL_SAMPLE_LIMIT {
+            extracted_sample.push(format!("{id} => {name}"));
+        }
+        options.push(ProviderModelOption {
+            id: id.to_string(),
+            name: name.to_string(),
+        });
+    }
+
+    log::debug!(
+        "provider model fetch parsed provider={} role={} raw_count={} returned_count={} filtered_count={} missing_id_count={} sample={:?} filtered_sample={:?}",
+        provider_id,
+        role,
+        models.len(),
+        options.len(),
+        models.len().saturating_sub(options.len()).saturating_sub(missing_id_count),
+        missing_id_count,
+        extracted_sample,
+        filtered_sample
+    );
+    Ok(options)
 }
 
 fn model_fetch_query_params(config: &Value, role: &str) -> Vec<(String, String)> {
@@ -1429,31 +1703,47 @@ fn model_fetch_query_params(config: &Value, role: &str) -> Vec<(String, String)>
         .unwrap_or_default()
 }
 
-async fn fetch_ollama_tags(client: &Client, config: &RuntimeProviderConfig) -> Result<Vec<ProviderModelOption>> {
-    let endpoint = config
-        .endpoints
-        .get("models")
-        .ok_or_else(|| anyhow!("ollama provider missing models endpoint"))?;
-    let url = join_url(&config.base_url, endpoint);
-    let response = apply_auth(client.get(&url), &config.auth)?
-        .send()
-        .await
-        .context("fetching ollama model tags")?;
-    let payload = read_json_response(response).await?;
-    let models = payload
-        .get("models")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("ollama models response missing models array"))?;
-    Ok(models
-        .iter()
-        .filter_map(|model| {
-            let id = model.get("name").and_then(Value::as_str)?;
-            Some(ProviderModelOption {
-                id: id.to_string(),
-                name: id.to_string(),
-            })
-        })
-        .collect())
+fn model_role_filter_exclusion_reason(id: &str, name: &str, filter: Option<&ModelFetchRoleFilter>) -> Option<&'static str> {
+    let Some(filter) = filter else {
+        return None;
+    };
+    let id = id.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    let has_include = !filter.include_exact.is_empty()
+        || !filter.include_prefix.is_empty()
+        || !filter.include_contains.is_empty();
+    let included = !has_include
+        || filter.include_exact.iter().any(|value| id == value.to_ascii_lowercase())
+        || filter
+            .include_prefix
+            .iter()
+            .any(|value| id.starts_with(&value.to_ascii_lowercase()))
+        || filter
+            .include_contains
+            .iter()
+            .any(|value| contains_model_token(&id, &name, value));
+    if !included {
+        return Some("no_include_rule_matched");
+    }
+    let excluded = filter.exclude_exact.iter().any(|value| id == value.to_ascii_lowercase())
+        || filter
+            .exclude_prefix
+            .iter()
+            .any(|value| id.starts_with(&value.to_ascii_lowercase()))
+        || filter
+            .exclude_contains
+            .iter()
+            .any(|value| contains_model_token(&id, &name, value));
+    if excluded {
+        Some("exclude_rule_matched")
+    } else {
+        None
+    }
+}
+
+fn contains_model_token(id: &str, name: &str, value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    id.contains(&value) || name.contains(&value)
 }
 
 
