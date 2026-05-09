@@ -440,9 +440,18 @@ impl Orchestrator {
             log::info!("recording start: playing start cue before media pause");
             let cue_played = self.cue.play_start_and_wait();
             log::debug!("recording start: waitable start cue completed played={cue_played}");
+            let effective_input_device = audio::effective_input_device_name(
+                config.input_device.as_deref(),
+                config.auto_switch_to_primary_device,
+            );
+            log::debug!(
+                "recording start: media route input raw={:?} effective={:?}",
+                config.input_device,
+                effective_input_device
+            );
             let paused = self
                 .media_pause
-                .pause_for_recording(config.input_device.as_deref());
+                .pause_for_recording(effective_input_device.as_deref());
             log::info!("recording start: media pause result={paused}");
         } else {
             log::debug!("recording start: media pause disabled");

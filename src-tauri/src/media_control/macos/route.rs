@@ -23,14 +23,17 @@ struct OutputRouteSnapshot {
 
 pub fn capture_restore_context(input_device: Option<&str>) -> Option<RouteRestoreContext> {
     let before = output_route_snapshot();
-    let should_wait = before
-        .as_ref()
-        .is_some_and(|snapshot| route_names_match(input_device, snapshot.device_name.as_deref()));
+    let (should_wait, reason) = before.as_ref().map_or(
+        (false, "missing_output_route_snapshot"),
+        |snapshot| route_match_result(input_device, snapshot.device_name.as_deref()),
+    );
 
     log::debug!(
-        "media route: captured pre-recording output route should_wait={} input_device={:?}",
+        "media route: captured pre-recording output route should_wait={} reason={} input_device={:?} output_device={:?}",
         should_wait,
-        input_device
+        reason,
+        input_device,
+        before.as_ref().and_then(|snapshot| snapshot.device_name.as_deref())
     );
 
     before.map(|before| RouteRestoreContext {
@@ -41,7 +44,7 @@ pub fn capture_restore_context(input_device: Option<&str>) -> Option<RouteRestor
 
 pub fn wait_for_restore(context: RouteRestoreContext) {
     if !context.should_wait {
-        log::debug!("media route: restore gate skipped because input/output are not same device");
+        log::debug!("media route: restore gate skipped because capture did not require waiting");
         return;
     }
     wait_for_output_route_restore(&context.before);
@@ -146,14 +149,18 @@ fn default_output_device_name() -> Option<String> {
         .and_then(|device| device.name().ok())
 }
 
-fn route_names_match(input_name: Option<&str>, output_name: Option<&str>) -> bool {
+fn route_match_result(input_name: Option<&str>, output_name: Option<&str>) -> (bool, &'static str) {
     let Some(input) = input_name.and_then(normalize_route_name) else {
-        return false;
+        return (false, "missing_input_device");
     };
     let Some(output) = output_name.and_then(normalize_route_name) else {
-        return false;
+        return (false, "missing_output_device");
     };
-    input == output || input.contains(&output) || output.contains(&input)
+    if input == output || input.contains(&output) || output.contains(&input) {
+        (true, "input_output_match")
+    } else {
+        (false, "input_output_mismatch")
+    }
 }
 
 fn normalize_route_name(value: &str) -> Option<String> {
