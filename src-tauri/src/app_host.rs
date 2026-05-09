@@ -375,6 +375,13 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
                         None
                     }
                 };
+                if let Some(prompt) = &prompt {
+                    log::info!(
+                        "transform runtime active prompt loaded prompt_id={} prompt_name={}",
+                        prompt.id,
+                        prompt.name
+                    );
+                }
                 let health = app
                     .try_state::<ModelHealthCache>()
                     .and_then(|health_cache| {

@@ -249,7 +249,14 @@ pub async fn save_prompt(
     let prompt_id = crate::prompts::save_prompt(&pool, prompt_id, name, description, template)
         .await
         .map_err(command_error)?;
+    let is_active = crate::prompts::prompt_is_active(&pool, &prompt_id)
+        .await
+        .map_err(command_error)?;
     emit_prompts_changed(&app);
+    if is_active {
+        log::info!("active prompt saved; restarting runtime prompt_id={prompt_id}");
+        restart_runtime_after_provider_change(&app)?;
+    }
     Ok(prompt_id)
 }
 
@@ -260,10 +267,14 @@ pub async fn delete_prompt(
     storage: State<'_, SettingsDb>,
 ) -> Result<(), String> {
     let pool = storage.pool();
-    crate::prompts::delete_prompt(&pool, &prompt_id)
+    let was_active = crate::prompts::delete_prompt(&pool, &prompt_id)
         .await
         .map_err(command_error)?;
     emit_prompts_changed(&app);
+    if was_active {
+        log::info!("active prompt deleted; restarting runtime prompt_id={prompt_id}");
+        restart_runtime_after_provider_change(&app)?;
+    }
     Ok(())
 }
 
@@ -278,7 +289,8 @@ pub async fn select_prompt(
         .await
         .map_err(command_error)?;
     emit_prompts_changed(&app);
-    Ok(())
+    log::info!("active prompt selected; restarting runtime prompt_id={prompt_id}");
+    restart_runtime_after_provider_change(&app)
 }
 
 #[tauri::command]

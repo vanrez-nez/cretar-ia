@@ -107,6 +107,20 @@ pub async fn active_prompt(pool: &SqlitePool) -> Result<Option<PromptView>> {
     row.map(prompt_from_row).transpose()
 }
 
+pub async fn prompt_is_active(pool: &SqlitePool, prompt_id: &str) -> Result<bool> {
+    let is_active = sqlx::query("SELECT is_active FROM prompts WHERE id = ?")
+        .bind(prompt_id)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("loading prompt {prompt_id} active state"))?
+        .map(|row| row.try_get::<i64, _>("is_active"))
+        .transpose()
+        .context("reading prompt active flag")?
+        .unwrap_or(0);
+
+    Ok(is_active != 0)
+}
+
 pub async fn save_prompt(
     pool: &SqlitePool,
     prompt_id: Option<String>,
@@ -194,7 +208,7 @@ pub async fn save_prompt(
     Ok(id)
 }
 
-pub async fn delete_prompt(pool: &SqlitePool, prompt_id: &str) -> Result<()> {
+pub async fn delete_prompt(pool: &SqlitePool, prompt_id: &str) -> Result<bool> {
     let row = sqlx::query("SELECT is_active, is_preset FROM prompts WHERE id = ?")
         .bind(prompt_id)
         .fetch_optional(pool)
@@ -217,7 +231,7 @@ pub async fn delete_prompt(pool: &SqlitePool, prompt_id: &str) -> Result<()> {
         select_first_prompt(pool).await?;
     }
 
-    Ok(())
+    Ok(was_active != 0)
 }
 
 pub async fn select_prompt(pool: &SqlitePool, prompt_id: &str) -> Result<()> {
