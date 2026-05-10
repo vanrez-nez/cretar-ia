@@ -1,4 +1,5 @@
 use crate::config::AudioCaptureConfig;
+use crate::contracts::audio_level::{AudioLevelSample, AudioLevelSender, AUDIO_SPECTRUM_BANDS};
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingArtifact;
 use crate::contracts::events::RecordingEvent;
@@ -6,6 +7,7 @@ use crate::recording::command_bus::CommandBusTx;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, SampleRate, Stream, StreamConfig};
+use std::f32::consts::PI;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -20,6 +22,11 @@ const DEFAULT_CAPTURE_BUFFER_SAMPLES: usize = 1_048_576;
 const MIN_CAPTURE_BUFFER_SAMPLES: usize = 4_096;
 const MAX_CAPTURE_BUFFER_SAMPLES: usize = 4_194_304;
 const CAPTURE_BUFFER_ENV: &str = "CRETAR_IA_RECORDING_BUFFER_SAMPLES";
+const AUDIO_LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(50);
+const AUDIO_SPECTRUM_FFT_SIZE: usize = 512;
+const AUDIO_SPECTRUM_MIN_HZ: f32 = 85.0;
+const AUDIO_SPECTRUM_MAX_HZ: f32 = 5_000.0;
+const AUDIO_SPECTRUM_VISUAL_GAIN: f32 = 24.0;
 
 pub(crate) fn available_input_device_names() -> Vec<String> {
     let host = cpal::default_host();
@@ -101,6 +108,7 @@ impl Recorder {
         config: &AudioCaptureConfig,
         base_dir: PathBuf,
         event_tx: CommandBusTx,
+        audio_level_tx: Option<AudioLevelSender>,
     ) -> Result<Self> {
         report_runtime_context();
         let host = cpal::default_host();
@@ -164,6 +172,9 @@ impl Recorder {
             &requested,
             Arc::clone(&state),
             event_tx.clone(),
+            audio_level_tx.clone(),
+            requested.sample_rate.0,
+            requested.channels,
             Arc::clone(&stream_error_reported),
             Arc::clone(&stop_requested),
             Arc::clone(&callback_drained),
@@ -183,6 +194,9 @@ impl Recorder {
                         &fallback,
                         Arc::clone(&state),
                         event_tx.clone(),
+                        audio_level_tx.clone(),
+                        fallback.sample_rate.0,
+                        fallback.channels,
                         Arc::clone(&stream_error_reported),
                         Arc::clone(&stop_requested),
                         Arc::clone(&callback_drained),
@@ -592,6 +606,215 @@ fn quantize_i16(sample: f32) -> i16 {
     (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ComplexSample {
+    re: f32,
+    im: f32,
+}
+
+impl ComplexSample {
+    const fn zero() -> Self {
+        Self { re: 0.0, im: 0.0 }
+    }
+
+    fn from_polar(radius: f32, angle: f32) -> Self {
+        Self {
+            re: radius * angle.cos(),
+            im: radius * angle.sin(),
+        }
+    }
+
+    fn magnitude(self) -> f32 {
+        (self.re * self.re + self.im * self.im).sqrt()
+    }
+}
+
+impl std::ops::Add for ComplexSample {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            re: self.re + rhs.re,
+            im: self.im + rhs.im,
+        }
+    }
+}
+
+impl std::ops::Sub for ComplexSample {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            re: self.re - rhs.re,
+            im: self.im - rhs.im,
+        }
+    }
+}
+
+impl std::ops::Mul for ComplexSample {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self {
+            re: self.re * rhs.re - self.im * rhs.im,
+            im: self.re * rhs.im + self.im * rhs.re,
+        }
+    }
+}
+
+struct AudioLevelTelemetry {
+    tx: AudioLevelSender,
+    last_emit: Instant,
+    sample_rate: f32,
+    channel_count: u16,
+    channel_cursor: u16,
+    samples: [f32; AUDIO_SPECTRUM_FFT_SIZE],
+    next_sample_index: usize,
+    samples_ready: usize,
+    fft_buffer: [ComplexSample; AUDIO_SPECTRUM_FFT_SIZE],
+}
+
+impl AudioLevelTelemetry {
+    fn new(tx: AudioLevelSender, sample_rate: u32, channels: u16) -> Self {
+        let now = Instant::now();
+        Self {
+            tx,
+            last_emit: now.checked_sub(AUDIO_LEVEL_EMIT_INTERVAL).unwrap_or(now),
+            sample_rate: sample_rate as f32,
+            channel_count: channels.max(1),
+            channel_cursor: 0,
+            samples: [0.0; AUDIO_SPECTRUM_FFT_SIZE],
+            next_sample_index: 0,
+            samples_ready: 0,
+            fft_buffer: [ComplexSample::zero(); AUDIO_SPECTRUM_FFT_SIZE],
+        }
+    }
+
+    fn push_sample(&mut self, sample: f32) {
+        if self.channel_cursor == 0 {
+            self.samples[self.next_sample_index] = sample;
+            self.next_sample_index = (self.next_sample_index + 1) % AUDIO_SPECTRUM_FFT_SIZE;
+            self.samples_ready = self
+                .samples_ready
+                .saturating_add(1)
+                .min(AUDIO_SPECTRUM_FFT_SIZE);
+        }
+        self.channel_cursor = (self.channel_cursor + 1) % self.channel_count;
+    }
+
+    fn maybe_emit(&mut self) {
+        if self.samples_ready < AUDIO_SPECTRUM_FFT_SIZE
+            || self.last_emit.elapsed() < AUDIO_LEVEL_EMIT_INTERVAL
+        {
+            return;
+        }
+
+        self.last_emit = Instant::now();
+        let levels = self.spectrum_levels();
+        let _ = self.tx.try_send(AudioLevelSample { levels });
+    }
+
+    fn spectrum_levels(&mut self) -> [f32; AUDIO_SPECTRUM_BANDS] {
+        let oldest_sample = self.next_sample_index;
+        for idx in 0..AUDIO_SPECTRUM_FFT_SIZE {
+            let sample = self.samples[(oldest_sample + idx) % AUDIO_SPECTRUM_FFT_SIZE];
+            let window = hann_window(idx, AUDIO_SPECTRUM_FFT_SIZE);
+            self.fft_buffer[idx] = ComplexSample {
+                re: sample * window,
+                im: 0.0,
+            };
+        }
+
+        fft_in_place(&mut self.fft_buffer);
+        spectrum_bands(&self.fft_buffer, self.sample_rate)
+    }
+}
+
+fn hann_window(index: usize, size: usize) -> f32 {
+    if size <= 1 {
+        return 1.0;
+    }
+    0.5 - 0.5 * ((2.0 * PI * index as f32) / (size - 1) as f32).cos()
+}
+
+fn fft_in_place(buffer: &mut [ComplexSample; AUDIO_SPECTRUM_FFT_SIZE]) {
+    let mut reversed = 0usize;
+    for index in 1..AUDIO_SPECTRUM_FFT_SIZE {
+        let mut bit = AUDIO_SPECTRUM_FFT_SIZE >> 1;
+        while reversed & bit != 0 {
+            reversed ^= bit;
+            bit >>= 1;
+        }
+        reversed ^= bit;
+        if index < reversed {
+            buffer.swap(index, reversed);
+        }
+    }
+
+    let mut len = 2usize;
+    while len <= AUDIO_SPECTRUM_FFT_SIZE {
+        let angle = -2.0 * PI / len as f32;
+        let w_len = ComplexSample::from_polar(1.0, angle);
+        let half = len / 2;
+        let mut start = 0usize;
+        while start < AUDIO_SPECTRUM_FFT_SIZE {
+            let mut w = ComplexSample { re: 1.0, im: 0.0 };
+            for idx in 0..half {
+                let even = buffer[start + idx];
+                let odd = buffer[start + idx + half] * w;
+                buffer[start + idx] = even + odd;
+                buffer[start + idx + half] = even - odd;
+                w = w * w_len;
+            }
+            start += len;
+        }
+        len *= 2;
+    }
+}
+
+fn spectrum_bands(
+    fft_buffer: &[ComplexSample; AUDIO_SPECTRUM_FFT_SIZE],
+    sample_rate: f32,
+) -> [f32; AUDIO_SPECTRUM_BANDS] {
+    let nyquist = sample_rate * 0.5;
+    let max_hz = AUDIO_SPECTRUM_MAX_HZ.min(nyquist * 0.92);
+    let min_hz = AUDIO_SPECTRUM_MIN_HZ.min(max_hz * 0.5).max(1.0);
+    let log_min = min_hz.ln();
+    let log_max = max_hz.max(min_hz + 1.0).ln();
+    let hz_per_bin = sample_rate / AUDIO_SPECTRUM_FFT_SIZE as f32;
+    let mut levels = [0.0; AUDIO_SPECTRUM_BANDS];
+
+    for (band, level) in levels.iter_mut().enumerate() {
+        let band_start = band as f32 / AUDIO_SPECTRUM_BANDS as f32;
+        let band_end = (band + 1) as f32 / AUDIO_SPECTRUM_BANDS as f32;
+        let start_hz = (log_min + (log_max - log_min) * band_start).exp();
+        let end_hz = (log_min + (log_max - log_min) * band_end).exp();
+        let start_bin = ((start_hz / hz_per_bin).floor() as usize)
+            .max(1)
+            .min((AUDIO_SPECTRUM_FFT_SIZE / 2) - 1);
+        let end_bin = ((end_hz / hz_per_bin).ceil() as usize)
+            .max(start_bin + 1)
+            .min(AUDIO_SPECTRUM_FFT_SIZE / 2);
+
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for bin in start_bin..end_bin {
+            sum += fft_buffer[bin].magnitude() / AUDIO_SPECTRUM_FFT_SIZE as f32;
+            count += 1;
+        }
+
+        let average = if count > 0 { sum / count as f32 } else { 0.0 };
+        let visual_level = (average * AUDIO_SPECTRUM_VISUAL_GAIN).sqrt();
+        *level = if visual_level.is_finite() {
+            visual_level.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+
+    levels
+}
+
 fn push_sample(state: &mut RecorderState, sample: f32) {
     if state.flush_error.is_some() {
         return;
@@ -659,6 +882,9 @@ fn build_input_stream_for_format(
     stream_cfg: &StreamConfig,
     state: Arc<Mutex<RecorderState>>,
     event_tx: CommandBusTx,
+    audio_level_tx: Option<AudioLevelSender>,
+    sample_rate: u32,
+    channels: u16,
     stream_error_reported: Arc<AtomicBool>,
     stop_requested: Arc<AtomicBool>,
     callback_drained: Arc<AtomicBool>,
@@ -670,6 +896,9 @@ fn build_input_stream_for_format(
             let stream_error_reported = Arc::clone(&stream_error_reported);
             let stop_requested = Arc::clone(&stop_requested);
             let callback_drained = Arc::clone(&callback_drained);
+            let mut audio_level = audio_level_tx
+                .clone()
+                .map(|tx| AudioLevelTelemetry::new(tx, sample_rate, channels));
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[f32], _| {
@@ -682,6 +911,12 @@ fn build_input_stream_for_format(
                             push_sample(&mut state, *sample);
                         }
                     }
+                    if let Some(audio_level) = audio_level.as_mut() {
+                        for sample in data.iter() {
+                            audio_level.push_sample(*sample);
+                        }
+                        audio_level.maybe_emit();
+                    }
                 },
                 move |err| report_audio_stream_error(err, &event_tx, &stream_error_reported),
                 None,
@@ -693,6 +928,9 @@ fn build_input_stream_for_format(
             let stream_error_reported = Arc::clone(&stream_error_reported);
             let stop_requested = Arc::clone(&stop_requested);
             let callback_drained = Arc::clone(&callback_drained);
+            let mut audio_level = audio_level_tx
+                .clone()
+                .map(|tx| AudioLevelTelemetry::new(tx, sample_rate, channels));
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[i16], _| {
@@ -705,6 +943,12 @@ fn build_input_stream_for_format(
                             push_sample(&mut state, to_f32(*sample));
                         }
                     }
+                    if let Some(audio_level) = audio_level.as_mut() {
+                        for sample in data.iter() {
+                            audio_level.push_sample(to_f32(*sample));
+                        }
+                        audio_level.maybe_emit();
+                    }
                 },
                 move |err| report_audio_stream_error(err, &event_tx, &stream_error_reported),
                 None,
@@ -716,6 +960,9 @@ fn build_input_stream_for_format(
             let stream_error_reported = Arc::clone(&stream_error_reported);
             let stop_requested = Arc::clone(&stop_requested);
             let callback_drained = Arc::clone(&callback_drained);
+            let mut audio_level = audio_level_tx
+                .clone()
+                .map(|tx| AudioLevelTelemetry::new(tx, sample_rate, channels));
             Ok(device.build_input_stream(
                 stream_cfg,
                 move |data: &[u16], _| {
@@ -728,6 +975,12 @@ fn build_input_stream_for_format(
                             let centered = to_f32_u16(*sample) * 2.0;
                             push_sample(&mut state, centered);
                         }
+                    }
+                    if let Some(audio_level) = audio_level.as_mut() {
+                        for sample in data.iter() {
+                            audio_level.push_sample(to_f32_u16(*sample) * 2.0);
+                        }
+                        audio_level.maybe_emit();
                     }
                 },
                 move |err| report_audio_stream_error(err, &event_tx, &stream_error_reported),

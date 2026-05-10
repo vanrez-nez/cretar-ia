@@ -1,8 +1,17 @@
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::RecordingErrorCode;
-use crate::contracts::events::{HotkeyEvent, PipelineMode, PipelinePhase, RecordingEvent};
+use crate::contracts::events::{
+    HotkeyEvent, PipelineMode, PipelinePhase, RecordingArtifact, RecordingEvent,
+};
 use crate::recording::fsm::{transition, NoopReason, RecordedEvent, TransitionResult};
 use crate::recording::state::RecordingState;
+
+fn test_artifact(path: &str) -> RecordingArtifact {
+    RecordingArtifact {
+        path: path.into(),
+        duration_ms: 0,
+    }
+}
 
 #[test]
 fn idle_press_starts_recording_with_new_session() {
@@ -131,7 +140,7 @@ fn processing_recovery_and_error_toggle_press_is_noop() {
     let processing = transition(
         &stopping.next,
         RecordedEvent::Worker(RecordingEvent::AudioStopped {
-            path: "test.wav".into(),
+            artifact: test_artifact("test.wav"),
         }),
     );
 
@@ -189,7 +198,7 @@ fn stopping_success_transitions_to_processing_and_run_command_emitted() {
     let processing = transition(
         &stopping.next,
         RecordedEvent::Worker(RecordingEvent::AudioStopped {
-            path: "test.wav".into(),
+            artifact: test_artifact("test.wav"),
         }),
     );
 
@@ -220,7 +229,7 @@ fn processing_completed_returns_idle_with_success_path() {
     let processing = transition(
         &stopping.next,
         RecordedEvent::Worker(RecordingEvent::AudioStopped {
-            path: "test.wav".into(),
+            artifact: test_artifact("test.wav"),
         }),
     );
     let completed = transition(
@@ -254,7 +263,7 @@ fn processing_failed_enters_error_without_cancel_command() {
     let processing = transition(
         &stopping.next,
         RecordedEvent::Worker(RecordingEvent::AudioStopped {
-            path: "test.wav".into(),
+            artifact: test_artifact("test.wav"),
         }),
     );
     let failed = transition(
@@ -365,7 +374,7 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
     let processing = transition(
         &stopping.next,
         RecordedEvent::Worker(RecordingEvent::AudioStopped {
-            path: "test.wav".into(),
+            artifact: test_artifact("test.wav"),
         }),
     );
     let processing_cancel = transition(

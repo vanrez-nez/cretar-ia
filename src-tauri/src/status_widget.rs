@@ -1,3 +1,4 @@
+use crate::contracts::audio_level::AUDIO_SPECTRUM_BANDS;
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
 use serde::Serialize;
@@ -10,10 +11,12 @@ use tauri::{
 pub const STATUS_WIDGET_LABEL: &str = "status-widget";
 
 const STATUS_WIDGET_EVENT: &str = "status-widget:update";
+const STATUS_WIDGET_AUDIO_LEVEL_EVENT: &str = "status-widget:audio-level";
+const STATUS_WIDGET_AUDIO_LEVEL_RESET_EVENT: &str = "status-widget:audio-level-reset";
 const COLLAPSED_WIDTH: f64 = 40.0;
 const COLLAPSED_HEIGHT: f64 = 5.0;
-const EXPANDED_WIDTH: f64 = 220.0;
-const EXPANDED_HEIGHT: f64 = 40.0;
+const EXPANDED_WIDTH: f64 = 100.0;
+const EXPANDED_HEIGHT: f64 = 32.0;
 const BOTTOM_MARGIN: f64 = 16.0;
 
 #[derive(Clone)]
@@ -64,7 +67,13 @@ struct StatusWidgetPayload<'a> {
     source: &'a str,
     session_id: u64,
     phase_elapsed_ms: u64,
+    mic_active: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct StatusWidgetAudioLevelPayload {
+    levels: [f32; AUDIO_SPECTRUM_BANDS],
 }
 
 impl StatusWidget {
@@ -131,6 +140,43 @@ impl StatusWidget {
         };
         let window = self.ensure_window()?;
         self.apply_layout(&window, StatusWidgetLayout::for_expanded(expanded))
+    }
+
+    pub fn emit_audio_levels(&self, levels: [f32; AUDIO_SPECTRUM_BANDS]) {
+        let window = match self.ensure_window() {
+            Ok(window) => window,
+            Err(err) => {
+                log::debug!("status widget audio level skipped because window is missing: {err}");
+                return;
+            }
+        };
+
+        let payload = StatusWidgetAudioLevelPayload {
+            levels: levels.map(|level| {
+                if level.is_finite() {
+                    level.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            }),
+        };
+        if let Err(err) = window.emit(STATUS_WIDGET_AUDIO_LEVEL_EVENT, payload) {
+            log::debug!("failed to emit status widget audio level: {err}");
+        }
+    }
+
+    pub fn reset_audio_level(&self) {
+        let window = match self.ensure_window() {
+            Ok(window) => window,
+            Err(err) => {
+                log::debug!("status widget audio reset skipped because window is missing: {err}");
+                return;
+            }
+        };
+
+        if let Err(err) = window.emit(STATUS_WIDGET_AUDIO_LEVEL_RESET_EVENT, ()) {
+            log::debug!("failed to emit status widget audio reset: {err}");
+        }
     }
 
     fn ensure_window(&self) -> tauri::Result<WebviewWindow> {
@@ -244,6 +290,7 @@ impl<'a> From<&'a SessionStatus> for StatusWidgetPayload<'a> {
             source: &status.source,
             session_id: status.session_id,
             phase_elapsed_ms: status.phase_elapsed_ms,
+            mic_active: matches!(status.state, PipelinePhase::Recording),
             error: status.error_code.map(|code| code.to_string()),
         }
     }

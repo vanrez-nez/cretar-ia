@@ -1,6 +1,9 @@
 use crate::audio;
 use crate::audio_cues::CuePlayer;
 use crate::config::{AppConfig, QueueSaturationPolicy};
+use crate::contracts::audio_level::{
+    bounded_audio_level_channel, AudioLevelReceiver, AUDIO_LEVEL_QUEUE_CAPACITY,
+};
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
 use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingEvent};
@@ -31,7 +34,12 @@ pub fn start(
     cfg: AppConfig,
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
-) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    AudioLevelReceiver,
+    JoinHandle<Result<()>>,
+) {
     start_with_transform(cfg, cue, stt_provider, TransformRuntime::disabled(), None)
 }
 
@@ -41,7 +49,12 @@ pub fn start_with_transform(
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
     history: Option<HistoryStore>,
-) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    AudioLevelReceiver,
+    JoinHandle<Result<()>>,
+) {
     start_with_worker_mode(cfg, cue, stt_provider, transform, history, true)
 }
 
@@ -50,7 +63,12 @@ pub fn start_without_workers_for_tests(
     cfg: AppConfig,
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
-) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    AudioLevelReceiver,
+    JoinHandle<Result<()>>,
+) {
     start_with_worker_mode(
         cfg,
         cue,
@@ -68,15 +86,21 @@ fn start_with_worker_mode(
     transform: TransformRuntime,
     history: Option<HistoryStore>,
     start_workers: bool,
-) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
+) -> (
+    CommandBusTx,
+    SessionStatusReceiver,
+    AudioLevelReceiver,
+    JoinHandle<Result<()>>,
+) {
     let bus = CommandBus::new(&cfg);
     let tx = bus.sender();
     let (status_tx, status_rx) = bounded_status_channel(SESSION_STATUS_QUEUE_CAPACITY);
+    let (audio_level_tx, audio_level_rx) = bounded_audio_level_channel(AUDIO_LEVEL_QUEUE_CAPACITY);
     let runner_tx = tx.clone();
     let initial_mode = cfg.interaction.pipeline_mode();
 
     let worker_set = if start_workers {
-        let audio_worker = AudioWorker::start(runner_tx.clone());
+        let audio_worker = AudioWorker::start(runner_tx.clone(), Some(audio_level_tx));
         let processor_worker = ProcessorWorker::start(runner_tx.clone());
         let recovery_worker = RecoveryWorker::start(
             runner_tx.clone(),
@@ -126,7 +150,7 @@ fn start_with_worker_mode(
         runner.run().await
     });
 
-    (tx, status_rx, handle)
+    (tx, status_rx, audio_level_rx, handle)
 }
 
 struct Orchestrator {

@@ -2,11 +2,12 @@ use crate::audio_cues::CuePlayer;
 use crate::config::{AppConfig, PipelineConfig, QueueSaturationPolicy, RecoveryStrategyConfig};
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
-use crate::contracts::events::{HotkeyEvent, PipelineMode, PipelinePhase, RecordingEvent};
+use crate::contracts::events::{
+    HotkeyEvent, PipelineMode, PipelinePhase, RecordingArtifact, RecordingEvent,
+};
 use crate::contracts::status::{bounded_status_channel, SessionStatus, SessionStatusReceiver};
 use crate::recording::command_bus::CommandBusTx;
 use crate::recording::orchestrator;
-use std::path::PathBuf;
 use tokio::time::{timeout, Duration};
 
 fn harness_config() -> AppConfig {
@@ -31,6 +32,13 @@ fn harness_config() -> AppConfig {
     cfg
 }
 
+fn placeholder_artifact() -> RecordingArtifact {
+    RecordingArtifact {
+        path: "placeholder.wav".into(),
+        duration_ms: 0,
+    }
+}
+
 async fn start_runtime(
     cfg: AppConfig,
 ) -> (
@@ -39,7 +47,7 @@ async fn start_runtime(
     tokio::task::JoinHandle<anyhow::Result<()>>,
 ) {
     let cue = CuePlayer::new(&cfg.audio_cues, &cfg);
-    let (command_tx, status_rx, handle) =
+    let (command_tx, status_rx, _audio_level_rx, handle) =
         orchestrator::start_without_workers_for_tests(cfg, cue, None);
     (command_tx, status_rx, handle)
 }
@@ -213,7 +221,7 @@ async fn cancel_during_processing_moves_to_recovering() {
     })
     .await;
     let _ = bus_tx.send_worker(RecordingEvent::AudioStopped {
-        path: PathBuf::from("placeholder.wav"),
+        artifact: placeholder_artifact(),
     });
     let _ = wait_for_status(&mut status_rx, |status| {
         status.state == PipelinePhase::Processing
@@ -342,7 +350,7 @@ async fn process_failure_transitions_to_error_and_recovers() {
     })
     .await;
     let _ = bus_tx.send_worker(RecordingEvent::AudioStopped {
-        path: PathBuf::from("placeholder.wav"),
+        artifact: placeholder_artifact(),
     });
     let _ = wait_for_status(&mut status_rx, |status| {
         status.state == PipelinePhase::Processing

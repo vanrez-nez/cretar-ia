@@ -111,31 +111,86 @@ html[data-window="status-widget"] #root {
   background-color: transparent !important;
 }
 
-.status-widget {
-  --status-widget-accent: oklch(0.63 0.12 145);
+.status-widget-shell {
   width: 100%;
   height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: transparent;
+}
+
+.status-widget {
+  --status-widget-accent: oklch(0.63 0.12 145);
+  --status-widget-bar-width: 40px;
+  --status-widget-bar-height: 5px;
+  --status-widget-waveform-width: 100%;
+  --status-widget-waveform-height: 100%;
+  --status-widget-waveform-padding-x: 12px;
+  --status-widget-circle-size: 24px;
+  --status-widget-dot-size: 6px;
+  --status-widget-dot-radius: 50%;
+  --status-widget-border-width: 0;
+  --status-widget-border-color: transparent;
+  --status-widget-border-radius: 999px;
+  --status-widget-waveform-bar-radius: 1px;
+  --status-widget-loader-size: 14px;
+  --status-widget-loader-border-width: 2px;
+  --status-widget-loader-border-radius: 50%;
+  --status-widget-loader-border-color: rgb(255 255 255);
+  --status-widget-loader-track-color: rgb(255 255 255 / var(--status-widget-loader-track-alpha));
+  --status-widget-loader-track-alpha: 25%;
+  --status-widget-loader-duration: 720ms;
+  --status-widget-morph-duration: 180ms;
+  --status-widget-color-duration: 160ms;
+  --status-widget-morph-easing: ease;
+  width: var(--status-widget-bar-width);
+  height: var(--status-widget-bar-height);
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0;
   padding: 0;
   overflow: hidden;
-  border: 0;
-  border-radius: 999px;
+  border: var(--status-widget-border-width) solid var(--status-widget-border-color);
+  border-radius: var(--status-widget-border-radius);
   background: var(--status-widget-accent);
   color: oklch(0.97 0 0);
-  font-size: 0.875rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   line-height: 1;
+  transition:
+    width var(--status-widget-morph-duration) var(--status-widget-morph-easing),
+    height var(--status-widget-morph-duration) var(--status-widget-morph-easing),
+    padding var(--status-widget-morph-duration) var(--status-widget-morph-easing),
+    background-color var(--status-widget-color-duration) var(--status-widget-morph-easing),
+    border-radius var(--status-widget-morph-duration) var(--status-widget-morph-easing);
 }
 
 .status-widget--expanded {
-  justify-content: flex-start;
-  gap: 0.65rem;
-  padding: 0 0.85rem;
-  border: 1px solid oklch(1 0 0 / 14%);
+  justify-content: center;
+  gap: 0;
   background: oklch(0.17 0.015 260);
+}
+
+.status-widget--waveform {
+  width: var(--status-widget-waveform-width);
+  height: var(--status-widget-waveform-height);
+  padding: 0 var(--status-widget-waveform-padding-x);
+}
+
+.status-widget--circle {
+  width: var(--status-widget-circle-size);
+  height: var(--status-widget-circle-size);
+  padding: 0;
+  background: var(--status-widget-accent);
+}
+
+.status-widget--bar {
+  width: var(--status-widget-bar-width);
+  height: var(--status-widget-bar-height);
+  padding: 0;
 }
 
 .status-widget--idle {
@@ -158,29 +213,55 @@ html[data-window="status-widget"] #root {
   --status-widget-accent: var(--destructive);
 }
 
-.status-widget__indicator {
-  width: 100%;
-  height: 100%;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: var(--status-widget-accent);
-}
-
-.status-widget--expanded .status-widget__indicator {
-  width: 0.55rem;
-  height: 0.55rem;
-  box-shadow: 0 0 0 0.2rem oklch(1 0 0 / 8%);
-}
-
-.status-widget__label {
+.status-widget__waveform {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  line-height: 0;
+  overflow: visible;
 }
 
-.status-widget--collapsed .status-widget__label {
+.status-widget__waveform-bar {
+  display: block;
+  flex: 0 0 auto;
+  min-height: 2px;
+  border-radius: var(--status-widget-waveform-bar-radius);
+  background: rgb(255 255 255);
+  opacity: 0.25;
+}
+
+.status-widget__waveform--inactive {
   display: none;
+}
+
+.status-widget__loader {
+  width: var(--status-widget-loader-size);
+  height: var(--status-widget-loader-size);
+  display: block;
+  border: var(--status-widget-loader-border-width) solid var(--status-widget-loader-track-color);
+  border-top-color: var(--status-widget-loader-border-color);
+  border-radius: var(--status-widget-loader-border-radius);
+  animation: status-widget-loader-spin var(--status-widget-loader-duration) linear infinite;
+}
+
+.status-widget__dot {
+  width: var(--status-widget-dot-size);
+  height: var(--status-widget-dot-size);
+  display: block;
+  border-radius: var(--status-widget-dot-radius);
+  background: rgb(255 255 255 / 80%);
+}
+
+.status-widget--collapsed .status-widget__waveform {
+  display: none;
+}
+
+@keyframes status-widget-loader-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .hljs {

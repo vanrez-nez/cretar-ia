@@ -1,8 +1,9 @@
 use crate::audio_cues;
 use crate::commands::settings;
 use crate::config::AppConfig;
+use crate::contracts::audio_level::AudioLevelReceiver;
 use crate::contracts::commands::RecordingCommand;
-use crate::contracts::events::HotkeyEvent;
+use crate::contracts::events::{HotkeyEvent, PipelinePhase};
 use crate::contracts::status::SessionStatusReceiver;
 use crate::history::HistoryStore;
 use crate::model_health::ModelHealthCache;
@@ -484,14 +485,22 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
         log::warn!("speech-to-text provider not configured");
     }
 
-    let (bus_tx, status_rx, orchestrator) = recording::orchestrator::start_with_transform(
+    let (bus_tx, status_rx, audio_level_rx, orchestrator) =
+        recording::orchestrator::start_with_transform(
+            cfg.clone(),
+            cue.clone(),
+            stt_provider,
+            transform,
+            history,
+        );
+    let status_task = spawn_status_task(
+        status_rx,
+        audio_level_rx,
+        tray,
+        status_widget,
+        cue,
         cfg.clone(),
-        cue.clone(),
-        stt_provider,
-        transform,
-        history,
     );
-    let status_task = spawn_status_task(status_rx, tray, status_widget, cue, cfg.clone());
     let shortcut = register_shortcut(app, &cfg)?;
 
     let runtime = AppRuntime {
@@ -612,6 +621,7 @@ fn handle_global_shortcut(
 
 fn spawn_status_task(
     mut status_rx: SessionStatusReceiver,
+    mut audio_level_rx: AudioLevelReceiver,
     tray: AppTray,
     status_widget: Option<StatusWidget>,
     cue: audio_cues::CuePlayer,
@@ -624,6 +634,8 @@ fn spawn_status_task(
         pulse_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let _ = pulse_timer.tick().await;
         let mut is_recording = false;
+        let mut widget_recording_active = false;
+        let mut audio_levels_open = true;
         let mut last_cued_event: Option<String> = None;
 
         loop {
@@ -633,9 +645,14 @@ fn spawn_status_task(
                         break;
                     };
                     let render = crate::runtime::render_status_for_host(&cfg.tray, &status);
+                    let next_widget_recording_active = matches!(status.state, PipelinePhase::Recording);
                     if let Some(widget) = &status_widget {
                         widget.update(&status);
+                        if widget_recording_active && !next_widget_recording_active {
+                            widget.reset_audio_level();
+                        }
                     }
+                    widget_recording_active = next_widget_recording_active;
                     is_recording = render.should_pulse;
                     tray.set_status(render.tooltip, render.icon_state);
                     if let Some(cue_kind) = render.cue {
@@ -650,6 +667,19 @@ fn spawn_status_task(
                                 audio_cues::CueKind::Error => cue.play_error(),
                             }
                             last_cued_event = Some(cue_key);
+                        }
+                    }
+                }
+                level = audio_level_rx.recv(), if audio_levels_open => {
+                    match level {
+                        Some(level) if widget_recording_active => {
+                            if let Some(widget) = &status_widget {
+                                widget.emit_audio_levels(level.levels);
+                            }
+                        }
+                        Some(_) => {}
+                        None => {
+                            audio_levels_open = false;
                         }
                     }
                 }

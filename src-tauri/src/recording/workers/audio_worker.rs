@@ -1,5 +1,6 @@
 use crate::audio::Recorder;
 use crate::config::AudioCaptureConfig;
+use crate::contracts::audio_level::AudioLevelSender;
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::recording::command_bus::CommandBusTx;
@@ -42,7 +43,7 @@ pub struct AudioWorker {
 }
 
 impl AudioWorker {
-    pub fn start(bus_tx: CommandBusTx) -> Self {
+    pub fn start(bus_tx: CommandBusTx, audio_level_tx: Option<AudioLevelSender>) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let tx = bus_tx.clone();
 
@@ -58,7 +59,7 @@ impl AudioWorker {
                 }
             };
 
-            runtime.block_on(worker_loop(command_rx, tx));
+            runtime.block_on(worker_loop(command_rx, tx, audio_level_tx));
         });
 
         Self { command_tx, handle }
@@ -97,7 +98,11 @@ impl AudioWorker {
     }
 }
 
-async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: CommandBusTx) {
+async fn worker_loop(
+    mut command_rx: UnboundedReceiver<AudioWorkerCommand>,
+    tx: CommandBusTx,
+    audio_level_tx: Option<AudioLevelSender>,
+) {
     let mut active_recorder: Option<Recorder> = None;
 
     while let Some(command) = command_rx.recv().await {
@@ -116,7 +121,7 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
                     continue;
                 }
 
-                match Recorder::start(&cfg, record_base, tx.clone()) {
+                match Recorder::start(&cfg, record_base, tx.clone(), audio_level_tx.clone()) {
                     Ok(recorder) => {
                         active_recorder = Some(recorder);
                         if tx.send_worker(RecordingEvent::AudioStarted).is_some() {
