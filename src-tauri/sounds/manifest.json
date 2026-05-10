@@ -16,6 +16,11 @@
       "file": "sine_transition_start.wav"
     },
     {
+      "id": "sine_select",
+      "label": "Sine Select",
+      "file": "sine_select.wav"
+    },
+    {
       "id": "sine_transition_stop",
       "label": "Sine Transition Stop",
       "file": "sine_transition_stop.wav"

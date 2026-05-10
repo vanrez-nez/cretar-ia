@@ -767,6 +767,7 @@ fn bundled_sound_bytes(file: &str) -> Result<&'static [u8]> {
         "sine_toggle_start.wav" => Ok(include_bytes!("../sounds/sine_toggle_start.wav")),
         "sine_toggle_stop.wav" => Ok(include_bytes!("../sounds/sine_toggle_stop.wav")),
         "sine_transition_start.wav" => Ok(include_bytes!("../sounds/sine_transition_start.wav")),
+        "sine_select.wav" => Ok(include_bytes!("../sounds/sine_select.wav")),
         "sine_transition_stop.wav" => Ok(include_bytes!("../sounds/sine_transition_stop.wav")),
         other => Err(anyhow!("sound manifest references unknown bundled file '{other}'")),
     }

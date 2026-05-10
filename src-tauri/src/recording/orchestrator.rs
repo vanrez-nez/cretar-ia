@@ -500,9 +500,8 @@ impl Orchestrator {
         }
 
         if self.cfg.recording.pause_media {
-            log::info!("recording start: playing start cue before media pause");
-            let cue_played = self.cue.play_start_and_wait();
-            log::debug!("recording start: waitable start cue completed played={cue_played}");
+            log::info!("recording start: queueing start cue before media pause");
+            self.cue.play_start();
             let effective_input_device = audio::effective_input_device_name(
                 config.input_device.as_deref(),
                 config.auto_switch_to_primary_device,

@@ -174,6 +174,9 @@ enum CueAsset {
         label: &'static str,
         hz: u32,
     },
+    Silent {
+        label: &'static str,
+    },
 }
 
 impl SerializedCuePlayer {
@@ -193,6 +196,11 @@ impl SerializedCuePlayer {
     }
 
     fn play_asset(&self, asset: &CueAsset, wait: bool) -> bool {
+        if let CueAsset::Silent { label } = asset {
+            log::debug!("audio cue {label}: silent cue skipped");
+            return true;
+        }
+
         let Some(output) = self.output.as_ref() else {
             log::warn!("audio cue output stream unavailable");
             return false;
@@ -225,6 +233,9 @@ impl SerializedCuePlayer {
                     .take_duration(Duration::from_millis(120));
                 sink.append(source);
             }
+            CueAsset::Silent { .. } => {
+                return true;
+            }
         }
         if wait {
             sink.sleep_until_end();
@@ -256,11 +267,8 @@ impl CueOutput {
 impl CueAsset {
     fn load(label: &'static str, path: Option<PathBuf>, fallback_hz: u32) -> Self {
         let Some(path) = path else {
-            log::info!("audio cue {label}: no file configured; using fallback tone");
-            return Self::Tone {
-                label,
-                hz: fallback_hz,
-            };
+            log::info!("audio cue {label}: no file configured; cue will be silent");
+            return Self::Silent { label };
         };
 
         let file = match File::open(&path) {
@@ -332,7 +340,7 @@ fn log_cue_config(
 
 fn log_cue_asset(label: &str, path: &Option<PathBuf>) {
     let Some(path) = path else {
-        log::info!("audio cue asset {label}: none configured; fallback tone will be used");
+        log::info!("audio cue asset {label}: none configured; cue will be silent");
         return;
     };
 
