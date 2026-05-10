@@ -12,9 +12,9 @@ use resvg::{tiny_skia, usvg};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Wry};
 #[cfg(feature = "settings-ui")]
 use tauri::Manager;
+use tauri::{AppHandle, Wry};
 
 pub const MENU_DEVICE_PREFIX: &str = "input-device:";
 pub const MENU_DEVICE_DEFAULT: &str = "input-device:system-default";
@@ -57,13 +57,19 @@ impl AppTray {
         if let Err(err) = self.icon.set_tooltip(Some(text)) {
             log::warn!("failed to set tray tooltip: {err}");
         }
-        if let Err(err) = self.icon.set_icon(Some(self.icons.icon_for_state(state_name))) {
+        if let Err(err) = self
+            .icon
+            .set_icon(Some(self.icons.icon_for_state(state_name)))
+        {
             log::warn!("failed to set tray icon for state '{state_name}': {err}");
         }
     }
 
     pub fn pulse_recording(&self) {
-        if let Err(err) = self.icon.set_icon(Some(self.icons.icon_for_state(ICON_STATE_RECORDING))) {
+        if let Err(err) = self
+            .icon
+            .set_icon(Some(self.icons.icon_for_state(ICON_STATE_RECORDING)))
+        {
             log::warn!("failed to pulse tray icon: {err}");
         }
     }
@@ -110,8 +116,20 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
         })
     );
     let menu = Menu::new(app)?;
-    let settings = MenuItem::with_id(app, MENU_SETTINGS, i18n::t_config(&config, "tray.settings"), true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, i18n::t_config(&config, "tray.quit"), true, None::<&str>)?;
+    let settings = MenuItem::with_id(
+        app,
+        MENU_SETTINGS,
+        i18n::t_config(&config, "tray.settings"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        MENU_QUIT,
+        i18n::t_config(&config, "tray.quit"),
+        true,
+        None::<&str>,
+    )?;
     let separator_after_settings = PredefinedMenuItem::separator(app)?;
     #[cfg(feature = "settings-ui")]
     let separator_after_models = PredefinedMenuItem::separator(app)?;
@@ -132,7 +150,12 @@ fn build_menu(app: &AppHandle, config: &AppConfig) -> Result<Menu<Wry>> {
 }
 
 fn build_devices_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
-    let submenu = Submenu::with_id(app, "input-devices", i18n::t_config(config, "tray.inputDevices"), true)?;
+    let submenu = Submenu::with_id(
+        app,
+        "input-devices",
+        i18n::t_config(config, "tray.inputDevices"),
+        true,
+    )?;
     let device_names = available_input_device_names();
     let selected_device = selected_input_device(config);
     let configured_device = configured_input_device(config);
@@ -168,14 +191,24 @@ fn build_devices_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<
 
 #[cfg(feature = "settings-ui")]
 fn build_transcript_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
-    let submenu = Submenu::with_id(app, "transcript-models", i18n::t_config(config, "models.sttTitle"), true)?;
+    let submenu = Submenu::with_id(
+        app,
+        "transcript-models",
+        i18n::t_config(config, "models.sttTitle"),
+        true,
+    )?;
     append_model_items(app, &submenu, config, "stt")?;
     Ok(submenu)
 }
 
 #[cfg(feature = "settings-ui")]
 fn build_transform_models_submenu(app: &AppHandle, config: &AppConfig) -> Result<Submenu<Wry>> {
-    let submenu = Submenu::with_id(app, "transform-models", i18n::t_config(config, "models.formattingTitle"), true)?;
+    let submenu = Submenu::with_id(
+        app,
+        "transform-models",
+        i18n::t_config(config, "models.formattingTitle"),
+        true,
+    )?;
     let mut has_items = append_model_items(app, &submenu, config, "formatting")?;
     let prompts_added = append_prompt_items(app, &submenu)?;
     has_items = has_items || prompts_added;
@@ -196,7 +229,12 @@ fn build_transform_models_submenu(app: &AppHandle, config: &AppConfig) -> Result
 }
 
 #[cfg(feature = "settings-ui")]
-fn append_model_items(app: &AppHandle, menu: &Submenu<Wry>, config: &AppConfig, role: &str) -> Result<bool> {
+fn append_model_items(
+    app: &AppHandle,
+    menu: &Submenu<Wry>,
+    config: &AppConfig,
+    role: &str,
+) -> Result<bool> {
     let models = tray_model_snapshot(app);
     let role_models = models
         .iter()
@@ -207,8 +245,8 @@ fn append_model_items(app: &AppHandle, menu: &Submenu<Wry>, config: &AppConfig, 
     }
 
     for model in role_models {
-        let checked = model.is_active
-            && !(model.role == "formatting" && !config.models.formatting_enabled);
+        let checked =
+            model.is_active && !(model.role == "formatting" && !config.models.formatting_enabled);
         let item = CheckMenuItem::with_id(
             app,
             format!("{MENU_MODEL_PREFIX}{role}:{}", model.id),
@@ -370,11 +408,7 @@ fn render_svg_icon(svg: &'static [u8]) -> Result<Image<'static>> {
     let size = tree.size().to_int_size();
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())
         .context("failed to allocate tray icon pixmap")?;
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::default(),
-        &mut pixmap.as_mut(),
-    );
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
 
     Ok(Image::new_owned(pixmap.take(), size.width(), size.height()))
 }
@@ -404,8 +438,5 @@ fn is_dark_mode() -> bool {
 }
 
 fn matches_dark_style(value: Option<&str>) -> bool {
-    value
-        .unwrap_or("")
-        .trim()
-        .eq_ignore_ascii_case("dark")
+    value.unwrap_or("").trim().eq_ignore_ascii_case("dark")
 }

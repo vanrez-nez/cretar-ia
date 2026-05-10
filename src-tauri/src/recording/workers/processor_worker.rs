@@ -9,10 +9,10 @@ use crate::providers::{DynFormattingProvider, DynSpeechToTextProvider};
 use crate::recording::command_bus::CommandBusTx;
 use anyhow::Result;
 use std::path::PathBuf;
-use std::time::Instant as StdInstant;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use std::time::Instant as StdInstant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -141,7 +141,8 @@ impl ProcessorWorker {
 }
 
 async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, tx: CommandBusTx) {
-    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<Result<(), (RecordingErrorCode, String)>>();
+    let (result_tx, mut result_rx) =
+        mpsc::unbounded_channel::<Result<(), (RecordingErrorCode, String)>>();
     let mut processing_task: Option<JoinHandle<()>> = None;
 
     loop {
@@ -263,13 +264,7 @@ async fn process_recording_work(
         record.error_message = Some(reason.clone());
         Err((RecordingErrorCode::Processing, reason))
     } else {
-        match run_transcript_step(
-            stt_provider,
-            &wav_file,
-            output_cfg.processing_timeout_ms,
-        )
-        .await
-        {
+        match run_transcript_step(stt_provider, &wav_file, output_cfg.processing_timeout_ms).await {
             Ok(transcript_text) => {
                 record.transcript_text = Some(transcript_text.clone());
                 let mut output_text = transcript_text.clone();
@@ -383,7 +378,10 @@ async fn run_transcript_step(
         Ok(Ok(text)) => Ok(text),
         Ok(Err(err)) => {
             log::warn!("processing transcription failed: {err:?}");
-            Err((RecordingErrorCode::Processing, friendly_transcription_error()))
+            Err((
+                RecordingErrorCode::Processing,
+                friendly_transcription_error(),
+            ))
         }
         Err(StepJoinError::Timeout) => {
             log::warn!("speech-to-text step timed out after {timeout_ms}ms");
@@ -391,7 +389,10 @@ async fn run_transcript_step(
         }
         Err(StepJoinError::Join(err)) => {
             log::warn!("speech-to-text step crashed: {err:?}");
-            Err((RecordingErrorCode::Processing, friendly_transcription_error()))
+            Err((
+                RecordingErrorCode::Processing,
+                friendly_transcription_error(),
+            ))
         }
     }
 }
@@ -457,7 +458,9 @@ async fn run_transform_step_inner(
     };
 
     if matches!(transform.health, Some(ModelHealthStatus::Unhealthy)) {
-        let reason = "The selected transform model is unavailable, so the original transcript was used.".to_string();
+        let reason =
+            "The selected transform model is unavailable, so the original transcript was used."
+                .to_string();
         log::warn!("transform failed: {reason}");
         return TransformAttempt::Failed {
             friendly_message: reason,
@@ -476,7 +479,8 @@ async fn run_transform_step_inner(
         Ok(text) => {
             let text = text.trim().to_string();
             if text.is_empty() {
-                let reason = "Transform returned empty text, so the original transcript was used.".to_string();
+                let reason = "Transform returned empty text, so the original transcript was used."
+                    .to_string();
                 log::warn!("transform failed: {reason}");
                 TransformAttempt::Failed {
                     friendly_message: reason,

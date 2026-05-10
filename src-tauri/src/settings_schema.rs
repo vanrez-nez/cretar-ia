@@ -1,6 +1,6 @@
 use crate::config::{
-    AppConfig, AudioCaptureConfig, AudioCueConfig, InteractionConfig, OutputConfig, PipelineConfig,
-    ModelsConfig, ProviderConfig, RecordingBehaviorConfig, RecoveryStrategyConfig, TrayConfig,
+    AppConfig, AudioCaptureConfig, AudioCueConfig, InteractionConfig, ModelsConfig, OutputConfig,
+    PipelineConfig, ProviderConfig, RecordingBehaviorConfig, RecoveryStrategyConfig, TrayConfig,
     TrayTooltipConfig, UiConfig,
 };
 use anyhow::{anyhow, Context, Result};
@@ -33,8 +33,8 @@ pub fn default_settings() -> Result<Value> {
 
 pub fn validate_settings(settings: &Value) -> Result<()> {
     let schema: Value = serde_json::from_str(SETTINGS_SCHEMA).context("parsing settings schema")?;
-    let compiled = JSONSchema::compile(&schema)
-        .map_err(|err| anyhow!("compiling settings schema: {err}"))?;
+    let compiled =
+        JSONSchema::compile(&schema).map_err(|err| anyhow!("compiling settings schema: {err}"))?;
 
     if let Err(errors) = compiled.validate(settings) {
         let messages = errors
@@ -82,23 +82,41 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
             mode: setting(settings, "recording.mode")?,
             shortcut: setting(settings, "recording.hotkey")?,
             repeat_debounce_ms: setting(settings, "recording.hotkey_repeat_debounce_ms")?,
-            hotkey_queue_capacity: setting::<Option<u32>>(settings, "recording.processing.hotkey_queue_capacity")?
-                .unwrap_or_default(),
-            worker_queue_capacity: setting::<Option<u32>>(settings, "recording.processing.worker_queue_capacity")?
-                .unwrap_or_default(),
+            hotkey_queue_capacity: setting::<Option<u32>>(
+                settings,
+                "recording.processing.hotkey_queue_capacity",
+            )?
+            .unwrap_or_default(),
+            worker_queue_capacity: setting::<Option<u32>>(
+                settings,
+                "recording.processing.worker_queue_capacity",
+            )?
+            .unwrap_or_default(),
         },
         pipeline: PipelineConfig {
             debounce_ms: setting(settings, "recording.processing.debounce_ms")?,
             settle_timeout_ms: setting(settings, "recording.processing.settle_timeout_ms")?,
             hotkey_queue_capacity: setting(settings, "recording.processing.hotkey_queue_capacity")?,
             worker_queue_capacity: setting(settings, "recording.processing.worker_queue_capacity")?,
-            queue_saturation_policy: setting(settings, "recording.processing.queue_saturation_policy")?,
-            max_recording_duration_secs: setting(settings, "recording.processing.max_recording_duration_secs")?,
+            queue_saturation_policy: setting(
+                settings,
+                "recording.processing.queue_saturation_policy",
+            )?,
+            max_recording_duration_secs: setting(
+                settings,
+                "recording.processing.max_recording_duration_secs",
+            )?,
             recovery: Some(RecoveryStrategyConfig {
                 retry_start_timeout: setting(settings, "recording.recovery.retry_start_timeout")?,
                 retry_stop_timeout: setting(settings, "recording.recovery.retry_stop_timeout")?,
-                retry_processing_timeout: setting(settings, "recording.recovery.retry_processing_timeout")?,
-                retry_queue_saturation: setting(settings, "recording.recovery.retry_queue_saturation")?,
+                retry_processing_timeout: setting(
+                    settings,
+                    "recording.recovery.retry_processing_timeout",
+                )?,
+                retry_queue_saturation: setting(
+                    settings,
+                    "recording.recovery.retry_queue_saturation",
+                )?,
             }),
         },
         recording: RecordingBehaviorConfig {

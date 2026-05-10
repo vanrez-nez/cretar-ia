@@ -29,14 +29,10 @@ pub struct CommandBus {
 
 impl CommandBus {
     pub fn new(cfg: &AppConfig) -> Self {
-        let hotkey_capacity = normalized_capacity(
-            cfg.effective_hotkey_queue_capacity(),
-            HOTKEY_QUEUE_CAPACITY,
-        );
-        let worker_capacity = normalized_capacity(
-            cfg.effective_worker_queue_capacity(),
-            WORKER_QUEUE_CAPACITY,
-        );
+        let hotkey_capacity =
+            normalized_capacity(cfg.effective_hotkey_queue_capacity(), HOTKEY_QUEUE_CAPACITY);
+        let worker_capacity =
+            normalized_capacity(cfg.effective_worker_queue_capacity(), WORKER_QUEUE_CAPACITY);
 
         let (hotkey_tx, hotkey_rx) = mpsc::channel::<HotkeyEvent>(hotkey_capacity);
         let (worker_tx, worker_rx) = mpsc::channel::<RecordingEvent>(worker_capacity);
@@ -107,7 +103,9 @@ impl CommandBusTx {
 
         match self.hotkey_tx.try_send(event) {
             Ok(()) => None,
-            Err(TrySendError::Full(_)) => Some(self.queue_saturated("hotkey", &self.hotkey_dropped)),
+            Err(TrySendError::Full(_)) => {
+                Some(self.queue_saturated("hotkey", &self.hotkey_dropped))
+            }
             Err(TrySendError::Closed(_)) => None,
         }
     }
@@ -115,7 +113,9 @@ impl CommandBusTx {
     pub fn send_worker(&self, event: RecordingEvent) -> Option<RecordingEvent> {
         match self.worker_tx.try_send(event) {
             Ok(()) => None,
-            Err(TrySendError::Full(_)) => Some(self.queue_saturated("worker", &self.worker_dropped)),
+            Err(TrySendError::Full(_)) => {
+                Some(self.queue_saturated("worker", &self.worker_dropped))
+            }
             Err(TrySendError::Closed(_)) => None,
         }
     }
@@ -123,7 +123,9 @@ impl CommandBusTx {
     pub fn send_command(&self, command: RecordingCommand) -> Option<RecordingEvent> {
         match self.command_tx.try_send(command) {
             Ok(()) => None,
-            Err(TrySendError::Full(_)) => Some(self.queue_saturated("command", &self.command_dropped)),
+            Err(TrySendError::Full(_)) => {
+                Some(self.queue_saturated("command", &self.command_dropped))
+            }
             Err(TrySendError::Closed(_)) => None,
         }
     }

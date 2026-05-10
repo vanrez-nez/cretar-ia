@@ -14,8 +14,10 @@ pub struct StatusRender {
 
 pub fn render_status_for_host(cfg: &TrayConfig, status: &SessionStatus) -> StatusRender {
     let icon_state = tray::status_to_icon(status);
-    let should_pulse =
-        matches!(status.state, PipelinePhase::Starting | PipelinePhase::Recording);
+    let should_pulse = matches!(
+        status.state,
+        PipelinePhase::Starting | PipelinePhase::Recording
+    );
     let tooltip = match status.state {
         PipelinePhase::Idle => {
             if status.source == "processing_completed" {

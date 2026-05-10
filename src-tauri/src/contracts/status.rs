@@ -104,11 +104,7 @@ pub fn bounded_status_channel(capacity: usize) -> (SessionStatusSender, SessionS
 
 impl SessionStatusSender {
     pub fn send(&self, status: SessionStatus) -> Result<StatusPublishOutcome, StatusChannelClosed> {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .map_err(|_| StatusChannelClosed)?;
+        let mut state = self.inner.state.lock().map_err(|_| StatusChannelClosed)?;
 
         if state.closed {
             return Err(StatusChannelClosed);

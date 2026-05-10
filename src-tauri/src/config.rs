@@ -208,7 +208,12 @@ impl PipelineConfig {
             .or_else(|| if legacy > 0 { Some(legacy) } else { None })
     }
 
-    fn validate_with_legacy(&self, issues: &mut Vec<String>, legacy: &InteractionConfig, audio: &AudioCaptureConfig) {
+    fn validate_with_legacy(
+        &self,
+        issues: &mut Vec<String>,
+        legacy: &InteractionConfig,
+        audio: &AudioCaptureConfig,
+    ) {
         if let Some(debounce_ms) = self.debounce_ms {
             if debounce_ms == 0 {
                 issues.push("pipeline.debounce_ms must be greater than 0 when set".to_string());
@@ -232,7 +237,9 @@ impl PipelineConfig {
 
         if let Some(capacity) = self.hotkey_queue_capacity {
             if capacity == 0 {
-                issues.push("pipeline.hotkey_queue_capacity must be greater than 0 when set".to_string());
+                issues.push(
+                    "pipeline.hotkey_queue_capacity must be greater than 0 when set".to_string(),
+                );
             } else if capacity > 5_000 {
                 issues.push("pipeline.hotkey_queue_capacity must be at most 5000".to_string());
             }
@@ -246,7 +253,9 @@ impl PipelineConfig {
 
         if let Some(capacity) = self.worker_queue_capacity {
             if capacity == 0 {
-                issues.push("pipeline.worker_queue_capacity must be greater than 0 when set".to_string());
+                issues.push(
+                    "pipeline.worker_queue_capacity must be greater than 0 when set".to_string(),
+                );
             } else if capacity > 20_000 {
                 issues.push("pipeline.worker_queue_capacity must be at most 20,000".to_string());
             }
@@ -260,9 +269,14 @@ impl PipelineConfig {
 
         if let Some(max_secs) = self.max_recording_duration_secs {
             if max_secs == 0 {
-                issues.push("pipeline.max_recording_duration_secs must be greater than 0 when set".to_string());
+                issues.push(
+                    "pipeline.max_recording_duration_secs must be greater than 0 when set"
+                        .to_string(),
+                );
             } else if max_secs > 86_400 {
-                issues.push("pipeline.max_recording_duration_secs must be at most 86,400".to_string());
+                issues.push(
+                    "pipeline.max_recording_duration_secs must be at most 86,400".to_string(),
+                );
             } else if audio.max_duration_secs > 0 && max_secs != audio.max_duration_secs {
                 issues.push(
                     "pipeline.max_recording_duration_secs must match audio.max_duration_secs when both are set".to_string(),
@@ -622,8 +636,7 @@ impl AppConfig {
     }
 
     pub fn effective_settle_timeout_ms(&self) -> u64 {
-        self.pipeline
-            .effective_settle_timeout_ms(0)
+        self.pipeline.effective_settle_timeout_ms(0)
     }
 
     pub fn effective_hotkey_queue_capacity(&self) -> u32 {
@@ -660,19 +673,26 @@ impl AppConfig {
             issues.push("interaction.repeat_debounce_ms must be at most 60,000".to_string());
         }
 
-        if self.interaction.hotkey_queue_capacity > 0 && self.interaction.hotkey_queue_capacity > 20_000 {
+        if self.interaction.hotkey_queue_capacity > 0
+            && self.interaction.hotkey_queue_capacity > 20_000
+        {
             issues.push("interaction.hotkey_queue_capacity must be at most 20,000".to_string());
         }
 
-        if self.interaction.worker_queue_capacity > 0 && self.interaction.worker_queue_capacity > 20_000 {
+        if self.interaction.worker_queue_capacity > 0
+            && self.interaction.worker_queue_capacity > 20_000
+        {
             issues.push("interaction.worker_queue_capacity must be at most 20,000".to_string());
         }
 
-        if self.pipeline
+        if self
+            .pipeline
             .max_recording_duration_secs
             .is_some_and(|value| value == 0)
         {
-            issues.push("pipeline.max_recording_duration_secs must be greater than 0 when set".to_string());
+            issues.push(
+                "pipeline.max_recording_duration_secs must be greater than 0 when set".to_string(),
+            );
         }
 
         if self.audio.sample_rate > 0 && self.audio.sample_rate < 8_000 {
@@ -701,7 +721,9 @@ impl AppConfig {
         if self.provider.openrouter.max_audio_bytes == 0 {
             issues.push("provider.openrouter.max_audio_bytes must be greater than 0".to_string());
         } else if self.provider.openrouter.max_audio_bytes > 512 * 1024 * 1024 {
-            issues.push("provider.openrouter.max_audio_bytes must be at most 536,870,912".to_string());
+            issues.push(
+                "provider.openrouter.max_audio_bytes must be at most 536,870,912".to_string(),
+            );
         }
 
         if self.tray.refresh_ms < 100 {
@@ -715,7 +737,8 @@ impl AppConfig {
             issues.push("audio_cues.volume must be between 0.0 and 2.0".to_string());
         }
 
-        self.pipeline.validate_with_legacy(&mut issues, &self.interaction, &self.audio);
+        self.pipeline
+            .validate_with_legacy(&mut issues, &self.interaction, &self.audio);
 
         if issues.is_empty() {
             Ok(())
@@ -730,7 +753,8 @@ impl AppConfig {
 
     pub fn parse(raw: &str) -> Result<Self> {
         let migrated = migration::migrate(raw)?;
-        let cfg: Self = serde_json::from_value(migrated).with_context(|| "invalid config schema")?;
+        let cfg: Self =
+            serde_json::from_value(migrated).with_context(|| "invalid config schema")?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -769,6 +793,8 @@ fn bundled_sound_bytes(file: &str) -> Result<&'static [u8]> {
         "sine_transition_start.wav" => Ok(include_bytes!("../sounds/sine_transition_start.wav")),
         "sine_select.wav" => Ok(include_bytes!("../sounds/sine_select.wav")),
         "sine_transition_stop.wav" => Ok(include_bytes!("../sounds/sine_transition_stop.wav")),
-        other => Err(anyhow!("sound manifest references unknown bundled file '{other}'")),
+        other => Err(anyhow!(
+            "sound manifest references unknown bundled file '{other}'"
+        )),
     }
 }

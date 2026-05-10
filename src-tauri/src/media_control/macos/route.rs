@@ -23,10 +23,11 @@ struct OutputRouteSnapshot {
 
 pub fn capture_restore_context(input_device: Option<&str>) -> Option<RouteRestoreContext> {
     let before = output_route_snapshot();
-    let (should_wait, reason) = before.as_ref().map_or(
-        (false, "missing_output_route_snapshot"),
-        |snapshot| route_match_result(input_device, snapshot.device_name.as_deref()),
-    );
+    let (should_wait, reason) = before
+        .as_ref()
+        .map_or((false, "missing_output_route_snapshot"), |snapshot| {
+            route_match_result(input_device, snapshot.device_name.as_deref())
+        });
 
     log::debug!(
         "media route: captured pre-recording output route should_wait={} reason={} input_device={:?} output_device={:?}",
@@ -56,7 +57,9 @@ fn wait_for_output_route_restore(before: &OutputRouteSnapshot) -> bool {
         return true;
     };
     if route_restored(before, &current) {
-        log::debug!("media route: output route already restored before={before:?} current={current:?}");
+        log::debug!(
+            "media route: output route already restored before={before:?} current={current:?}"
+        );
         return true;
     }
 
@@ -85,7 +88,9 @@ fn wait_for_output_route_restore(before: &OutputRouteSnapshot) -> bool {
     );
 
     let deadline = Instant::now() + Duration::from_millis(RESTORE_TIMEOUT_MS);
-    log::info!("media route: waiting for output route restore before={before:?} current={current:?}");
+    log::info!(
+        "media route: waiting for output route restore before={before:?} current={current:?}"
+    );
 
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());

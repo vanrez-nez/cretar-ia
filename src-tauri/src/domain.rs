@@ -19,13 +19,6 @@ impl TextInjectionStep {
 
 #[allow(unused_imports)]
 pub use crate::contracts::{
-    HotkeyEvent,
-    PipelineMode,
-    PipelinePhase,
-    PipelineState,
-    RecordingCommand,
-    RecordingErrorCode,
-    RecordingEvent,
-    RecoveryHint,
-    SessionStatus,
+    HotkeyEvent, PipelineMode, PipelinePhase, PipelineState, RecordingCommand, RecordingErrorCode,
+    RecordingEvent, RecoveryHint, SessionStatus,
 };

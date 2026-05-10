@@ -1,12 +1,7 @@
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::{HotkeyEvent, PipelineMode, PipelinePhase, RecordingEvent};
-use crate::recording::fsm::{
-    transition,
-    NoopReason,
-    RecordedEvent,
-    TransitionResult,
-};
+use crate::recording::fsm::{transition, NoopReason, RecordedEvent, TransitionResult};
 use crate::recording::state::RecordingState;
 
 #[test]
@@ -33,7 +28,10 @@ fn idle_press_starts_recording_with_new_session() {
 fn push_mode_press_release_stops_recording_once() {
     let state = RecordingState::new(PipelineMode::PushToTalk, 0);
     let started = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
-    let started = transition(&started.next, RecordedEvent::Worker(RecordingEvent::AudioStarted));
+    let started = transition(
+        &started.next,
+        RecordedEvent::Worker(RecordingEvent::AudioStarted),
+    );
     let stopped = transition(&started.next, RecordedEvent::Hotkey(HotkeyEvent::Released));
 
     assert_eq!(
@@ -132,7 +130,9 @@ fn processing_recovery_and_error_toggle_press_is_noop() {
     );
     let processing = transition(
         &stopping.next,
-        RecordedEvent::Worker(RecordingEvent::AudioStopped { path: "test.wav".into() }),
+        RecordedEvent::Worker(RecordingEvent::AudioStopped {
+            path: "test.wav".into(),
+        }),
     );
 
     let processing_noop = transition(
@@ -164,7 +164,10 @@ fn processing_recovery_and_error_toggle_press_is_noop() {
             reason: "boom".to_string(),
         }),
     );
-    let error_noop = transition(&error.next, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
+    let error_noop = transition(
+        &error.next,
+        RecordedEvent::Hotkey(HotkeyEvent::TogglePressed),
+    );
     assert!(matches!(
         error_noop.result,
         TransitionResult::Noop(NoopReason::TogglePressIgnored),
@@ -278,18 +281,21 @@ fn processing_failed_enters_error_without_cancel_command() {
 fn toggle_mode_release_never_stops_recording() {
     let state = RecordingState::new(PipelineMode::Toggle, 0);
     let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
-    let recording = transition(&starting.next, RecordedEvent::Worker(RecordingEvent::AudioStarted));
+    let recording = transition(
+        &starting.next,
+        RecordedEvent::Worker(RecordingEvent::AudioStarted),
+    );
 
-    let released = transition(&recording.next, RecordedEvent::Hotkey(HotkeyEvent::Released));
+    let released = transition(
+        &recording.next,
+        RecordedEvent::Hotkey(HotkeyEvent::Released),
+    );
     assert!(matches!(
         released.result,
         TransitionResult::Noop(NoopReason::ToggleReleaseIgnored)
     ));
 
-    let pressed_again = transition(
-        &recording.next,
-        RecordedEvent::Hotkey(HotkeyEvent::Pressed),
-    );
+    let pressed_again = transition(&recording.next, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
     assert_eq!(
         pressed_again.result,
         TransitionResult::StateChange {
@@ -306,7 +312,10 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
     let state = RecordingState::new(PipelineMode::PushToTalk, 0);
 
     let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
-    let starting_cancel = transition(&starting.next, RecordedEvent::Hotkey(HotkeyEvent::CancelPressed));
+    let starting_cancel = transition(
+        &starting.next,
+        RecordedEvent::Hotkey(HotkeyEvent::CancelPressed),
+    );
     assert_eq!(
         starting_cancel.result,
         TransitionResult::StateChange {
@@ -355,7 +364,9 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
 
     let processing = transition(
         &stopping.next,
-        RecordedEvent::Worker(RecordingEvent::AudioStopped { path: "test.wav".into() }),
+        RecordedEvent::Worker(RecordingEvent::AudioStopped {
+            path: "test.wav".into(),
+        }),
     );
     let processing_cancel = transition(
         &processing.next,
@@ -436,7 +447,10 @@ fn cancel_during_recovering_is_idempotent() {
 fn recovering_with_recovery_failed_goes_to_error_with_force_stop_hint() {
     let state = RecordingState::new(PipelineMode::PushToTalk, 0);
     let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
-    let recovering = transition(&starting.next, RecordedEvent::Hotkey(HotkeyEvent::CancelPressed));
+    let recovering = transition(
+        &starting.next,
+        RecordedEvent::Hotkey(HotkeyEvent::CancelPressed),
+    );
 
     let failed = transition(
         &recovering.next,
@@ -456,14 +470,20 @@ fn recovering_with_recovery_failed_goes_to_error_with_force_stop_hint() {
         }
     );
     assert_eq!(failed.next.phase, PipelinePhase::Error);
-    assert_eq!(failed.next.recovery_hint, crate::contracts::errors::RecoveryHint::Manual);
+    assert_eq!(
+        failed.next.recovery_hint,
+        crate::contracts::errors::RecoveryHint::Manual
+    );
 }
 
 #[test]
 fn recovering_with_recovery_completed_returns_idle() {
     let state = RecordingState::new(PipelineMode::PushToTalk, 0);
     let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
-    let recovering = transition(&starting.next, RecordedEvent::Hotkey(HotkeyEvent::CancelPressed));
+    let recovering = transition(
+        &starting.next,
+        RecordedEvent::Hotkey(HotkeyEvent::CancelPressed),
+    );
 
     let completed = transition(
         &recovering.next,
@@ -511,8 +531,14 @@ fn worker_event_carries_recovery_hint_on_error() {
     );
 
     assert_eq!(start_failed.next.phase, PipelinePhase::Error);
-    assert_eq!(start_failed.next.recovery_hint, crate::contracts::errors::RecoveryHint::RetryStart);
-    assert_eq!(start_failed.next.last_reason.as_deref(), Some("init failed"));
+    assert_eq!(
+        start_failed.next.recovery_hint,
+        crate::contracts::errors::RecoveryHint::RetryStart
+    );
+    assert_eq!(
+        start_failed.next.last_reason.as_deref(),
+        Some("init failed")
+    );
 }
 
 #[test]
@@ -568,7 +594,10 @@ fn toggle_double_press_is_press_toggle_stop_and_ignored() {
         }
     );
 
-    let ignored = transition(&second_press.next, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
+    let ignored = transition(
+        &second_press.next,
+        RecordedEvent::Hotkey(HotkeyEvent::TogglePressed),
+    );
     assert!(matches!(
         ignored.result,
         TransitionResult::Noop(NoopReason::InvalidTransition {

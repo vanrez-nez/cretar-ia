@@ -114,7 +114,9 @@ impl ModelHealthCache {
     ) -> Result<ModelHealthStatus> {
         let Some(target) = load_model_health_target(pool, role, user_model_id).await? else {
             self.sync_metadata(pool).await?;
-            return Err(anyhow!("model item '{user_model_id}' was not found for role '{role}'"));
+            return Err(anyhow!(
+                "model item '{user_model_id}' was not found for role '{role}'"
+            ));
         };
         let health = check_target_health(&Client::new(), &target)
             .await
@@ -123,7 +125,11 @@ impl ModelHealthCache {
         Ok(health)
     }
 
-    fn replace_from_targets(&self, targets: Vec<ModelHealthTarget>, explicit_health: Option<ModelHealthStatus>) {
+    fn replace_from_targets(
+        &self,
+        targets: Vec<ModelHealthTarget>,
+        explicit_health: Option<ModelHealthStatus>,
+    ) {
         let previous = self
             .inner
             .read()
@@ -235,30 +241,51 @@ fn target_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ModelHealthTarget> {
     Ok(ModelHealthTarget {
         id: row.try_get("id").context("reading health target id")?,
         role: row.try_get("role").context("reading health target role")?,
-        display_name: row.try_get("display_name").context("reading health target display name")?,
-        provider_name: row.try_get("provider_name").context("reading health target provider name")?,
-        external_model_id: row.try_get("external_model_id").context("reading health target external model id")?,
+        display_name: row
+            .try_get("display_name")
+            .context("reading health target display name")?,
+        provider_name: row
+            .try_get("provider_name")
+            .context("reading health target provider name")?,
+        external_model_id: row
+            .try_get("external_model_id")
+            .context("reading health target external model id")?,
         provider_config: parse_json_column(row, "provider_config_json")?,
         provider_override: parse_json_column(row, "provider_override_json")?,
-        is_active: row.try_get::<i64, _>("is_active").context("reading health target active flag")? == 1,
+        is_active: row
+            .try_get::<i64, _>("is_active")
+            .context("reading health target active flag")?
+            == 1,
     })
 }
 
-async fn check_target_health(client: &Client, target: &ModelHealthTarget) -> Result<ModelHealthStatus> {
+async fn check_target_health(
+    client: &Client,
+    target: &ModelHealthTarget,
+) -> Result<ModelHealthStatus> {
     let mut config = target.provider_config.clone();
     merge_config_values(&mut config, &target.provider_override);
     let Some(base_url) = config.get("base_url").and_then(Value::as_str) else {
-        log::debug!("model health unknown model={} reason=missing_base_url", target.id);
+        log::debug!(
+            "model health unknown model={} reason=missing_base_url",
+            target.id
+        );
         return Ok(ModelHealthStatus::Unknown);
     };
     let Some(endpoint) = config.pointer("/endpoints/models").and_then(Value::as_str) else {
-        log::debug!("model health unknown model={} reason=missing_models_endpoint", target.id);
+        log::debug!(
+            "model health unknown model={} reason=missing_models_endpoint",
+            target.id
+        );
         return Ok(ModelHealthStatus::Unknown);
     };
     let url = join_url(base_url, endpoint);
     let query_params = model_fetch_query_params(&config, &target.role);
     let mut request = client.get(&url).query(&query_params);
-    let auth_type = config.pointer("/auth/type").and_then(Value::as_str).unwrap_or("none");
+    let auth_type = config
+        .pointer("/auth/type")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
     log::debug!(
         "model health request model={} provider={} external_model={} url={} query_params={:?} auth_type={}",
         target.id,
@@ -271,14 +298,26 @@ async fn check_target_health(client: &Client, target: &ModelHealthTarget) -> Res
     match auth_type {
         "none" => {}
         "bearer_api_key" => {
-            let Some(api_key) = config.pointer("/auth/api_key").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()) else {
-                log::debug!("model health unhealthy model={} reason=missing_api_key", target.id);
+            let Some(api_key) = config
+                .pointer("/auth/api_key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                log::debug!(
+                    "model health unhealthy model={} reason=missing_api_key",
+                    target.id
+                );
                 return Ok(ModelHealthStatus::Unhealthy);
             };
             request = request.bearer_auth(api_key);
         }
         other => {
-            log::debug!("model health unknown model={} reason=unsupported_auth_type auth_type={}", target.id, other);
+            log::debug!(
+                "model health unknown model={} reason=unsupported_auth_type auth_type={}",
+                target.id,
+                other
+            );
             return Ok(ModelHealthStatus::Unknown);
         }
     }
@@ -286,7 +325,11 @@ async fn check_target_health(client: &Client, target: &ModelHealthTarget) -> Res
     let response = match request.send().await {
         Ok(response) => response,
         Err(err) => {
-            log::debug!("model health connection error model={} url={} error={err:?}", target.id, url);
+            log::debug!(
+                "model health connection error model={} url={} error={err:?}",
+                target.id,
+                url
+            );
             return Err(err).with_context(|| format!("checking model health '{}'", target.id));
         }
     };
@@ -307,7 +350,11 @@ async fn check_target_health(client: &Client, target: &ModelHealthTarget) -> Res
         .await
         .with_context(|| format!("parsing model health response '{}'", target.id))?;
     if response_contains_model(&payload, &target.external_model_id) {
-        log::debug!("model health healthy model={} external_model={}", target.id, target.external_model_id);
+        log::debug!(
+            "model health healthy model={} external_model={}",
+            target.id,
+            target.external_model_id
+        );
         Ok(ModelHealthStatus::Healthy)
     } else {
         log::debug!(
@@ -323,11 +370,19 @@ fn response_contains_model(payload: &Value, external_model_id: &str) -> bool {
     payload
         .get("data")
         .and_then(Value::as_array)
-        .is_some_and(|models| models.iter().any(|model| model.get("id").and_then(Value::as_str) == Some(external_model_id)))
+        .is_some_and(|models| {
+            models
+                .iter()
+                .any(|model| model.get("id").and_then(Value::as_str) == Some(external_model_id))
+        })
         || payload
             .get("models")
             .and_then(Value::as_array)
-            .is_some_and(|models| models.iter().any(|model| model.get("name").and_then(Value::as_str) == Some(external_model_id)))
+            .is_some_and(|models| {
+                models.iter().any(|model| {
+                    model.get("name").and_then(Value::as_str) == Some(external_model_id)
+                })
+            })
 }
 
 fn model_fetch_query_params(config: &Value, role: &str) -> Vec<(String, String)> {
@@ -337,7 +392,9 @@ fn model_fetch_query_params(config: &Value, role: &str) -> Vec<(String, String)>
         .map(|params| {
             params
                 .iter()
-                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -347,7 +404,11 @@ fn join_url(base: &str, endpoint: &str) -> String {
     if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
         return endpoint.to_string();
     }
-    format!("{}/{}", base.trim_end_matches('/'), endpoint.trim_start_matches('/'))
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    )
 }
 
 fn merge_config_values(base: &mut Value, overlay: &Value) {
@@ -369,6 +430,8 @@ fn merge_config_values(base: &mut Value, overlay: &Value) {
 }
 
 fn parse_json_column(row: &sqlx::sqlite::SqliteRow, column: &str) -> Result<Value> {
-    let raw: String = row.try_get(column).with_context(|| format!("reading {column}"))?;
+    let raw: String = row
+        .try_get(column)
+        .with_context(|| format!("reading {column}"))?;
     serde_json::from_str(&raw).with_context(|| format!("parsing {column}"))
 }

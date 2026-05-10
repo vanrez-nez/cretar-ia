@@ -76,7 +76,8 @@ impl SettingsDb {
 
         settings_schema::normalize_settings(&mut settings);
         settings_schema::validate_settings(&settings)?;
-        self.save_missing_or_changed_settings(&settings, &loaded).await?;
+        self.save_missing_or_changed_settings(&settings, &loaded)
+            .await?;
         Ok(settings)
     }
 

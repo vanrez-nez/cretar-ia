@@ -101,12 +101,13 @@ pub async fn seed_prompt_presets(pool: &SqlitePool) -> Result<()> {
         .with_context(|| format!("seeding prompt preset '{}'", prompt.key))?;
     }
 
-    let active_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM prompts WHERE is_active = 1")
-        .fetch_one(pool)
-        .await
-        .context("counting active prompts after seed")?
-        .try_get("count")
-        .context("reading active prompt count after seed")?;
+    let active_count: i64 =
+        sqlx::query("SELECT COUNT(*) AS count FROM prompts WHERE is_active = 1")
+            .fetch_one(pool)
+            .await
+            .context("counting active prompts after seed")?
+            .try_get("count")
+            .context("reading active prompt count after seed")?;
     if active_count == 0 {
         select_first_prompt(pool).await?;
     }
@@ -186,7 +187,9 @@ pub async fn save_prompt(
             .await
             .with_context(|| format!("loading prompt {prompt_id}"))?
             .ok_or_else(|| anyhow!("prompt not found"))?;
-        let is_preset: i64 = row.try_get("is_preset").context("reading prompt preset flag")?;
+        let is_preset: i64 = row
+            .try_get("is_preset")
+            .context("reading prompt preset flag")?;
         if is_preset != 0 {
             return Err(anyhow!("preset prompts cannot be edited"));
         }
@@ -209,12 +212,13 @@ pub async fn save_prompt(
     }
 
     let id = Uuid::new_v4().to_string();
-    let active_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM prompts WHERE is_active = 1")
-        .fetch_one(pool)
-        .await
-        .context("counting active prompts")?
-        .try_get("count")
-        .context("reading active prompt count")?;
+    let active_count: i64 =
+        sqlx::query("SELECT COUNT(*) AS count FROM prompts WHERE is_active = 1")
+            .fetch_one(pool)
+            .await
+            .context("counting active prompts")?
+            .try_get("count")
+            .context("reading active prompt count")?;
     let is_active = if active_count == 0 { 1 } else { 0 };
 
     sqlx::query(
@@ -250,8 +254,12 @@ pub async fn delete_prompt(pool: &SqlitePool, prompt_id: &str) -> Result<bool> {
         .await
         .with_context(|| format!("loading prompt {prompt_id}"))?
         .ok_or_else(|| anyhow!("prompt not found"))?;
-    let was_active: i64 = row.try_get("is_active").context("reading prompt active flag")?;
-    let is_preset: i64 = row.try_get("is_preset").context("reading prompt preset flag")?;
+    let was_active: i64 = row
+        .try_get("is_active")
+        .context("reading prompt active flag")?;
+    let is_preset: i64 = row
+        .try_get("is_preset")
+        .context("reading prompt preset flag")?;
     if is_preset != 0 {
         return Err(anyhow!("preset prompts cannot be deleted"));
     }
@@ -314,8 +322,12 @@ async fn select_first_prompt(pool: &SqlitePool) -> Result<()> {
 }
 
 fn prompt_from_row(row: sqlx::sqlite::SqliteRow) -> Result<PromptView> {
-    let is_active: i64 = row.try_get("is_active").context("reading prompt active flag")?;
-    let is_preset: i64 = row.try_get("is_preset").context("reading prompt preset flag")?;
+    let is_active: i64 = row
+        .try_get("is_active")
+        .context("reading prompt active flag")?;
+    let is_preset: i64 = row
+        .try_get("is_preset")
+        .context("reading prompt preset flag")?;
 
     Ok(PromptView {
         id: row.try_get("id").context("reading prompt id")?,
@@ -327,8 +339,12 @@ fn prompt_from_row(row: sqlx::sqlite::SqliteRow) -> Result<PromptView> {
         template: row.try_get("template").context("reading prompt template")?,
         is_active: is_active != 0,
         is_preset: is_preset != 0,
-        created_at: row.try_get("created_at").context("reading prompt created_at")?,
-        updated_at: row.try_get("updated_at").context("reading prompt updated_at")?,
+        created_at: row
+            .try_get("created_at")
+            .context("reading prompt created_at")?,
+        updated_at: row
+            .try_get("updated_at")
+            .context("reading prompt updated_at")?,
     })
 }
 
@@ -355,10 +371,16 @@ fn validate_prompt_presets(presets: &PromptPresets) -> Result<()> {
             return Err(anyhow!("prompt preset '{}' name is required", prompt.key));
         }
         if prompt.description.trim().is_empty() {
-            return Err(anyhow!("prompt preset '{}' description is required", prompt.key));
+            return Err(anyhow!(
+                "prompt preset '{}' description is required",
+                prompt.key
+            ));
         }
         if prompt.template.trim().is_empty() {
-            return Err(anyhow!("prompt preset '{}' template is required", prompt.key));
+            return Err(anyhow!(
+                "prompt preset '{}' template is required",
+                prompt.key
+            ));
         }
     }
 

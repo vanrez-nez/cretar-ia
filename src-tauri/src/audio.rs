@@ -1,6 +1,6 @@
 use crate::config::AudioCaptureConfig;
-use crate::contracts::events::RecordingArtifact;
 use crate::contracts::errors::RecordingErrorCode;
+use crate::contracts::events::RecordingArtifact;
 use crate::contracts::events::RecordingEvent;
 use crate::recording::command_bus::CommandBusTx;
 use anyhow::{Context, Result};
@@ -9,8 +9,8 @@ use cpal::{BufferSize, SampleFormat, SampleRate, Stream, StreamConfig};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TARGET_PEAK: f32 = 0.2;
@@ -37,7 +37,9 @@ pub(crate) fn available_input_device_names() -> Vec<String> {
             continue;
         };
         if supported_configs.next().is_none() {
-            log::debug!("skipping input device '{name}' because it exposes no supported input configs");
+            log::debug!(
+                "skipping input device '{name}' because it exposes no supported input configs"
+            );
             continue;
         }
         if !names.iter().any(|existing| existing == &name) {
@@ -47,7 +49,10 @@ pub(crate) fn available_input_device_names() -> Vec<String> {
     names
 }
 
-pub(crate) fn effective_input_device_name(configured_name: Option<&str>, auto_switch: bool) -> Option<String> {
+pub(crate) fn effective_input_device_name(
+    configured_name: Option<&str>,
+    auto_switch: bool,
+) -> Option<String> {
     let host = cpal::default_host();
 
     if let Some(name_hint) = configured_name.and_then(normalized_device_name) {
@@ -92,7 +97,11 @@ struct AudioStreamStopProfile {
 }
 
 impl Recorder {
-    pub fn start(config: &AudioCaptureConfig, base_dir: PathBuf, event_tx: CommandBusTx) -> Result<Self> {
+    pub fn start(
+        config: &AudioCaptureConfig,
+        base_dir: PathBuf,
+        event_tx: CommandBusTx,
+    ) -> Result<Self> {
         report_runtime_context();
         let host = cpal::default_host();
         let device = select_input_device(&host, config)?;
@@ -229,7 +238,9 @@ impl Recorder {
         let flush_close_ms = flush_started_at.elapsed().as_millis();
 
         if state.sample_count == 0 {
-            log::warn!("recording has no samples; verify microphone permissions and selected input device");
+            log::warn!(
+                "recording has no samples; verify microphone permissions and selected input device"
+            );
         } else if state.non_zero_samples == 0 {
             log::warn!("recording contains no non-zero samples; check mic permission/device");
             if cfg!(target_os = "macos") {
@@ -243,9 +254,13 @@ impl Recorder {
         let mut normalize_gain = 1.0f32;
         if raw_peak > NOISY_EPS {
             normalize_gain = (TARGET_PEAK / raw_peak).min(MAX_NORMALIZE_GAIN);
-            log::debug!("recording normalization gain {normalize_gain:.4} (raw_peak={raw_peak:.8})");
+            log::debug!(
+                "recording normalization gain {normalize_gain:.4} (raw_peak={raw_peak:.8})"
+            );
         } else {
-            log::warn!("raw audio peak is too low for normalization; writing unmodified silent stream");
+            log::warn!(
+                "raw audio peak is too low for normalization; writing unmodified silent stream"
+            );
         }
 
         let spec = hound::WavSpec {
@@ -482,10 +497,7 @@ fn log_available_input_devices(host: &cpal::Host) {
     }
 }
 
-fn select_input_device(
-    host: &cpal::Host,
-    config: &AudioCaptureConfig,
-) -> Result<cpal::Device> {
+fn select_input_device(host: &cpal::Host, config: &AudioCaptureConfig) -> Result<cpal::Device> {
     log_available_input_devices(host);
 
     if let Some(name_hint) = config.input_device.as_deref() {
@@ -577,8 +589,7 @@ fn to_f32_u16(sample: u16) -> f32 {
 
 #[inline]
 fn quantize_i16(sample: f32) -> i16 {
-    (sample * i16::MAX as f32)
-        .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+    (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 fn push_sample(state: &mut RecorderState, sample: f32) {

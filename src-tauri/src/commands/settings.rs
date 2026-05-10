@@ -51,7 +51,8 @@ pub async fn apply_settings(
 ) -> Result<(), String> {
     let previous = crate::app_host::current_config(&app);
     let settings = storage.load_settings().await.map_err(command_error)?;
-    let config = crate::settings_schema::runtime_config_from_settings(&settings).map_err(command_error)?;
+    let config =
+        crate::settings_schema::runtime_config_from_settings(&settings).map_err(command_error)?;
 
     log::info!(
         "settings apply requested save_id={:?} fingerprint={}",
@@ -68,8 +69,7 @@ pub async fn get_config_path(storage: State<'_, SettingsDb>) -> Result<String, S
 
 #[tauri::command]
 pub async fn open_config_file(storage: State<'_, SettingsDb>) -> Result<(), String> {
-    tauri_plugin_opener::open_path(storage.db_path(), None::<&str>)
-        .map_err(|err| err.to_string())
+    tauri_plugin_opener::open_path(storage.db_path(), None::<&str>).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -229,7 +229,10 @@ pub async fn save_history_export(
         .with_context(|| format!("copying export to {}", destination.display()))
         .map_err(command_error)?;
     if let Err(err) = fs::remove_file(&temp_path) {
-        log::warn!("failed to remove temporary history export {}: {err}", temp_path.display());
+        log::warn!(
+            "failed to remove temporary history export {}: {err}",
+            temp_path.display()
+        );
     }
     if let Ok(mut exports) = HISTORY_EXPORTS.lock() {
         exports.remove(&export_id);
@@ -300,7 +303,11 @@ pub async fn import_custom_sound(
     hound::WavReader::open(source)
         .map_err(|err| format!("selected sound file is not a valid WAV file: {err}"))?;
 
-    let custom_dir = storage.app_data_dir().join("sounds").join("custom").join(&slot);
+    let custom_dir = storage
+        .app_data_dir()
+        .join("sounds")
+        .join("custom")
+        .join(&slot);
     if custom_dir.exists() {
         std::fs::remove_dir_all(&custom_dir).map_err(|err| err.to_string())?;
     }
@@ -332,8 +339,12 @@ pub async fn preview_sound(
     };
     let file = File::open(&resolved)
         .map_err(|err| format!("failed to open sound preview {}: {err}", resolved.display()))?;
-    let source = rodio::Decoder::new(BufReader::new(file))
-        .map_err(|err| format!("failed to decode sound preview {}: {err}", resolved.display()))?;
+    let source = rodio::Decoder::new(BufReader::new(file)).map_err(|err| {
+        format!(
+            "failed to decode sound preview {}: {err}",
+            resolved.display()
+        )
+    })?;
     let (_stream, handle) = rodio::OutputStream::try_default()
         .map_err(|err| format!("failed to initialize sound preview output: {err}"))?;
     let sink = rodio::Sink::try_new(&handle)
@@ -405,7 +416,10 @@ pub async fn save_model_item(
         )
         .await
         .map_err(command_error)?;
-    if let Err(err) = health_cache.refresh_model(&storage.pool(), &role, &model_id).await {
+    if let Err(err) = health_cache
+        .refresh_model(&storage.pool(), &role, &model_id)
+        .await
+    {
         log::warn!("failed to refresh model health after save model_id={model_id}: {err}");
     }
     refresh_tray_and_emit_model_health(&app);
@@ -458,7 +472,9 @@ pub async fn select_model(
 #[tauri::command]
 pub async fn list_prompts(storage: State<'_, SettingsDb>) -> Result<Vec<PromptView>, String> {
     let pool = storage.pool();
-    crate::prompts::list_prompts(&pool).await.map_err(command_error)
+    crate::prompts::list_prompts(&pool)
+        .await
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -530,12 +546,14 @@ pub async fn check_permissions() -> Result<PermissionsStatus, String> {
 }
 
 #[tauri::command]
-pub async fn request_microphone_permission() -> Result<crate::permissions::PermissionState, String> {
+pub async fn request_microphone_permission() -> Result<crate::permissions::PermissionState, String>
+{
     Ok(crate::permissions::request_microphone_permission().await)
 }
 
 #[tauri::command]
-pub async fn request_accessibility_permission() -> Result<crate::permissions::PermissionState, String> {
+pub async fn request_accessibility_permission(
+) -> Result<crate::permissions::PermissionState, String> {
     Ok(crate::permissions::request_accessibility_permission().await)
 }
 
@@ -615,14 +633,16 @@ where
     let file = File::create(temp_path)
         .with_context(|| format!("creating temporary history export {}", temp_path.display()))?;
     let mut zip = zip::ZipWriter::new(file);
-    let options =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     for (index, record) in records.iter().enumerate() {
         let number = format!("{index:03}");
         let audio_file_name = export_audio_file_name(record, &number);
         if let (Some(source), Some(file_name)) = (
-            record.audio_file_path.as_deref().filter(|path| Path::new(path).is_file()),
+            record
+                .audio_file_path
+                .as_deref()
+                .filter(|path| Path::new(path).is_file()),
             audio_file_name.as_deref(),
         ) {
             zip.start_file(file_name, options)?;
@@ -659,8 +679,7 @@ fn write_single_history_record_zip(
     let file = File::create(destination)
         .with_context(|| format!("creating history record export {}", destination.display()))?;
     let mut zip = zip::ZipWriter::new(file);
-    let options =
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let audio_file_name = "transcript.wav";
 
     zip.start_file(audio_file_name, options)?;
@@ -684,7 +703,11 @@ fn export_audio_file_name(record: &crate::history::HistoryRecord, number: &str) 
 
 fn zip_destination_path(destination_path: String) -> PathBuf {
     let mut destination = PathBuf::from(destination_path);
-    if destination.extension().and_then(|value| value.to_str()).is_none() {
+    if destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none()
+    {
         destination.set_extension("zip");
     }
     destination
@@ -770,8 +793,7 @@ pub(crate) fn apply_saved_config(
 
     if should_restart {
         log::info!("settings runtime apply started save_id={:?}", save_id);
-        crate::app_host::restart_runtime(app, config.clone())
-            .map_err(|err| err.to_string())?;
+        crate::app_host::restart_runtime(app, config.clone()).map_err(|err| err.to_string())?;
         log::info!("settings runtime apply finished save_id={:?}", save_id);
     }
 

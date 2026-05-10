@@ -1,8 +1,8 @@
 use crate::contracts::errors::RecordingErrorCode;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const CURRENT_SCHEMA_VERSION: u16 = 1;
@@ -156,11 +156,7 @@ pub fn next_seq() -> u64 {
     GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-pub fn new_envelope<T>(
-    session_id: u64,
-    source: impl Into<String>,
-    payload: T,
-) -> EventEnvelope<T> {
+pub fn new_envelope<T>(session_id: u64, source: impl Into<String>, payload: T) -> EventEnvelope<T> {
     EventEnvelope {
         session_id,
         seq: next_seq(),

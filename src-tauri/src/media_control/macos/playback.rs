@@ -196,8 +196,9 @@ fn wait_for_playback_state(expected: bool) -> bool {
 }
 
 fn send_media_remote_command(label: &str, command: i32) -> bool {
-    let framework = CString::new("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote")
-        .expect("static path has no nul");
+    let framework =
+        CString::new("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote")
+            .expect("static path has no nul");
     let symbol = CString::new("MRMediaRemoteSendCommand").expect("static symbol has no nul");
 
     unsafe {

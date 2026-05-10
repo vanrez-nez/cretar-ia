@@ -1,4 +1,4 @@
-use crate::config::{AudioCueConfig, AppConfig};
+use crate::config::{AppConfig, AudioCueConfig};
 use crate::contracts::events::PipelinePhase;
 use crate::contracts::status::SessionStatus;
 use rodio::{buffer::SamplesBuffer, OutputStream, OutputStreamHandle, Source};
@@ -65,7 +65,11 @@ impl CuePlayer {
     }
 
     pub fn run_self_test_if_requested(&self) {
-        if std::env::var("CRETAR_IA_AUDIO_CUES_SELF_TEST").ok().as_deref() != Some("1") {
+        if std::env::var("CRETAR_IA_AUDIO_CUES_SELF_TEST")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
             return;
         }
 

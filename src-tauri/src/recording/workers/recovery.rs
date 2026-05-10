@@ -1,7 +1,9 @@
 use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::recording::command_bus::CommandBusTx;
-use crate::recording::workers::{audio_worker::AudioWorkerHandle, processor_worker::ProcessorWorkerHandle};
+use crate::recording::workers::{
+    audio_worker::AudioWorkerHandle, processor_worker::ProcessorWorkerHandle,
+};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -27,10 +29,7 @@ impl RecoveryWorker {
             worker_loop(command_rx, tx, audio_worker, processor_worker).await;
         });
 
-        Self {
-            command_tx,
-            handle,
-        }
+        Self { command_tx, handle }
     }
 
     pub fn request_recovery(&self) -> bool {

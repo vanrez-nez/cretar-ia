@@ -261,8 +261,8 @@ pub fn run() -> Result<()> {
             app.manage(storage);
             app.manage(health_cache);
             app.manage(prompt_cache);
-            let tray = tray::create_tray(&app_handle, &cfg)
-                .map_err(|err| anyhow!(err.to_string()))?;
+            let tray =
+                tray::create_tray(&app_handle, &cfg).map_err(|err| anyhow!(err.to_string()))?;
             app.manage(tray);
             tauri::async_runtime::spawn(async move {
                 log::info!("model health startup refresh started");
@@ -312,7 +312,11 @@ pub fn run() -> Result<()> {
         .map_err(|err| anyhow!(err.to_string()))?
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = event {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
                 if !has_visible_windows {
                     if let Err(err) = open_settings_window(app) {
                         log::warn!("failed to reopen settings window: {err}");
@@ -333,7 +337,9 @@ pub fn open_settings_window(app: &AppHandle) -> Result<()> {
     show_dock_icon(app);
 
     window.show().map_err(|err| anyhow!(err.to_string()))?;
-    window.unminimize().map_err(|err| anyhow!(err.to_string()))?;
+    window
+        .unminimize()
+        .map_err(|err| anyhow!(err.to_string()))?;
     window.set_focus().map_err(|err| anyhow!(err.to_string()))?;
     Ok(())
 }
@@ -363,7 +369,10 @@ pub fn refresh_tray_menu(app: &AppHandle, config: &AppConfig) {
 
 async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     cfg.validate()?;
-    log::info!("runtime start applying fingerprint={}", runtime_fingerprint(&cfg));
+    log::info!(
+        "runtime start applying fingerprint={}",
+        runtime_fingerprint(&cfg)
+    );
     let runtime_state = app.state::<AppRuntimeState>().runtime_slot();
     let tray = app.state::<AppTray>().inner().clone();
     let cue = audio_cues::CuePlayer::new(&cfg.audio_cues, &cfg);
@@ -459,8 +468,13 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
         log::warn!("speech-to-text provider not configured");
     }
 
-    let (bus_tx, status_rx, orchestrator) =
-        recording::orchestrator::start_with_transform(cfg.clone(), cue.clone(), stt_provider, transform, history);
+    let (bus_tx, status_rx, orchestrator) = recording::orchestrator::start_with_transform(
+        cfg.clone(),
+        cue.clone(),
+        stt_provider,
+        transform,
+        history,
+    );
     let status_task = spawn_status_task(status_rx, tray, cue, cfg.clone());
     let shortcut = register_shortcut(app, &cfg)?;
 
@@ -481,11 +495,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
 
 fn stop_runtime(app: &AppHandle) {
     let state = app.state::<AppRuntimeState>();
-    let runtime = state
-        .inner
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take());
+    let runtime = state.inner.lock().ok().and_then(|mut guard| guard.take());
 
     if let Some(runtime) = runtime {
         if let Some(shortcut) = runtime.shortcut {
@@ -515,9 +525,12 @@ fn register_shortcut(app: &AppHandle, cfg: &AppConfig) -> Result<Option<Shortcut
         .parse()
         .map_err(|err| anyhow!("invalid shortcut '{}': {err}", cfg.interaction.shortcut))?;
 
-    app.global_shortcut()
-        .register(shortcut)
-        .map_err(|err| anyhow!("failed to register shortcut '{}': {err}", cfg.interaction.shortcut))?;
+    app.global_shortcut().register(shortcut).map_err(|err| {
+        anyhow!(
+            "failed to register shortcut '{}': {err}",
+            cfg.interaction.shortcut
+        )
+    })?;
 
     log::info!("registered global shortcut: {}", cfg.interaction.shortcut);
     Ok(Some(shortcut))
@@ -733,7 +746,7 @@ fn save_model_selection_from_tray(app: &AppHandle, selection: &str) {
         };
         refresh_tray_menu(&app, &config);
         if let Err(err) = restart_runtime(&app, config) {
-                log::error!("failed to apply tray model selection: {err}");
+            log::error!("failed to apply tray model selection: {err}");
         }
         if let Err(err) = app.emit(
             "settings:changed",
@@ -770,11 +783,15 @@ fn save_formatting_enabled_from_tray(app: &AppHandle, enabled: bool) {
         let config = match crate::settings_schema::runtime_config_from_settings(&settings) {
             Ok(config) => config,
             Err(err) => {
-                log::warn!("failed to load runtime config after tray transform setting change: {err}");
+                log::warn!(
+                    "failed to load runtime config after tray transform setting change: {err}"
+                );
                 return;
             }
         };
-        if let Err(err) = crate::commands::settings::apply_saved_config(&app, previous.as_ref(), &config, None) {
+        if let Err(err) =
+            crate::commands::settings::apply_saved_config(&app, previous.as_ref(), &config, None)
+        {
             log::error!("failed to apply tray transform setting change: {err}");
             return;
         }
@@ -820,7 +837,9 @@ fn save_input_device_from_tray(app: &AppHandle, device: Option<String>) {
                 return;
             }
         };
-        if let Err(err) = crate::commands::settings::apply_saved_config(&app, previous.as_ref(), &config, None) {
+        if let Err(err) =
+            crate::commands::settings::apply_saved_config(&app, previous.as_ref(), &config, None)
+        {
             log::error!("failed to apply tray input device change: {err}");
             return;
         }

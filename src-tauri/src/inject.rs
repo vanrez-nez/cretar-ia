@@ -9,7 +9,11 @@ use std::time::Duration;
 
 static IS_DELIVERING_TEXT: AtomicBool = AtomicBool::new(false);
 
-pub async fn deliver_text(_audio_cfg: &AudioCaptureConfig, cfg: &OutputConfig, text: &str) -> Result<()> {
+pub async fn deliver_text(
+    _audio_cfg: &AudioCaptureConfig,
+    cfg: &OutputConfig,
+    text: &str,
+) -> Result<()> {
     let _guard = DeliveryGuard::acquire()?;
     let plan = injection_plan(cfg.mode.clone());
     log::debug!(
@@ -45,7 +49,10 @@ pub async fn deliver_text(_audio_cfg: &AudioCaptureConfig, cfg: &OutputConfig, t
 }
 
 async fn write_clipboard(text: &str) -> Result<()> {
-    log::debug!("delivery step: {}", TextInjectionStep::ClipboardWrite.as_str());
+    log::debug!(
+        "delivery step: {}",
+        TextInjectionStep::ClipboardWrite.as_str()
+    );
     let text = text.to_string();
     tokio::task::spawn_blocking(move || write_clipboard_blocking(&text))
         .await
@@ -87,7 +94,10 @@ fn describe_plan(plan: &[TextInjectionStep]) -> String {
 }
 
 async fn press_paste_combo() -> Result<()> {
-    log::debug!("delivery step: {}", TextInjectionStep::PasteShortcut.as_str());
+    log::debug!(
+        "delivery step: {}",
+        TextInjectionStep::PasteShortcut.as_str()
+    );
     tokio::task::spawn_blocking(press_paste_combo_blocking)
         .await
         .map_err(|err| anyhow!("paste task failed: {err}"))?

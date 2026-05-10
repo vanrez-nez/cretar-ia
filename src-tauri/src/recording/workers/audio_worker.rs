@@ -4,8 +4,8 @@ use crate::contracts::errors::RecordingErrorCode;
 use crate::contracts::events::RecordingEvent;
 use crate::recording::command_bus::CommandBusTx;
 use std::path::PathBuf;
-use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
@@ -61,10 +61,7 @@ impl AudioWorker {
             runtime.block_on(worker_loop(command_rx, tx));
         });
 
-        Self {
-            command_tx,
-            handle,
-        }
+        Self { command_tx, handle }
     }
 
     pub fn handle(&self) -> AudioWorkerHandle {
@@ -107,16 +104,14 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
         match command {
             AudioWorkerCommand::Start { cfg, record_base } => {
                 if active_recorder.is_some() {
-                if tx
-                    .send_worker(RecordingEvent::AudioStartFailed {
+                    if tx
+                        .send_worker(RecordingEvent::AudioStartFailed {
                             code: RecordingErrorCode::AudioInit,
                             reason: "start requested while recorder already active".to_string(),
                         })
                         .is_some()
                     {
-                        log::warn!(
-                            "audio start failure dropped because worker queue was full"
-                        );
+                        log::warn!("audio start failure dropped because worker queue was full");
                     }
                     continue;
                 }
@@ -141,11 +136,10 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<AudioWorkerCommand>, tx: 
                                 reason,
                             }
                         };
-                        if tx
-                            .send_worker(event)
-                            .is_some()
-                        {
-                            log::warn!("audio start failure event dropped because worker queue was full");
+                        if tx.send_worker(event).is_some() {
+                            log::warn!(
+                                "audio start failure event dropped because worker queue was full"
+                            );
                         }
                     }
                 }

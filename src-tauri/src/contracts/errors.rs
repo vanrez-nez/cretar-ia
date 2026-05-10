@@ -69,4 +69,3 @@ impl fmt::Display for RecoveryHint {
         write!(f, "{text}")
     }
 }
-

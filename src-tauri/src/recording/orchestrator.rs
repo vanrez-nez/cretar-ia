@@ -1,24 +1,25 @@
+use crate::audio;
 use crate::audio_cues::CuePlayer;
 use crate::config::{AppConfig, QueueSaturationPolicy};
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
 use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingEvent};
 use crate::contracts::status::{
-    bounded_status_channel, SessionStatusReceiver, SessionStatusSender, SESSION_STATUS_QUEUE_CAPACITY,
+    bounded_status_channel, SessionStatusReceiver, SessionStatusSender,
+    SESSION_STATUS_QUEUE_CAPACITY,
 };
 use crate::history::HistoryStore;
+use crate::media_control::MediaPauseController;
 use crate::providers::DynSpeechToTextProvider;
 use crate::recording::command_bus::{CommandBus, CommandBusTx};
 use crate::recording::fsm::{transition, NoopReason, RecordedEvent, Transition, TransitionResult};
+use crate::recording::state::RecordingState;
+use crate::recording::telemetry;
 use crate::recording::workers::{
     audio_worker::AudioWorker,
     processor_worker::{ProcessorWorker, TransformRuntime},
     recovery::RecoveryWorker,
 };
-use crate::recording::state::RecordingState;
-use crate::recording::telemetry;
-use crate::audio;
-use crate::media_control::MediaPauseController;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,11 +31,7 @@ pub fn start(
     cfg: AppConfig,
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
-) -> (
-    CommandBusTx,
-    SessionStatusReceiver,
-    JoinHandle<Result<()>>,
-) {
+) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
     start_with_transform(cfg, cue, stt_provider, TransformRuntime::disabled(), None)
 }
 
@@ -44,11 +41,7 @@ pub fn start_with_transform(
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
     history: Option<HistoryStore>,
-) -> (
-    CommandBusTx,
-    SessionStatusReceiver,
-    JoinHandle<Result<()>>,
-) {
+) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
     start_with_worker_mode(cfg, cue, stt_provider, transform, history, true)
 }
 
@@ -57,12 +50,15 @@ pub fn start_without_workers_for_tests(
     cfg: AppConfig,
     cue: CuePlayer,
     stt_provider: Option<DynSpeechToTextProvider>,
-) -> (
-    CommandBusTx,
-    SessionStatusReceiver,
-    JoinHandle<Result<()>>,
-) {
-    start_with_worker_mode(cfg, cue, stt_provider, TransformRuntime::disabled(), None, false)
+) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
+    start_with_worker_mode(
+        cfg,
+        cue,
+        stt_provider,
+        TransformRuntime::disabled(),
+        None,
+        false,
+    )
 }
 
 fn start_with_worker_mode(
@@ -72,11 +68,7 @@ fn start_with_worker_mode(
     transform: TransformRuntime,
     history: Option<HistoryStore>,
     start_workers: bool,
-) -> (
-    CommandBusTx,
-    SessionStatusReceiver,
-    JoinHandle<Result<()>>,
-) {
+) -> (CommandBusTx, SessionStatusReceiver, JoinHandle<Result<()>>) {
     let bus = CommandBus::new(&cfg);
     let tx = bus.sender();
     let (status_tx, status_rx) = bounded_status_channel(SESSION_STATUS_QUEUE_CAPACITY);
@@ -210,15 +202,16 @@ impl Orchestrator {
                     | RecordingEvent::RecoveryFailed { .. }
             )
         );
-        let audio_stopped_to_processing_started_at = if matches!(
-            &event,
-            RecordedEvent::Worker(RecordingEvent::AudioStopped { .. })
-        ) && matches!(self.state.phase, PipelinePhase::Stopping)
-        {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let audio_stopped_to_processing_started_at =
+            if matches!(
+                &event,
+                RecordedEvent::Worker(RecordingEvent::AudioStopped { .. })
+            ) && matches!(self.state.phase, PipelinePhase::Stopping)
+            {
+                Some(Instant::now())
+            } else {
+                None
+            };
 
         if let RecordedEvent::Hotkey(HotkeyEvent::ModeUpdate(mode)) = event {
             self.cfg.interaction.set_mode(mode);
@@ -254,6 +247,7 @@ impl Orchestrator {
                 &event,
                 RecordedEvent::Worker(RecordingEvent::AudioStopFailed { .. })
             ) {
+                self.cancel_stt_preconnect();
                 if let Some(started_at) = self.post_stop_started_at.take() {
                     log::info!(
                         "profile.post_stop_audio success=false mode={} stop_to_audio_stop_failed_event_ms={}",
@@ -266,6 +260,7 @@ impl Orchestrator {
 
         if should_resume_after_process_outcome {
             self.pending_recording = None;
+            self.cancel_stt_preconnect();
         }
 
         let transition = transition(&self.state, event.clone());
@@ -337,6 +332,9 @@ impl Orchestrator {
                     self.error_code_for_transition_event(&triggering_event),
                     self.state.recovery_hint,
                 );
+                if why == "audio_started" {
+                    self.prepare_stt_preconnect();
+                }
                 if let Some(command) = command {
                     self.enqueue_command(command);
                 }
@@ -354,9 +352,7 @@ impl Orchestrator {
             | RecordedEvent::Worker(RecordingEvent::AudioStopFailed { code, .. })
             | RecordedEvent::Worker(RecordingEvent::AudioDeviceUnavailable { code, .. })
             | RecordedEvent::Worker(RecordingEvent::ProcessFailed { code, .. })
-            | RecordedEvent::Worker(RecordingEvent::RecoveryFailed { code, .. }) => {
-                Some(*code)
-            }
+            | RecordedEvent::Worker(RecordingEvent::RecoveryFailed { code, .. }) => Some(*code),
             RecordedEvent::Worker(RecordingEvent::QueueSaturated { .. }) => {
                 Some(RecordingErrorCode::QueueOverflow)
             }
@@ -369,6 +365,18 @@ impl Orchestrator {
             if let Some(saturated) = self.tx.send_worker(event) {
                 self.publish_queue_event(&saturated);
             }
+        }
+    }
+
+    fn prepare_stt_preconnect(&self) {
+        if let Some(provider) = &self.stt_provider {
+            provider.prepare_transcription_connection();
+        }
+    }
+
+    fn cancel_stt_preconnect(&self) {
+        if let Some(provider) = &self.stt_provider {
+            provider.cancel_transcription_connection();
         }
     }
 
@@ -396,14 +404,22 @@ impl Orchestrator {
     fn adjust_settling(&mut self) {
         let settle_timeout_ms = self.cfg.effective_settle_timeout_ms();
         self.settling = match self.state.phase {
-            PipelinePhase::Starting if self.cfg.recovery_strategy().retry_start_timeout && settle_timeout_ms > 0 => Some((
-                PipelinePhase::Starting,
-                Instant::now() + Duration::from_millis(settle_timeout_ms),
-            )),
-            PipelinePhase::Stopping if self.cfg.recovery_strategy().retry_stop_timeout && settle_timeout_ms > 0 => Some((
-                PipelinePhase::Stopping,
-                Instant::now() + Duration::from_millis(settle_timeout_ms),
-            )),
+            PipelinePhase::Starting
+                if self.cfg.recovery_strategy().retry_start_timeout && settle_timeout_ms > 0 =>
+            {
+                Some((
+                    PipelinePhase::Starting,
+                    Instant::now() + Duration::from_millis(settle_timeout_ms),
+                ))
+            }
+            PipelinePhase::Stopping
+                if self.cfg.recovery_strategy().retry_stop_timeout && settle_timeout_ms > 0 =>
+            {
+                Some((
+                    PipelinePhase::Stopping,
+                    Instant::now() + Duration::from_millis(settle_timeout_ms),
+                ))
+            }
             _ => None,
         };
     }
@@ -584,7 +600,14 @@ impl Orchestrator {
             return Ok(());
         };
 
-        if !processor_worker.request_run(audio_cfg, output_cfg, recording_path, stt_provider, transform, history) {
+        if !processor_worker.request_run(
+            audio_cfg,
+            output_cfg,
+            recording_path,
+            stt_provider,
+            transform,
+            history,
+        ) {
             self.publish_status(
                 "processing_start_command_failed",
                 Some(RecordingErrorCode::Processing),
@@ -597,6 +620,7 @@ impl Orchestrator {
 
     fn handle_cancel_processing(&mut self) {
         self.pending_recording = None;
+        self.cancel_stt_preconnect();
         let Some(processor_worker) = self.processor_worker.as_ref() else {
             return;
         };
@@ -628,6 +652,7 @@ impl Orchestrator {
     }
 
     async fn handle_force_stop(&mut self) -> Result<()> {
+        self.cancel_stt_preconnect();
         let Some(audio_worker) = self.audio_worker.as_ref() else {
             self.publish_status(
                 "force_stop_after_shutdown_ignored",
@@ -680,6 +705,7 @@ impl Orchestrator {
             return Ok(());
         }
         self.shutdown_started = true;
+        self.cancel_stt_preconnect();
         self.resume_media_if_needed();
 
         let drained = self.bus.close_and_drain();

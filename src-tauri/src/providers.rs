@@ -1,23 +1,30 @@
+use crate::model_health::{ModelHealthCache, ModelHealthStatus};
 use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use crate::model_health::{ModelHealthCache, ModelHealthStatus};
 use jsonschema::JSONSchema;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sqlx::{Row, SqlitePool};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::io;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Poll};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 const PROVIDER_PRESETS: &str = include_str!("../providers/presets.json");
 const PROVIDER_BODY_PREVIEW_LIMIT: usize = 4096;
 const PROVIDER_MODEL_SAMPLE_LIMIT: usize = 10;
+const STT_PRECONNECT_ENABLED: bool = true;
+const STT_PRECONNECT_TTL_MS: u64 = 30_000;
+const STT_PRECONNECT_BASE64_PLACEHOLDER: &str = "__CRETAR_IA_STT_PRECONNECT_AUDIO_BASE64__";
 
 pub type DynSpeechToTextProvider = Arc<dyn SpeechToTextProvider>;
 pub type DynFormattingProvider = Arc<dyn FormattingProvider>;
@@ -26,6 +33,10 @@ type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>
 
 pub trait SpeechToTextProvider: Send + Sync {
     fn transcribe<'a>(&'a self, wav_file: &'a Path) -> ProviderFuture<'a, String>;
+
+    fn prepare_transcription_connection(&self) {}
+
+    fn cancel_transcription_connection(&self) {}
 }
 
 pub trait FormattingProvider: Send + Sync {
@@ -82,8 +93,13 @@ impl ProviderFactory {
 
         let mut runtime_model_config = selection.model_adapter_config.clone();
         merge_config_values(&mut runtime_model_config, &selection.model_request_config);
-        let provider_config: RuntimeProviderConfig = serde_json::from_value(selection.provider_config.clone())
-            .with_context(|| format!("parsing provider '{}' runtime config", selection.provider_id))?;
+        let provider_config: RuntimeProviderConfig =
+            serde_json::from_value(selection.provider_config.clone()).with_context(|| {
+                format!(
+                    "parsing provider '{}' runtime config",
+                    selection.provider_id
+                )
+            })?;
         let model_config: RuntimeModelConfig = serde_json::from_value(runtime_model_config)
             .with_context(|| format!("parsing model '{}' runtime config", selection.model_id))?;
 
@@ -96,6 +112,18 @@ impl ProviderFactory {
         );
 
         let user_model_id = selection.user_model_id.clone();
+        let preconnect = Arc::new(Mutex::new(SttPreconnectState::Idle));
+        let preconnect_setup = Arc::new(SttPreconnectSetup {
+            client: self.client.clone(),
+            user_model_id: user_model_id.clone(),
+            provider_id: selection.provider_id.clone(),
+            model_id: selection.model_id.clone(),
+            external_model_id: selection.external_model_id.clone(),
+            provider_config: provider_config.clone(),
+            model_config: model_config.clone(),
+            driver,
+            preconnect: Arc::clone(&preconnect),
+        });
         Ok(Some(Arc::new(GenericSpeechToTextProvider {
             client: self.client.clone(),
             user_model_id: user_model_id.clone(),
@@ -106,6 +134,9 @@ impl ProviderFactory {
             model_config,
             driver,
             health_reporter: self.health_reporter("stt", &user_model_id),
+            preconnect,
+            preconnect_token: Arc::new(AtomicU64::new(0)),
+            preconnect_setup,
         })))
     }
 
@@ -132,8 +163,13 @@ impl ProviderFactory {
 
         let mut runtime_model_config = selection.model_adapter_config.clone();
         merge_config_values(&mut runtime_model_config, &selection.model_request_config);
-        let provider_config: RuntimeProviderConfig = serde_json::from_value(selection.provider_config.clone())
-            .with_context(|| format!("parsing provider '{}' runtime config", selection.provider_id))?;
+        let provider_config: RuntimeProviderConfig =
+            serde_json::from_value(selection.provider_config.clone()).with_context(|| {
+                format!(
+                    "parsing provider '{}' runtime config",
+                    selection.provider_id
+                )
+            })?;
         let model_config: RuntimeModelConfig = serde_json::from_value(runtime_model_config)
             .with_context(|| format!("parsing model '{}' runtime config", selection.model_id))?;
 
@@ -160,7 +196,8 @@ impl ProviderFactory {
     }
 
     async fn load_active_model(&self, role: &str) -> Result<Option<ProviderModelSelection>> {
-        self.load_user_model_row(role, "AND um.is_active = 1", None).await
+        self.load_user_model_row(role, "AND um.is_active = 1", None)
+            .await
     }
 
     async fn load_user_model_row(
@@ -210,17 +247,24 @@ impl ProviderFactory {
         let model_request_config = parse_json_column(&row, "model_override_json")?;
         let model_adapter_config = parse_json_column(&row, "model_adapter_config_json")?;
         Ok(Some(ProviderModelSelection {
-            user_model_id: row.try_get("user_model_id").context("reading user_model_id")?,
+            user_model_id: row
+                .try_get("user_model_id")
+                .context("reading user_model_id")?,
             provider_id: row.try_get("provider_id").context("reading provider_id")?,
             provider_config,
             provider_config_schema: parse_json_column(&row, "provider_config_schema_json")?,
             provider_override,
             model_id: row.try_get("model_id").context("reading model_id")?,
-            external_model_id: row.try_get("external_model_id").context("reading external_model_id")?,
+            external_model_id: row
+                .try_get("external_model_id")
+                .context("reading external_model_id")?,
             model_request_config,
             model_request_config_schema: parse_json_column(&row, "model_config_schema_json")?,
             model_adapter_config,
-            model_adapter_config_schema: parse_json_column(&row, "model_adapter_config_schema_json")?,
+            model_adapter_config_schema: parse_json_column(
+                &row,
+                "model_adapter_config_schema_json",
+            )?,
         }))
     }
 
@@ -236,11 +280,12 @@ impl ProviderFactory {
     }
 
     async fn load_active_model_id(&self, role: &str) -> Result<Option<String>> {
-        let row = sqlx::query("SELECT id FROM user_models WHERE role = $1 AND is_active = 1 LIMIT 1")
-            .bind(role)
-            .fetch_optional(&self.pool)
-            .await
-            .with_context(|| format!("loading active user model for role '{role}'"))?;
+        let row =
+            sqlx::query("SELECT id FROM user_models WHERE role = $1 AND is_active = 1 LIMIT 1")
+                .bind(role)
+                .fetch_optional(&self.pool)
+                .await
+                .with_context(|| format!("loading active user model for role '{role}'"))?;
         row.map(|row| row.try_get("id").context("reading active user model id"))
             .transpose()
     }
@@ -291,10 +336,16 @@ impl ProviderFactory {
         for row in rows {
             views.push(CatalogModelView {
                 id: row.try_get("id").context("reading catalog model id")?,
-                provider_id: row.try_get("provider_id").context("reading catalog model provider id")?,
+                provider_id: row
+                    .try_get("provider_id")
+                    .context("reading catalog model provider id")?,
                 role: row.try_get("role").context("reading catalog model role")?,
-                external_model_id: row.try_get("external_model_id").context("reading catalog external model id")?,
-                display_name: row.try_get("display_name").context("reading catalog model display name")?,
+                external_model_id: row
+                    .try_get("external_model_id")
+                    .context("reading catalog external model id")?,
+                display_name: row
+                    .try_get("display_name")
+                    .context("reading catalog model display name")?,
                 config: parse_json_column(&row, "config_json")?,
                 config_schema: parse_json_column(&row, "config_schema_json")?,
             });
@@ -344,21 +395,36 @@ impl ProviderFactory {
             views.push(UserModelView {
                 id: row.try_get("id").context("reading user model id")?,
                 role: row.try_get("role").context("reading user model role")?,
-                provider_id: row.try_get("provider_id").context("reading user model provider id")?,
-                provider_name: row.try_get("provider_name").context("reading user model provider name")?,
-                provider_kind: row.try_get("provider_kind").context("reading user model provider kind")?,
+                provider_id: row
+                    .try_get("provider_id")
+                    .context("reading user model provider id")?,
+                provider_name: row
+                    .try_get("provider_name")
+                    .context("reading user model provider name")?,
+                provider_kind: row
+                    .try_get("provider_kind")
+                    .context("reading user model provider kind")?,
                 provider_config,
                 provider_override_config,
                 provider_effective_config,
                 provider_config_schema: parse_json_column(&row, "provider_config_schema_json")?,
-                model_id: row.try_get("model_id").context("reading user model catalog model id")?,
-                external_model_id: row.try_get("external_model_id").context("reading user model external model id")?,
-                model_display_name: row.try_get("model_display_name").context("reading user model catalog display name")?,
+                model_id: row
+                    .try_get("model_id")
+                    .context("reading user model catalog model id")?,
+                external_model_id: row
+                    .try_get("external_model_id")
+                    .context("reading user model external model id")?,
+                model_display_name: row
+                    .try_get("model_display_name")
+                    .context("reading user model catalog display name")?,
                 config,
                 override_config,
                 effective_config,
                 config_schema: parse_json_column(&row, "model_config_schema_json")?,
-                is_active: row.try_get::<i64, _>("is_active").context("reading user model active flag")? == 1,
+                is_active: row
+                    .try_get::<i64, _>("is_active")
+                    .context("reading user model active flag")?
+                    == 1,
             });
         }
         Ok(views)
@@ -382,7 +448,11 @@ impl ProviderFactory {
         let mut config = parse_json_column(&row, "config_json")?;
         let schema = parse_json_column(&row, "config_schema_json")?;
         merge_config_values(&mut config, &provider_override_config);
-        validate_json(&schema, &config, &format!("provider '{provider_id}' refresh config"))?;
+        validate_json(
+            &schema,
+            &config,
+            &format!("provider '{provider_id}' refresh config"),
+        )?;
         ensure_provider_supports_role(&config, role, provider_id)?;
         let provider_config: RuntimeProviderConfig = serde_json::from_value(config.clone())
             .with_context(|| format!("parsing provider '{provider_id}' refresh config"))?;
@@ -407,7 +477,8 @@ impl ProviderFactory {
             }
             _ => Vec::new(),
         };
-        self.upsert_catalog_models(role, provider_id, &options).await
+        self.upsert_catalog_models(role, provider_id, &options)
+            .await
     }
 
     async fn upsert_catalog_models(
@@ -441,10 +512,22 @@ impl ProviderFactory {
             .bind(role)
             .bind(&option.id)
             .bind(&option.name)
-            .bind(serde_json::to_string(&request_config).context("serializing catalog model request config")?)
-            .bind(serde_json::to_string(&request_schema).context("serializing catalog model request schema")?)
-            .bind(serde_json::to_string(&adapter_config).context("serializing catalog model adapter config")?)
-            .bind(serde_json::to_string(&adapter_schema).context("serializing catalog model adapter schema")?)
+            .bind(
+                serde_json::to_string(&request_config)
+                    .context("serializing catalog model request config")?,
+            )
+            .bind(
+                serde_json::to_string(&request_schema)
+                    .context("serializing catalog model request schema")?,
+            )
+            .bind(
+                serde_json::to_string(&adapter_config)
+                    .context("serializing catalog model adapter config")?,
+            )
+            .bind(
+                serde_json::to_string(&adapter_schema)
+                    .context("serializing catalog model adapter schema")?,
+            )
             .bind(&now)
             .execute(&self.pool)
             .await
@@ -459,7 +542,9 @@ impl ProviderFactory {
             .await
             .with_context(|| format!("loading saved catalog model '{}'", option.id))?;
             saved_options.push(ProviderModelOption {
-                id: row.try_get("id").context("reading saved catalog model id")?,
+                id: row
+                    .try_get("id")
+                    .context("reading saved catalog model id")?,
                 name: option.name.clone(),
             });
         }
@@ -499,27 +584,40 @@ impl ProviderFactory {
         .with_context(|| format!("loading catalog model '{model_id}'"))?;
 
         let provider_schema = parse_json_column(&row, "provider_config_schema_json")?;
-        validate_json(&provider_schema, &provider_override_config, &format!("provider '{provider_id}' settings config"))?;
+        validate_json(
+            &provider_schema,
+            &provider_override_config,
+            &format!("provider '{provider_id}' settings config"),
+        )?;
         ensure_provider_supports_role(&provider_override_config, role, provider_id)?;
-        let provider_config: RuntimeProviderConfig = serde_json::from_value(provider_override_config.clone())
-            .with_context(|| format!("parsing provider '{provider_id}' settings config"))?;
+        let provider_config: RuntimeProviderConfig =
+            serde_json::from_value(provider_override_config.clone())
+                .with_context(|| format!("parsing provider '{provider_id}' settings config"))?;
         validate_runtime_provider_auth(&provider_config)?;
 
         let model_schema = parse_json_column(&row, "model_config_schema_json")?;
-        validate_json(&model_schema, &model_override_config, &format!("model '{model_id}' request config"))?;
+        validate_json(
+            &model_schema,
+            &model_override_config,
+            &format!("model '{model_id}' request config"),
+        )?;
 
         let now = chrono::Utc::now().to_rfc3339();
         let user_model_id = if let Some(user_model_id) = user_model_id {
-            let exists: i64 = sqlx::query("SELECT COUNT(*) AS count FROM user_models WHERE id = $1 AND role = $2")
-                .bind(&user_model_id)
-                .bind(role)
-                .fetch_one(&self.pool)
-                .await
-                .with_context(|| format!("loading user model '{user_model_id}'"))?
-                .try_get("count")
-                .context("reading user model count")?;
+            let exists: i64 = sqlx::query(
+                "SELECT COUNT(*) AS count FROM user_models WHERE id = $1 AND role = $2",
+            )
+            .bind(&user_model_id)
+            .bind(role)
+            .fetch_one(&self.pool)
+            .await
+            .with_context(|| format!("loading user model '{user_model_id}'"))?
+            .try_get("count")
+            .context("reading user model count")?;
             if exists == 0 {
-                return Err(anyhow!("model item '{user_model_id}' was not found for role '{role}'"));
+                return Err(anyhow!(
+                    "model item '{user_model_id}' was not found for role '{role}'"
+                ));
             }
             user_model_id
         } else {
@@ -542,8 +640,14 @@ impl ProviderFactory {
         .bind(role)
         .bind(provider_id)
         .bind(model_id)
-        .bind(serde_json::to_string(&provider_override_config).context("serializing provider override config")?)
-        .bind(serde_json::to_string(&model_override_config).context("serializing model override config")?)
+        .bind(
+            serde_json::to_string(&provider_override_config)
+                .context("serializing provider override config")?,
+        )
+        .bind(
+            serde_json::to_string(&model_override_config)
+                .context("serializing model override config")?,
+        )
         .bind(&now)
         .execute(&self.pool)
         .await
@@ -563,27 +667,32 @@ impl ProviderFactory {
             .execute(&self.pool)
             .await
             .with_context(|| format!("clearing active user models for role '{role}'"))?;
-        let result = sqlx::query("UPDATE user_models SET is_active = 1, updated_at = $1 WHERE id = $2 AND role = $3")
-            .bind(&now)
-            .bind(user_model_id)
-            .bind(role)
-            .execute(&self.pool)
-            .await
-            .with_context(|| format!("activating user model '{user_model_id}'"))?;
+        let result = sqlx::query(
+            "UPDATE user_models SET is_active = 1, updated_at = $1 WHERE id = $2 AND role = $3",
+        )
+        .bind(&now)
+        .bind(user_model_id)
+        .bind(role)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("activating user model '{user_model_id}'"))?;
         if result.rows_affected() == 0 {
-            return Err(anyhow!("model item '{user_model_id}' was not found for role '{role}'"));
+            return Err(anyhow!(
+                "model item '{user_model_id}' was not found for role '{role}'"
+            ));
         }
         Ok(())
     }
 
     pub async fn delete_model_item(&self, role: &str, user_model_id: &str) -> Result<bool> {
         validate_role(role)?;
-        let deleted_row = sqlx::query("SELECT is_active FROM user_models WHERE role = $1 AND id = $2")
-            .bind(role)
-            .bind(user_model_id)
-            .fetch_optional(&self.pool)
-            .await
-            .with_context(|| format!("loading user model '{user_model_id}' before delete"))?;
+        let deleted_row =
+            sqlx::query("SELECT is_active FROM user_models WHERE role = $1 AND id = $2")
+                .bind(role)
+                .bind(user_model_id)
+                .fetch_optional(&self.pool)
+                .await
+                .with_context(|| format!("loading user model '{user_model_id}' before delete"))?;
         let Some(deleted_row) = deleted_row else {
             return Ok(false);
         };
@@ -690,7 +799,11 @@ struct ProviderNetworkProfile {
 }
 
 impl ProviderRequestLogContext {
-    fn new(operation: &'static str, provider_id: impl Into<String>, url: impl Into<String>) -> Self {
+    fn new(
+        operation: &'static str,
+        provider_id: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
         Self {
             operation,
             provider_id: provider_id.into(),
@@ -758,7 +871,7 @@ fn default_max_audio_bytes() -> u64 {
     24 * 1024 * 1024
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SttDriver {
     HttpJsonAudioTranscription,
     MultipartAudioTranscription,
@@ -845,6 +958,120 @@ struct GenericSpeechToTextProvider {
     model_config: RuntimeModelConfig,
     driver: SttDriver,
     health_reporter: Option<ModelHealthReporter>,
+    preconnect: Arc<Mutex<SttPreconnectState>>,
+    preconnect_token: Arc<AtomicU64>,
+    preconnect_setup: Arc<SttPreconnectSetup>,
+}
+
+enum SttPreconnectState {
+    Idle,
+    Initializing { token: u64, started_at: Instant },
+    Active(SttPreconnectActive),
+}
+
+struct SttPreconnectActive {
+    token: u64,
+    url: String,
+    driver: SttDriver,
+    created_at: Instant,
+    audio_tx: Option<tokio::sync::oneshot::Sender<Vec<u8>>>,
+    task: tokio::task::JoinHandle<Result<Value>>,
+}
+
+enum SttPreconnectBodyKind {
+    RawAudio,
+    JsonBase64 { prefix: Vec<u8>, suffix: Vec<u8> },
+}
+
+struct SttPreconnectBodyStream {
+    audio_rx: Option<tokio::sync::oneshot::Receiver<Vec<u8>>>,
+    deadline: Pin<Box<tokio::time::Sleep>>,
+    kind: SttPreconnectBodyKind,
+    chunks: VecDeque<Vec<u8>>,
+    done: bool,
+}
+
+#[derive(Clone)]
+struct SttPreconnectSetup {
+    client: Client,
+    user_model_id: String,
+    provider_id: String,
+    model_id: String,
+    external_model_id: String,
+    provider_config: RuntimeProviderConfig,
+    model_config: RuntimeModelConfig,
+    driver: SttDriver,
+    preconnect: Arc<Mutex<SttPreconnectState>>,
+}
+
+impl SttPreconnectBodyStream {
+    fn new(audio_rx: tokio::sync::oneshot::Receiver<Vec<u8>>, kind: SttPreconnectBodyKind) -> Self {
+        Self {
+            audio_rx: Some(audio_rx),
+            deadline: Box::pin(tokio::time::sleep(stt_preconnect_ttl())),
+            kind,
+            chunks: VecDeque::new(),
+            done: false,
+        }
+    }
+}
+
+impl futures_core::Stream for SttPreconnectBodyStream {
+    type Item = std::result::Result<Vec<u8>, io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if let Some(chunk) = this.chunks.pop_front() {
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+        if this.done {
+            return Poll::Ready(None);
+        }
+
+        if let Some(audio_rx) = this.audio_rx.as_mut() {
+            match Pin::new(audio_rx).poll(cx) {
+                Poll::Ready(Ok(file_bytes)) => {
+                    this.audio_rx = None;
+                    match &this.kind {
+                        SttPreconnectBodyKind::RawAudio => {
+                            this.chunks.push_back(file_bytes);
+                        }
+                        SttPreconnectBodyKind::JsonBase64 { prefix, suffix } => {
+                            this.chunks.push_back(prefix.clone());
+                            this.chunks
+                                .push_back(encode_base64(&file_bytes).into_bytes());
+                            this.chunks.push_back(suffix.clone());
+                        }
+                    }
+                    this.done = true;
+                    if let Some(chunk) = this.chunks.pop_front() {
+                        return Poll::Ready(Some(Ok(chunk)));
+                    }
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Err(_)) => {
+                    this.audio_rx = None;
+                    this.done = true;
+                    return Poll::Ready(Some(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "stt preconnect audio body cancelled",
+                    ))));
+                }
+                Poll::Pending => {}
+            }
+        }
+
+        if this.deadline.as_mut().poll(cx).is_ready() {
+            this.audio_rx = None;
+            this.done = true;
+            return Poll::Ready(Some(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "stt preconnect audio body timed out",
+            ))));
+        }
+
+        Poll::Pending
+    }
 }
 
 impl SpeechToTextProvider for GenericSpeechToTextProvider {
@@ -906,9 +1133,16 @@ impl SpeechToTextProvider for GenericSpeechToTextProvider {
                     wav_file.display()
                 );
 
-                let response = match self.driver {
-                    SttDriver::HttpJsonAudioTranscription => self.send_json_audio(&url, &file_bytes).await?,
-                    SttDriver::MultipartAudioTranscription => self.send_multipart_audio(&url, file_bytes).await?,
+                let response = match self.try_consume_stt_preconnect(&url, &file_bytes).await {
+                    Some(response) => response,
+                    None => match self.driver {
+                        SttDriver::HttpJsonAudioTranscription => {
+                            self.send_json_audio(&url, &file_bytes).await?
+                        }
+                        SttDriver::MultipartAudioTranscription => {
+                            self.send_multipart_audio(&url, file_bytes).await?
+                        }
+                    },
                 };
 
                 let text = extract_text(&response, &self.response_text_paths())?.trim().to_string();
@@ -961,21 +1195,310 @@ impl SpeechToTextProvider for GenericSpeechToTextProvider {
             result
         })
     }
+
+    fn prepare_transcription_connection(&self) {
+        self.prepare_stt_preconnect();
+    }
+
+    fn cancel_transcription_connection(&self) {
+        self.cancel_stt_preconnect("cancelled");
+    }
 }
 
 impl GenericSpeechToTextProvider {
+    fn prepare_stt_preconnect(&self) {
+        if !STT_PRECONNECT_ENABLED {
+            log::debug!(
+                "profile.stt_preconnect queued=false enabled=false provider={} user_model_id={} model_id={} model={} driver={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str()
+            );
+            return;
+        }
+
+        let token = self.preconnect_token.fetch_add(1, Ordering::SeqCst) + 1;
+        let old_state = {
+            let Ok(mut state) = self.preconnect.try_lock() else {
+                log::info!(
+                    "profile.stt_preconnect queued=false enabled=true provider={} user_model_id={} model_id={} model={} driver={} reason=state_locked token={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    token
+                );
+                return;
+            };
+            std::mem::replace(
+                &mut *state,
+                SttPreconnectState::Initializing {
+                    token,
+                    started_at: Instant::now(),
+                },
+            )
+        };
+        abort_stt_preconnect_state(old_state);
+
+        log::info!(
+            "profile.stt_preconnect queued=true enabled=true provider={} user_model_id={} model_id={} model={} driver={} token={} ttl_ms={}",
+            self.provider_id,
+            self.user_model_id,
+            self.model_id,
+            self.external_model_id,
+            self.driver.as_str(),
+            token,
+            STT_PRECONNECT_TTL_MS
+        );
+
+        let setup = Arc::clone(&self.preconnect_setup);
+        tokio::spawn(async move {
+            setup.run_preconnect_initialization(token).await;
+        });
+        spawn_stt_preconnect_watchdog(
+            Arc::clone(&self.preconnect),
+            token,
+            self.provider_id.clone(),
+            self.user_model_id.clone(),
+            self.model_id.clone(),
+            self.external_model_id.clone(),
+            self.driver,
+        );
+    }
+
+    fn cancel_stt_preconnect(&self, reason: &str) {
+        let token = self.preconnect_token.fetch_add(1, Ordering::SeqCst) + 1;
+        let Ok(mut state) = self.preconnect.try_lock() else {
+            log::info!(
+                "profile.stt_preconnect cancelled=false provider={} user_model_id={} model_id={} model={} driver={} reason={} token={} outcome=state_locked",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                reason,
+                token
+            );
+            return;
+        };
+        let old_state = std::mem::replace(&mut *state, SttPreconnectState::Idle);
+        let cancelled = matches!(
+            &old_state,
+            SttPreconnectState::Initializing { .. } | SttPreconnectState::Active(_)
+        );
+        abort_stt_preconnect_state(old_state);
+        log::info!(
+            "profile.stt_preconnect cancelled={} provider={} user_model_id={} model_id={} model={} driver={} reason={} token={}",
+            cancelled,
+            self.provider_id,
+            self.user_model_id,
+            self.model_id,
+            self.external_model_id,
+            self.driver.as_str(),
+            reason,
+            token
+        );
+    }
+
+    async fn try_consume_stt_preconnect(&self, url: &str, file_bytes: &[u8]) -> Option<Value> {
+        if !STT_PRECONNECT_ENABLED {
+            return None;
+        }
+
+        let mut active = {
+            let Ok(mut state) = self.preconnect.try_lock() else {
+                self.log_stt_preconnect_miss("state_locked");
+                return None;
+            };
+            match std::mem::replace(&mut *state, SttPreconnectState::Idle) {
+                SttPreconnectState::Active(active) => active,
+                SttPreconnectState::Initializing { token, started_at } => {
+                    log::info!(
+                        "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=initializing token={} age_ms={}",
+                        self.provider_id,
+                        self.user_model_id,
+                        self.model_id,
+                        self.external_model_id,
+                        self.driver.as_str(),
+                        token,
+                        started_at.elapsed().as_millis()
+                    );
+                    return None;
+                }
+                SttPreconnectState::Idle => {
+                    self.log_stt_preconnect_miss("missing");
+                    return None;
+                }
+            }
+        };
+
+        let current_token = self.preconnect_token.load(Ordering::SeqCst);
+        let age_ms = active.created_at.elapsed().as_millis();
+        if active.token != current_token {
+            active.task.abort();
+            log::info!(
+                "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=stale_token active_token={} current_token={} age_ms={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                active.token,
+                current_token,
+                age_ms
+            );
+            return None;
+        }
+
+        if active.url != url || active.driver != self.driver {
+            active.task.abort();
+            log::info!(
+                "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=mismatch active_driver={} active_url={} requested_url={} age_ms={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                active.driver.as_str(),
+                active.url,
+                url,
+                age_ms
+            );
+            return None;
+        }
+
+        if active.created_at.elapsed() >= stt_preconnect_ttl() {
+            active.task.abort();
+            log::info!(
+                "profile.stt_preconnect expired=true provider={} user_model_id={} model_id={} model={} driver={} token={} age_ms={} ttl_ms={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                active.token,
+                age_ms,
+                STT_PRECONNECT_TTL_MS
+            );
+            return None;
+        }
+
+        if active.task.is_finished() {
+            let outcome = active.task.await;
+            log::info!(
+                "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=finished_before_audio token={} age_ms={} outcome={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                active.token,
+                age_ms,
+                describe_stt_preconnect_task_outcome(&outcome)
+            );
+            return None;
+        }
+
+        let commit_started_at = Instant::now();
+        let Some(audio_tx) = active.audio_tx.take() else {
+            active.task.abort();
+            log::info!(
+                "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=audio_sender_missing token={} age_ms={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                active.token,
+                age_ms
+            );
+            return None;
+        };
+
+        if audio_tx.send(file_bytes.to_vec()).is_err() {
+            active.task.abort();
+            log::info!(
+                "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=audio_commit_failed token={} age_ms={} audio_bytes={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                active.token,
+                age_ms,
+                file_bytes.len()
+            );
+            return None;
+        }
+
+        match active.task.await {
+            Ok(Ok(response)) => {
+                log::info!(
+                    "profile.stt_preconnect hit=true provider={} user_model_id={} model_id={} model={} driver={} token={} preconnect_age_ms={} audio_bytes={} commit_to_response_ms={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    active.token,
+                    age_ms,
+                    file_bytes.len(),
+                    commit_started_at.elapsed().as_millis()
+                );
+                Some(response)
+            }
+            Ok(Err(err)) => {
+                log::info!(
+                    "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=response_error token={} age_ms={} audio_bytes={} commit_to_failure_ms={} error={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    active.token,
+                    age_ms,
+                    file_bytes.len(),
+                    commit_started_at.elapsed().as_millis(),
+                    err
+                );
+                None
+            }
+            Err(err) => {
+                log::info!(
+                    "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=task_join_error token={} age_ms={} audio_bytes={} commit_to_failure_ms={} error={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    active.token,
+                    age_ms,
+                    file_bytes.len(),
+                    commit_started_at.elapsed().as_millis(),
+                    err
+                );
+                None
+            }
+        }
+    }
+
+    fn log_stt_preconnect_miss(&self, reason: &str) {
+        log::info!(
+            "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason={}",
+            self.provider_id,
+            self.user_model_id,
+            self.model_id,
+            self.external_model_id,
+            self.driver.as_str(),
+            reason
+        );
+    }
+
     fn endpoint_url(&self) -> Result<String> {
-        let endpoint_kind = self
-            .model_config
-            .endpoint_kind
-            .as_deref()
-            .unwrap_or("audio_transcriptions");
-        let endpoint = self
-            .provider_config
-            .endpoints
-            .get(endpoint_kind)
-            .with_context(|| format!("provider '{}' missing endpoint '{endpoint_kind}'", self.provider_id))?;
-        Ok(join_url(&self.provider_config.base_url, endpoint))
+        stt_endpoint_url(&self.provider_id, &self.provider_config, &self.model_config)
     }
 
     fn response_text_paths(&self) -> Vec<&str> {
@@ -1004,7 +1527,11 @@ impl GenericSpeechToTextProvider {
             }
         });
         insert_optional_string(&mut payload, "prompt", self.model_config.prompt.as_deref());
-        insert_optional_string(&mut payload, "language", self.model_config.language.as_deref());
+        insert_optional_string(
+            &mut payload,
+            "language",
+            self.model_config.language.as_deref(),
+        );
         insert_parameters(&mut payload, &self.model_config.parameters);
         let payload_build_ms = payload_build_started_at.elapsed().as_millis();
 
@@ -1022,7 +1549,10 @@ impl GenericSpeechToTextProvider {
             }),
         );
         let request_builder_started_at = std::time::Instant::now();
-        let request = apply_auth(self.client.post(url).json(&payload), &self.provider_config.auth)?;
+        let request = apply_auth(
+            self.client.post(url).json(&payload),
+            &self.provider_config.auth,
+        )?;
         let request_builder_ms = request_builder_started_at.elapsed().as_millis();
         log::info!(
             "profile.stt_prepare success=true stage=json_payload provider={} user_model_id={} model_id={} model={} driver={} audio_bytes={} encoded_audio_bytes={} base64_encode_ms={} payload_build_ms={} request_builder_ms={}",
@@ -1053,10 +1583,20 @@ impl GenericSpeechToTextProvider {
         let mut form = reqwest::multipart::Form::new()
             .text("model", self.external_model_id.clone())
             .part("file", part);
-        if let Some(prompt) = self.model_config.prompt.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(prompt) = self
+            .model_config
+            .prompt
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             form = form.text("prompt", prompt.to_string());
         }
-        if let Some(language) = self.model_config.language.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(language) = self
+            .model_config
+            .language
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             form = form.text("language", language.to_string());
         }
         for (key, value) in &self.model_config.parameters {
@@ -1095,7 +1635,10 @@ impl GenericSpeechToTextProvider {
             }),
         );
         let request_builder_started_at = std::time::Instant::now();
-        let request = apply_auth(self.client.post(url).multipart(form), &self.provider_config.auth)?;
+        let request = apply_auth(
+            self.client.post(url).multipart(form),
+            &self.provider_config.auth,
+        )?;
         let request_builder_ms = request_builder_started_at.elapsed().as_millis();
         log::info!(
             "profile.stt_prepare success=true stage=multipart_payload provider={} user_model_id={} model_id={} model={} driver={} audio_bytes={} multipart_build_ms={} request_builder_ms={}",
@@ -1109,12 +1652,293 @@ impl GenericSpeechToTextProvider {
             request_builder_ms
         );
         let send_started_at = std::time::Instant::now();
-        let response = request.send().await.context("posting multipart stt request")?;
+        let response = request
+            .send()
+            .await
+            .context("posting multipart stt request")?;
         let network_profile = ProviderNetworkProfile {
             request_send_to_headers_ms: send_started_at.elapsed().as_millis(),
             send_started_at,
         };
         read_json_response_with_network_profile(response, &context, network_profile).await
+    }
+}
+
+impl SttPreconnectSetup {
+    async fn run_preconnect_initialization(self: Arc<Self>, token: u64) {
+        let started_at = Instant::now();
+        log::info!(
+            "profile.stt_preconnect init_started provider={} user_model_id={} model_id={} model={} driver={} token={}",
+            self.provider_id,
+            self.user_model_id,
+            self.model_id,
+            self.external_model_id,
+            self.driver.as_str(),
+            token
+        );
+
+        let active = match self.build_active_preconnect(token) {
+            Ok(active) => active,
+            Err(err) => {
+                self.clear_initializing_state(token);
+                log::info!(
+                    "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=init_error token={} elapsed_ms={} error={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    token,
+                    started_at.elapsed().as_millis(),
+                    err
+                );
+                return;
+            }
+        };
+
+        let url = active.url.clone();
+        let mut active = Some(active);
+        let stored = match self.preconnect.try_lock() {
+            Ok(mut state) => match &*state {
+                SttPreconnectState::Initializing {
+                    token: current_token,
+                    ..
+                } if *current_token == token => {
+                    *state = SttPreconnectState::Active(active.take().expect("active preconnect"));
+                    true
+                }
+                _ => false,
+            },
+            Err(_) => false,
+        };
+
+        if let Some(active) = active {
+            active.task.abort();
+            log::info!(
+                "profile.stt_preconnect miss=true provider={} user_model_id={} model_id={} model={} driver={} reason=stale_initialization token={} elapsed_ms={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                token,
+                started_at.elapsed().as_millis()
+            );
+            return;
+        }
+
+        if stored {
+            log::info!(
+                "profile.stt_preconnect active_ready provider={} user_model_id={} model_id={} model={} driver={} token={} elapsed_ms={} url={}",
+                self.provider_id,
+                self.user_model_id,
+                self.model_id,
+                self.external_model_id,
+                self.driver.as_str(),
+                token,
+                started_at.elapsed().as_millis(),
+                url
+            );
+        }
+    }
+
+    fn clear_initializing_state(&self, token: u64) {
+        let Ok(mut state) = self.preconnect.try_lock() else {
+            return;
+        };
+        if matches!(
+            &*state,
+            SttPreconnectState::Initializing {
+                token: current_token,
+                ..
+            } if *current_token == token
+        ) {
+            *state = SttPreconnectState::Idle;
+        }
+    }
+
+    fn build_active_preconnect(&self, token: u64) -> Result<SttPreconnectActive> {
+        let url = stt_endpoint_url(&self.provider_id, &self.provider_config, &self.model_config)?;
+        let (audio_tx, audio_rx) = tokio::sync::oneshot::channel();
+        let context =
+            ProviderRequestLogContext::new(self.operation_name(), &self.provider_id, &url)
+                .user_model_id(&self.user_model_id)
+                .model_id(&self.model_id)
+                .external_model_id(&self.external_model_id);
+
+        let request = match self.driver {
+            SttDriver::HttpJsonAudioTranscription => {
+                let (prefix, suffix, payload_for_log) = self.json_preconnect_payload_parts()?;
+                let stream = SttPreconnectBodyStream::new(
+                    audio_rx,
+                    SttPreconnectBodyKind::JsonBase64 { prefix, suffix },
+                );
+                log_raw_provider_request(
+                    &context,
+                    json!({
+                        "method": "POST",
+                        "url": url.clone(),
+                        "headers": provider_request_headers_for_log(&self.provider_config.auth, "application/json"),
+                        "body": payload_for_log,
+                        "preconnect": {
+                            "audio_body": "stalled_until_recording_ready",
+                            "ttl_ms": STT_PRECONNECT_TTL_MS
+                        }
+                    }),
+                );
+                apply_auth(
+                    self.client
+                        .post(&url)
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(reqwest::Body::wrap_stream(stream)),
+                    &self.provider_config.auth,
+                )?
+            }
+            SttDriver::MultipartAudioTranscription => {
+                let stream =
+                    SttPreconnectBodyStream::new(audio_rx, SttPreconnectBodyKind::RawAudio);
+                let part = reqwest::multipart::Part::stream(reqwest::Body::wrap_stream(stream))
+                    .file_name("recording.wav");
+                let mut form = reqwest::multipart::Form::new()
+                    .text("model", self.external_model_id.clone())
+                    .part("file", part);
+                if let Some(prompt) = self
+                    .model_config
+                    .prompt
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                {
+                    form = form.text("prompt", prompt.to_string());
+                }
+                if let Some(language) = self
+                    .model_config
+                    .language
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                {
+                    form = form.text("language", language.to_string());
+                }
+                for (key, value) in &self.model_config.parameters {
+                    if let Some(text) = value.as_str() {
+                        form = form.text(key.clone(), text.to_string());
+                    }
+                }
+                log_raw_provider_request(
+                    &context,
+                    json!({
+                        "method": "POST",
+                        "url": url.clone(),
+                        "headers": provider_request_headers_for_log(&self.provider_config.auth, "multipart/form-data"),
+                        "body": {
+                            "multipart": true,
+                            "fields": {
+                                "model": self.external_model_id.clone(),
+                                "prompt": self.model_config.prompt.clone(),
+                                "language": self.model_config.language.clone(),
+                                "parameters": self.model_config.parameters.clone()
+                            },
+                            "files": [
+                                {
+                                    "field": "file",
+                                    "filename": "recording.wav",
+                                    "bytes": "stalled_until_recording_ready"
+                                }
+                            ]
+                        },
+                        "preconnect": {
+                            "audio_body": "stalled_until_recording_ready",
+                            "ttl_ms": STT_PRECONNECT_TTL_MS
+                        }
+                    }),
+                );
+                apply_auth(
+                    self.client.post(&url).multipart(form),
+                    &self.provider_config.auth,
+                )?
+            }
+        };
+
+        let provider_id = self.provider_id.clone();
+        let user_model_id = self.user_model_id.clone();
+        let model_id = self.model_id.clone();
+        let external_model_id = self.external_model_id.clone();
+        let driver = self.driver;
+        let task = tokio::spawn(async move {
+            let send_started_at = std::time::Instant::now();
+            let result = async {
+                let response = request
+                    .send()
+                    .await
+                    .context("posting preconnected stt request")?;
+                let network_profile = ProviderNetworkProfile {
+                    request_send_to_headers_ms: send_started_at.elapsed().as_millis(),
+                    send_started_at,
+                };
+                read_json_response_with_network_profile(response, &context, network_profile).await
+            }
+            .await;
+            if let Err(err) = &result {
+                log::info!(
+                    "profile.stt_preconnect request_finished success=false provider={} user_model_id={} model_id={} model={} driver={} token={} elapsed_ms={} error={}",
+                    provider_id,
+                    user_model_id,
+                    model_id,
+                    external_model_id,
+                    driver.as_str(),
+                    token,
+                    send_started_at.elapsed().as_millis(),
+                    err
+                );
+            }
+            result
+        });
+
+        Ok(SttPreconnectActive {
+            token,
+            url,
+            driver: self.driver,
+            created_at: Instant::now(),
+            audio_tx: Some(audio_tx),
+            task,
+        })
+    }
+
+    fn json_preconnect_payload_parts(&self) -> Result<(Vec<u8>, Vec<u8>, Value)> {
+        let mut payload = json!({
+            "model": self.external_model_id,
+            "input_audio": {
+                "format": self.model_config.format,
+                "data": STT_PRECONNECT_BASE64_PLACEHOLDER
+            }
+        });
+        insert_optional_string(&mut payload, "prompt", self.model_config.prompt.as_deref());
+        insert_optional_string(
+            &mut payload,
+            "language",
+            self.model_config.language.as_deref(),
+        );
+        insert_parameters(&mut payload, &self.model_config.parameters);
+
+        let serialized =
+            serde_json::to_vec(&payload).context("serializing stt preconnect json payload")?;
+        let placeholder = STT_PRECONNECT_BASE64_PLACEHOLDER.as_bytes();
+        let offset = find_subslice(&serialized, placeholder)
+            .ok_or_else(|| anyhow!("stt preconnect json payload missing audio placeholder"))?;
+        if let Some(data) = payload.pointer_mut("/input_audio/data") {
+            *data = Value::String("[stalled_base64_audio]".to_string());
+        }
+        Ok((
+            serialized[..offset].to_vec(),
+            serialized[offset + placeholder.len()..].to_vec(),
+            payload,
+        ))
+    }
+
+    fn operation_name(&self) -> &'static str {
+        match self.driver {
+            SttDriver::HttpJsonAudioTranscription => "stt_json_preconnect",
+            SttDriver::MultipartAudioTranscription => "stt_multipart_preconnect",
+        }
     }
 }
 
@@ -1208,7 +2032,12 @@ impl GenericFormattingProvider {
             .provider_config
             .endpoints
             .get(endpoint_kind)
-            .with_context(|| format!("provider '{}' missing endpoint '{endpoint_kind}'", self.provider_id))?;
+            .with_context(|| {
+                format!(
+                    "provider '{}' missing endpoint '{endpoint_kind}'",
+                    self.provider_id
+                )
+            })?;
         Ok(join_url(&self.provider_config.base_url, endpoint))
     }
 
@@ -1310,8 +2139,6 @@ pub async fn seed_provider_presets(pool: &SqlitePool) -> Result<()> {
         );
     }
 
-
-
     log::info!(
         "provider presets seeded providers={} models={} schema_version={}",
         presets.providers.len(),
@@ -1356,12 +2183,18 @@ fn validate_presets(presets: &ProviderPresets) -> Result<()> {
             validate_json(
                 &template.request_config_schema,
                 &template.request_config,
-                &format!("provider preset '{}' role '{}' request template", provider.key, role),
+                &format!(
+                    "provider preset '{}' role '{}' request template",
+                    provider.key, role
+                ),
             )?;
             validate_json(
                 &template.adapter_config_schema,
                 &template.adapter_config,
-                &format!("provider preset '{}' role '{}' adapter template", provider.key, role),
+                &format!(
+                    "provider preset '{}' role '{}' adapter template",
+                    provider.key, role
+                ),
             )?;
         }
     }
@@ -1398,7 +2231,8 @@ fn validate_presets(presets: &ProviderPresets) -> Result<()> {
 }
 
 fn validate_json(schema: &Value, value: &Value, label: &str) -> Result<()> {
-    let compiled = JSONSchema::compile(schema).map_err(|err| anyhow!("compiling {label} schema: {err}"))?;
+    let compiled =
+        JSONSchema::compile(schema).map_err(|err| anyhow!("compiling {label} schema: {err}"))?;
     if let Err(errors) = compiled.validate(value) {
         let messages = errors
             .map(|error| error.to_string())
@@ -1410,7 +2244,9 @@ fn validate_json(schema: &Value, value: &Value, label: &str) -> Result<()> {
 }
 
 fn parse_json_column(row: &sqlx::sqlite::SqliteRow, column: &str) -> Result<Value> {
-    let raw: String = row.try_get(column).with_context(|| format!("reading {column}"))?;
+    let raw: String = row
+        .try_get(column)
+        .with_context(|| format!("reading {column}"))?;
     serde_json::from_str(&raw).with_context(|| format!("parsing {column}"))
 }
 
@@ -1422,10 +2258,17 @@ fn truncate_for_log(value: &str, limit: usize) -> String {
     while !value.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}...[truncated {} bytes]", &value[..end], value.len() - end)
+    format!(
+        "{}...[truncated {} bytes]",
+        &value[..end],
+        value.len() - end
+    )
 }
 
-async fn read_json_response(response: reqwest::Response, context: &ProviderRequestLogContext) -> Result<Value> {
+async fn read_json_response(
+    response: reqwest::Response,
+    context: &ProviderRequestLogContext,
+) -> Result<Value> {
     read_json_response_inner(response, context, None).await
 }
 
@@ -1445,7 +2288,10 @@ async fn read_json_response_inner(
     let status = response.status();
     let headers = headers_to_json(response.headers());
     let body_read_started_at = std::time::Instant::now();
-    let body = response.text().await.context("reading provider response body")?;
+    let body = response
+        .text()
+        .await
+        .context("reading provider response body")?;
     let response_body_read_ms = body_read_started_at.elapsed().as_millis();
     let body_bytes = body.len();
     if let Some(network_profile) = network_profile {
@@ -1466,7 +2312,10 @@ async fn read_json_response_inner(
     }
     let raw_response = raw_provider_response(context, status, headers, body_bytes, &body);
     if !status.is_success() {
-        log::warn!("provider raw response {}", truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
+        log::warn!(
+            "provider raw response {}",
+            truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT)
+        );
         return Err(anyhow!(
             "provider '{}' operation '{}' returned {} raw_response={}",
             context.provider_id,
@@ -1475,7 +2324,10 @@ async fn read_json_response_inner(
             truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT)
         ));
     }
-    log::debug!("provider raw response {}", truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
+    log::debug!(
+        "provider raw response {}",
+        truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT)
+    );
     serde_json::from_str(&body).with_context(|| {
         format!(
             "parsing provider response json raw_response={}",
@@ -1493,7 +2345,10 @@ fn log_raw_provider_request(context: &ProviderRequestLogContext, request: Value)
         "external_model": context.external_model_id,
         "request": request,
     });
-    log::debug!("provider raw request {}", truncate_for_log(&raw_request.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
+    log::debug!(
+        "provider raw request {}",
+        truncate_for_log(&raw_request.to_string(), PROVIDER_BODY_PREVIEW_LIMIT)
+    );
 }
 
 fn raw_provider_response(
@@ -1522,7 +2377,13 @@ fn raw_provider_response(
 
 fn provider_request_headers_for_log(auth: &AuthConfig, content_type: &str) -> Value {
     let authorization = match auth.kind.as_str() {
-        "bearer_api_key" if auth.api_key.as_deref().map(str::trim).is_some_and(|value| !value.is_empty()) => {
+        "bearer_api_key"
+            if auth
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty()) =>
+        {
             Value::String("Bearer [configured]".to_string())
         }
         "bearer_api_key" => Value::String("Bearer [missing]".to_string()),
@@ -1545,7 +2406,10 @@ fn headers_to_json(headers: &reqwest::header::HeaderMap) -> Value {
     Value::Object(out)
 }
 
-fn apply_auth(request: reqwest::RequestBuilder, auth: &AuthConfig) -> Result<reqwest::RequestBuilder> {
+fn apply_auth(
+    request: reqwest::RequestBuilder,
+    auth: &AuthConfig,
+) -> Result<reqwest::RequestBuilder> {
     match auth.kind.as_str() {
         "none" => Ok(request),
         "bearer_api_key" => {
@@ -1557,9 +2421,10 @@ fn apply_auth(request: reqwest::RequestBuilder, auth: &AuthConfig) -> Result<req
 }
 
 fn sanitized_bearer_api_key(api_key: Option<&str>) -> Result<&str> {
-    let api_key = api_key.map(str::trim).filter(|value| !value.is_empty()).ok_or_else(|| {
-        anyhow!("provider api key is missing")
-    })?;
+    let api_key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("provider api key is missing"))?;
     if api_key.chars().any(char::is_whitespace) {
         return Err(anyhow!(
             "provider api key is invalid: keys must not contain spaces, newlines, or pasted logs"
@@ -1581,7 +2446,11 @@ fn extract_text<'a>(payload: &'a Value, paths: &[&str]) -> Result<&'a str> {
             return Ok(text);
         }
     }
-    Err(anyhow!("provider response did not include text at paths {:?}: {}", paths, payload))
+    Err(anyhow!(
+        "provider response did not include text at paths {:?}: {}",
+        paths,
+        payload
+    ))
 }
 
 fn read_audio_file(wav_file: &Path, max_audio_bytes: u64) -> Result<Vec<u8>> {
@@ -1606,6 +2475,100 @@ fn encode_base64(bytes: &[u8]) -> String {
     let mut encoded = String::with_capacity(encoded_len);
     STANDARD.encode_string(bytes, &mut encoded);
     encoded
+}
+
+fn stt_preconnect_ttl() -> Duration {
+    Duration::from_millis(STT_PRECONNECT_TTL_MS)
+}
+
+fn abort_stt_preconnect_state(state: SttPreconnectState) {
+    if let SttPreconnectState::Active(active) = state {
+        active.task.abort();
+    }
+}
+
+fn spawn_stt_preconnect_watchdog(
+    preconnect: Arc<Mutex<SttPreconnectState>>,
+    token: u64,
+    provider_id: String,
+    user_model_id: String,
+    model_id: String,
+    external_model_id: String,
+    driver: SttDriver,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(stt_preconnect_ttl()).await;
+        let Ok(mut state) = preconnect.try_lock() else {
+            log::info!(
+                "profile.stt_preconnect expired=false provider={} user_model_id={} model_id={} model={} driver={} token={} reason=state_locked",
+                provider_id,
+                user_model_id,
+                model_id,
+                external_model_id,
+                driver.as_str(),
+                token
+            );
+            return;
+        };
+        let should_expire = match &*state {
+            SttPreconnectState::Initializing {
+                token: current_token,
+                ..
+            } => *current_token == token,
+            SttPreconnectState::Active(active) => active.token == token,
+            SttPreconnectState::Idle => false,
+        };
+        if !should_expire {
+            return;
+        }
+        let old_state = std::mem::replace(&mut *state, SttPreconnectState::Idle);
+        abort_stt_preconnect_state(old_state);
+        log::info!(
+            "profile.stt_preconnect expired=true provider={} user_model_id={} model_id={} model={} driver={} token={} ttl_ms={}",
+            provider_id,
+            user_model_id,
+            model_id,
+            external_model_id,
+            driver.as_str(),
+            token,
+            STT_PRECONNECT_TTL_MS
+        );
+    });
+}
+
+fn stt_endpoint_url(
+    provider_id: &str,
+    provider_config: &RuntimeProviderConfig,
+    model_config: &RuntimeModelConfig,
+) -> Result<String> {
+    let endpoint_kind = model_config
+        .endpoint_kind
+        .as_deref()
+        .unwrap_or("audio_transcriptions");
+    let endpoint = provider_config
+        .endpoints
+        .get(endpoint_kind)
+        .with_context(|| format!("provider '{provider_id}' missing endpoint '{endpoint_kind}'"))?;
+    Ok(join_url(&provider_config.base_url, endpoint))
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn describe_stt_preconnect_task_outcome(
+    outcome: &std::result::Result<Result<Value>, tokio::task::JoinError>,
+) -> String {
+    match outcome {
+        Ok(Ok(_)) => "ok".to_string(),
+        Ok(Err(err)) => format!("response_error:{err}"),
+        Err(err) => format!("join_error:{err}"),
+    }
 }
 
 fn join_url(base_url: &str, endpoint: &str) -> String {
@@ -1664,7 +2627,12 @@ async fn save_config_json(pool: &SqlitePool, table: &str, id: &str, config: &Val
     Ok(())
 }
 
-async fn merge_config_defaults(pool: &SqlitePool, table: &str, id: &str, defaults: &Value) -> Result<()> {
+async fn merge_config_defaults(
+    pool: &SqlitePool,
+    table: &str,
+    id: &str,
+    defaults: &Value,
+) -> Result<()> {
     let mut current = load_config_json(pool, table, id).await?;
     if merge_missing_values(&mut current, defaults) {
         save_config_json(pool, table, id, &current).await?;
@@ -1771,7 +2739,9 @@ async fn operation_template_for_role(
     .bind(role)
     .fetch_optional(pool)
     .await
-    .with_context(|| format!("loading model template for provider '{provider_id}' role '{role}'"))?;
+    .with_context(|| {
+        format!("loading model template for provider '{provider_id}' role '{role}'")
+    })?;
 
     if let Some(row) = row {
         return Ok((
@@ -1807,7 +2777,11 @@ async fn operation_template_from_presets(
     };
     let provider_key: String = row.try_get("key").context("reading provider key")?;
     let presets = load_provider_presets()?;
-    let Some(provider) = presets.providers.iter().find(|provider| provider.key == provider_key) else {
+    let Some(provider) = presets
+        .providers
+        .iter()
+        .find(|provider| provider.key == provider_key)
+    else {
         return Ok(None);
     };
     let Some(template) = provider.operation_templates.get(role) else {
@@ -1833,7 +2807,9 @@ async fn fetch_configured_models(
         raw_config
             .pointer("/model_fetch/response")
             .cloned()
-            .ok_or_else(|| anyhow!("provider '{provider_id}' missing model_fetch.response config"))?,
+            .ok_or_else(|| {
+                anyhow!("provider '{provider_id}' missing model_fetch.response config")
+            })?,
     )
     .with_context(|| format!("parsing provider '{provider_id}' model_fetch.response config"))?;
     let endpoint = config
@@ -1884,7 +2860,10 @@ async fn fetch_configured_models(
     let mut missing_id_count = 0usize;
 
     for model in models {
-        let Some(id) = model.pointer(&response_config.id_path).and_then(Value::as_str) else {
+        let Some(id) = model
+            .pointer(&response_config.id_path)
+            .and_then(Value::as_str)
+        else {
             missing_id_count += 1;
             continue;
         };
@@ -1934,13 +2913,19 @@ fn model_fetch_query_params(config: &Value, role: &str) -> Vec<(String, String)>
         .map(|params| {
             params
                 .iter()
-                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-fn model_role_filter_exclusion_reason(id: &str, name: &str, filter: Option<&ModelFetchRoleFilter>) -> Option<&'static str> {
+fn model_role_filter_exclusion_reason(
+    id: &str,
+    name: &str,
+    filter: Option<&ModelFetchRoleFilter>,
+) -> Option<&'static str> {
     let Some(filter) = filter else {
         return None;
     };
@@ -1950,7 +2935,10 @@ fn model_role_filter_exclusion_reason(id: &str, name: &str, filter: Option<&Mode
         || !filter.include_prefix.is_empty()
         || !filter.include_contains.is_empty();
     let included = !has_include
-        || filter.include_exact.iter().any(|value| id == value.to_ascii_lowercase())
+        || filter
+            .include_exact
+            .iter()
+            .any(|value| id == value.to_ascii_lowercase())
         || filter
             .include_prefix
             .iter()
@@ -1962,7 +2950,10 @@ fn model_role_filter_exclusion_reason(id: &str, name: &str, filter: Option<&Mode
     if !included {
         return Some("no_include_rule_matched");
     }
-    let excluded = filter.exclude_exact.iter().any(|value| id == value.to_ascii_lowercase())
+    let excluded = filter
+        .exclude_exact
+        .iter()
+        .any(|value| id == value.to_ascii_lowercase())
         || filter
             .exclude_prefix
             .iter()
@@ -1983,12 +2974,13 @@ fn contains_model_token(id: &str, name: &str, value: &str) -> bool {
     id.contains(&value) || name.contains(&value)
 }
 
-
 fn ensure_provider_supports_role(config: &Value, role: &str, provider_id: &str) -> Result<()> {
     if provider_config_supports_role(config, role) {
         Ok(())
     } else {
-        Err(anyhow!("provider '{provider_id}' does not support role '{role}'"))
+        Err(anyhow!(
+            "provider '{provider_id}' does not support role '{role}'"
+        ))
     }
 }
 

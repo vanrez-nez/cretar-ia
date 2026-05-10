@@ -343,7 +343,11 @@ pub async fn delete_all(pool: &SqlitePool) -> Result<HistoryDeleteResult> {
     })
 }
 
-pub async fn waveform(pool: &SqlitePool, history_id: &str, samples: Option<u32>) -> Result<AudioWaveform> {
+pub async fn waveform(
+    pool: &SqlitePool,
+    history_id: &str,
+    samples: Option<u32>,
+) -> Result<AudioWaveform> {
     let row = sqlx::query("SELECT audio_file_path FROM history WHERE id = ?")
         .bind(history_id)
         .fetch_optional(pool)
@@ -372,7 +376,9 @@ fn effective_word_count(entry: &HistoryEntry) -> i64 {
 }
 
 fn count_words(text: &str) -> i64 {
-    text.split_whitespace().filter(|word| !word.is_empty()).count() as i64
+    text.split_whitespace()
+        .filter(|word| !word.is_empty())
+        .count() as i64
 }
 
 fn empty_to_none(value: Option<String>) -> Option<String> {
@@ -406,14 +412,28 @@ fn read_wav_waveform(path: &Path, samples: u32) -> Result<AudioWaveform> {
         }
         hound::SampleFormat::Int => {
             if spec.bits_per_sample <= 16 {
-                let max = ((1_i64 << (spec.bits_per_sample.saturating_sub(1) as u32)) - 1).max(1) as f32;
+                let max =
+                    ((1_i64 << (spec.bits_per_sample.saturating_sub(1) as u32)) - 1).max(1) as f32;
                 for (sample_index, sample) in reader.samples::<i16>().enumerate() {
-                    record_peak(&mut peaks, sample? as f32 / max, sample_index, channels, total_frames);
+                    record_peak(
+                        &mut peaks,
+                        sample? as f32 / max,
+                        sample_index,
+                        channels,
+                        total_frames,
+                    );
                 }
             } else {
-                let max = ((1_i64 << (spec.bits_per_sample.saturating_sub(1).min(31) as u32)) - 1).max(1) as f32;
+                let max = ((1_i64 << (spec.bits_per_sample.saturating_sub(1).min(31) as u32)) - 1)
+                    .max(1) as f32;
                 for (sample_index, sample) in reader.samples::<i32>().enumerate() {
-                    record_peak(&mut peaks, sample? as f32 / max, sample_index, channels, total_frames);
+                    record_peak(
+                        &mut peaks,
+                        sample? as f32 / max,
+                        sample_index,
+                        channels,
+                        total_frames,
+                    );
                 }
             }
         }
@@ -425,9 +445,16 @@ fn read_wav_waveform(path: &Path, samples: u32) -> Result<AudioWaveform> {
     })
 }
 
-fn record_peak(peaks: &mut [f32], sample: f32, sample_index: usize, channels: usize, total_frames: usize) {
+fn record_peak(
+    peaks: &mut [f32],
+    sample: f32,
+    sample_index: usize,
+    channels: usize,
+    total_frames: usize,
+) {
     let frame_index = sample_index / channels;
-    let bucket = (frame_index.saturating_mul(peaks.len()) / total_frames).min(peaks.len().saturating_sub(1));
+    let bucket =
+        (frame_index.saturating_mul(peaks.len()) / total_frames).min(peaks.len().saturating_sub(1));
     let amplitude = sample.clamp(-1.0, 1.0);
     if amplitude.abs() > peaks[bucket].abs() {
         peaks[bucket] = amplitude;

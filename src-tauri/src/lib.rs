@@ -1,32 +1,32 @@
+#[cfg(feature = "settings-ui")]
+mod app_host;
 mod audio;
 mod audio_cues;
+#[cfg(feature = "settings-ui")]
+mod commands;
 mod config;
-mod domain;
 pub mod contracts;
-mod hotkey;
+mod domain;
 mod history;
+mod hotkey;
 mod i18n;
 mod inject;
 mod media_control;
 #[cfg(feature = "settings-ui")]
 mod model_health;
 #[cfg(feature = "settings-ui")]
-mod providers;
+mod permissions;
 #[cfg(feature = "settings-ui")]
 mod prompts;
 #[cfg(feature = "settings-ui")]
-mod permissions;
-#[cfg(feature = "settings-ui")]
-mod app_host;
+mod providers;
+mod recording;
+mod runtime;
 #[cfg(feature = "settings-ui")]
 mod settings_db;
 #[cfg(feature = "settings-ui")]
 mod settings_schema;
-mod runtime;
-mod recording;
 mod tray;
-#[cfg(feature = "settings-ui")]
-mod commands;
 
 use anyhow::Result;
 

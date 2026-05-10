@@ -74,7 +74,10 @@ mod platform {
     }
 
     pub async fn request_microphone_permission() -> PermissionState {
-        if matches!(check_microphone_permission().await, PermissionState::Granted) {
+        if matches!(
+            check_microphone_permission().await,
+            PermissionState::Granted
+        ) {
             return PermissionState::Granted;
         }
 
@@ -91,7 +94,10 @@ mod platform {
     }
 
     pub async fn request_accessibility_permission() -> PermissionState {
-        if matches!(check_accessibility_permission().await, PermissionState::Granted) {
+        if matches!(
+            check_accessibility_permission().await,
+            PermissionState::Granted
+        ) {
             return PermissionState::Granted;
         }
 

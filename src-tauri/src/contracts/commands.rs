@@ -25,4 +25,3 @@ impl fmt::Display for RecordingCommand {
         write!(f, "{text}")
     }
 }
-
