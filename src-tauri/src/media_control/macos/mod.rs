@@ -7,6 +7,12 @@ use std::sync::Mutex;
 
 use route::RouteRestoreContext;
 
+#[derive(Debug, Clone, Copy)]
+pub struct MediaResumeOutcome {
+    pub restored: bool,
+    pub resumed: bool,
+}
+
 pub struct MediaPauseController {
     was_playing_before_recording: AtomicBool,
     route_restore: Mutex<Option<RouteRestoreContext>>,
@@ -38,20 +44,38 @@ impl MediaPauseController {
         paused
     }
 
-    pub fn resume_after_audio_stopped(&self) -> bool {
-        if !self.wait_for_output_route_if_needed() {
+    pub fn resume_after_audio_stopped(&self) -> MediaResumeOutcome {
+        let restored = self.wait_for_output_route_if_needed();
+        if !restored {
             log::warn!("media resume: postponed because output route has not restored");
-            return false;
+            return MediaResumeOutcome {
+                restored,
+                resumed: false,
+            };
         }
-        self.resume_now()
+        MediaResumeOutcome {
+            restored,
+            resumed: self.resume_without_route_wait(),
+        }
     }
 
-    pub fn resume_now(&self) -> bool {
-        if !self.wait_for_output_route_if_needed() {
+    pub fn resume_now(&self) -> MediaResumeOutcome {
+        let restored = self.wait_for_output_route_if_needed();
+        if !restored {
             log::warn!("media resume: postponed because output route has not restored");
-            return false;
+            return MediaResumeOutcome {
+                restored,
+                resumed: false,
+            };
         }
 
+        MediaResumeOutcome {
+            restored,
+            resumed: self.resume_without_route_wait(),
+        }
+    }
+
+    fn resume_without_route_wait(&self) -> bool {
         if !self
             .was_playing_before_recording
             .swap(false, Ordering::SeqCst)

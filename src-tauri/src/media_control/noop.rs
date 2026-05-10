@@ -1,5 +1,11 @@
 pub struct MediaPauseController;
 
+#[derive(Debug, Clone, Copy)]
+pub struct MediaResumeOutcome {
+    pub restored: bool,
+    pub resumed: bool,
+}
+
 impl Default for MediaPauseController {
     fn default() -> Self {
         Self::new()
@@ -16,11 +22,17 @@ impl MediaPauseController {
         false
     }
 
-    pub fn resume_after_audio_stopped(&self) -> bool {
-        false
+    pub fn resume_after_audio_stopped(&self) -> MediaResumeOutcome {
+        MediaResumeOutcome {
+            restored: true,
+            resumed: false,
+        }
     }
 
-    pub fn resume_now(&self) -> bool {
-        false
+    pub fn resume_now(&self) -> MediaResumeOutcome {
+        MediaResumeOutcome {
+            restored: true,
+            resumed: false,
+        }
     }
 }

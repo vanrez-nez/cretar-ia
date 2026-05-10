@@ -83,6 +83,14 @@ pub struct Recorder {
     out_path: PathBuf,
 }
 
+#[derive(Debug, Default)]
+struct AudioStreamStopProfile {
+    callback_drained: bool,
+    drain_ms: u128,
+    pause_drop_ms: u128,
+    stream_present: bool,
+}
+
 impl Recorder {
     pub fn start(config: &AudioCaptureConfig, base_dir: PathBuf, event_tx: CommandBusTx) -> Result<Self> {
         report_runtime_context();
@@ -196,11 +204,14 @@ impl Recorder {
     }
 
     pub fn stop(mut self) -> Result<RecordingArtifact> {
-        self.stop_audio_stream();
+        let stop_started_at = Instant::now();
+        let stream_profile = self.stop_audio_stream();
+        let lock_started_at = Instant::now();
         let mut state = self
             .state
             .lock()
             .map_err(|err| anyhow::anyhow!("audio sample lock error: {err}"))?;
+        let state_lock_ms = lock_started_at.elapsed().as_millis();
 
         if let Some(err) = state.flush_error.take() {
             state.close_spool()?;
@@ -210,10 +221,12 @@ impl Recorder {
             ));
         }
 
+        let flush_started_at = Instant::now();
         state
             .flush_buffer()
             .context("flushing final audio capture buffer")?;
         state.close_spool().context("closing audio capture spool")?;
+        let flush_close_ms = flush_started_at.elapsed().as_millis();
 
         if state.sample_count == 0 {
             log::warn!("recording has no samples; verify microphone permissions and selected input device");
@@ -241,6 +254,7 @@ impl Recorder {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
+        let wav_write_started_at = Instant::now();
         write_spooled_wav(
             &state.spool_path,
             &self.out_path,
@@ -248,7 +262,13 @@ impl Recorder {
             normalize_gain,
             state.sample_count,
         )?;
-        let _ = std::fs::remove_file(&state.spool_path);
+        let wav_write_ms = wav_write_started_at.elapsed().as_millis();
+        let wav_bytes = std::fs::metadata(&self.out_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let spool_cleanup_started_at = Instant::now();
+        let spool_cleanup_success = std::fs::remove_file(&state.spool_path).is_ok();
+        let spool_cleanup_ms = spool_cleanup_started_at.elapsed().as_millis();
 
         log::info!(
             "recording completed: samples={} non_zero={} raw_peak={:.8} sample_rate={} channels={} checkpoints={}",
@@ -260,13 +280,35 @@ impl Recorder {
             state.persistence_checkpoints
         );
 
+        log::info!(
+            "profile.audio_finalize success=true total_stop_to_wav_ready_ms={} stream_drain_ms={} stream_pause_drop_ms={} callback_drained={} stream_present={} state_lock_ms={} flush_close_ms={} wav_write_ms={} spool_cleanup_ms={} spool_cleanup_success={} samples={} non_zero={} raw_peak={:.8} sample_rate={} channels={} checkpoints={} wav_bytes={} wav_path={}",
+            stop_started_at.elapsed().as_millis(),
+            stream_profile.drain_ms,
+            stream_profile.pause_drop_ms,
+            stream_profile.callback_drained,
+            stream_profile.stream_present,
+            state_lock_ms,
+            flush_close_ms,
+            wav_write_ms,
+            spool_cleanup_ms,
+            spool_cleanup_success,
+            state.sample_count,
+            state.non_zero_samples,
+            state.max_abs,
+            self.sample_rate,
+            self.channels,
+            state.persistence_checkpoints,
+            wav_bytes,
+            self.out_path.display()
+        );
+
         Ok(RecordingArtifact {
             path: self.out_path.clone(),
             duration_ms: recording_duration_ms(state.sample_count, self.sample_rate, self.channels),
         })
     }
 
-    fn stop_audio_stream(&mut self) {
+    fn stop_audio_stream(&mut self) -> AudioStreamStopProfile {
         self.stop_requested.store(true, Ordering::SeqCst);
 
         let drain_start = Instant::now();
@@ -275,25 +317,40 @@ impl Recorder {
         {
             std::thread::sleep(Duration::from_millis(5));
         }
+        let drain_ms = drain_start.elapsed().as_millis();
+        let callback_drained = self.callback_drained.load(Ordering::SeqCst);
 
-        if self.callback_drained.load(Ordering::SeqCst) {
+        if callback_drained {
             log::info!("audio callback drain completed before stream shutdown");
         } else {
             log::warn!(
                 "audio callback drain timed out after {}ms; pausing stream anyway",
-                drain_start.elapsed().as_millis()
+                drain_ms
             );
         }
 
         let Some(stream) = self.stream.take() else {
-            return;
+            return AudioStreamStopProfile {
+                callback_drained,
+                drain_ms,
+                pause_drop_ms: 0,
+                stream_present: false,
+            };
         };
 
+        let pause_drop_started_at = Instant::now();
         if let Err(err) = stream.pause() {
             log::warn!("failed to pause audio input stream before drop: {err}");
         }
         drop(stream);
+        let pause_drop_ms = pause_drop_started_at.elapsed().as_millis();
         log::info!("audio input stream paused and dropped");
+        AudioStreamStopProfile {
+            callback_drained,
+            drain_ms,
+            pause_drop_ms,
+            stream_present: true,
+        }
     }
 }
 
@@ -308,7 +365,7 @@ fn recording_duration_ms(sample_count: usize, sample_rate: u32, channels: u16) -
 impl Drop for Recorder {
     fn drop(&mut self) {
         if self.stream.is_some() {
-            self.stop_audio_stream();
+            let _ = self.stop_audio_stream();
         }
     }
 }

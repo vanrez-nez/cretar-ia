@@ -21,6 +21,7 @@ use crate::audio;
 use crate::media_control::MediaPauseController;
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
@@ -111,7 +112,7 @@ fn start_with_worker_mode(
             transform,
             history,
             cue,
-            media_pause: MediaPauseController::new(),
+            media_pause: Arc::new(MediaPauseController::new()),
             bus,
             tx: runner_tx,
             audio_worker,
@@ -122,6 +123,8 @@ fn start_with_worker_mode(
             pending_recording: None,
             settling: None,
             stop_in_flight: false,
+            post_stop_started_at: None,
+            media_resume_in_flight: None,
             shutdown_started: false,
             max_recording_limit_triggered: false,
             last_device_recovery_check: Instant::now(),
@@ -140,7 +143,7 @@ struct Orchestrator {
     transform: TransformRuntime,
     history: Option<HistoryStore>,
     cue: CuePlayer,
-    media_pause: MediaPauseController,
+    media_pause: Arc<MediaPauseController>,
     bus: CommandBus,
     tx: CommandBusTx,
     audio_worker: Option<AudioWorker>,
@@ -151,6 +154,8 @@ struct Orchestrator {
     pending_recording: Option<PathBuf>,
     settling: Option<(PipelinePhase, Instant)>,
     stop_in_flight: bool,
+    post_stop_started_at: Option<Instant>,
+    media_resume_in_flight: Option<JoinHandle<()>>,
     shutdown_started: bool,
     max_recording_limit_triggered: bool,
     last_device_recovery_check: Instant,
@@ -188,6 +193,33 @@ impl Orchestrator {
     }
 
     fn on_event(&mut self, event: RecordedEvent) {
+        self.clear_finished_media_resume_task();
+        let should_resume_after_audio_stop = matches!(
+            &event,
+            RecordedEvent::Worker(
+                RecordingEvent::AudioStopped { .. } | RecordingEvent::AudioStopFailed { .. }
+            )
+        );
+        let should_resume_after_process_outcome = matches!(
+            &event,
+            RecordedEvent::Worker(
+                RecordingEvent::ProcessCompleted
+                    | RecordingEvent::AudioStartFailed { .. }
+                    | RecordingEvent::AudioDeviceUnavailable { .. }
+                    | RecordingEvent::ProcessFailed { .. }
+                    | RecordingEvent::RecoveryFailed { .. }
+            )
+        );
+        let audio_stopped_to_processing_started_at = if matches!(
+            &event,
+            RecordedEvent::Worker(RecordingEvent::AudioStopped { .. })
+        ) && matches!(self.state.phase, PipelinePhase::Stopping)
+        {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
         if let RecordedEvent::Hotkey(HotkeyEvent::ModeUpdate(mode)) = event {
             self.cfg.interaction.set_mode(mode);
         }
@@ -205,34 +237,60 @@ impl Orchestrator {
             if matches!(self.state.phase, PipelinePhase::Stopping) {
                 self.pending_recording = Some(artifact.path.clone());
             }
+            if let Some(started_at) = self.post_stop_started_at.take() {
+                log::info!(
+                    "profile.post_stop_audio success=true mode={} stop_to_audio_stopped_event_ms={} artifact_duration_ms={} artifact_path={}",
+                    self.state.mode,
+                    started_at.elapsed().as_millis(),
+                    artifact.duration_ms,
+                    artifact.path.display()
+                );
+            }
         }
 
-        if matches!(
-            &event,
-            RecordedEvent::Worker(
-                RecordingEvent::AudioStopped { .. } | RecordingEvent::AudioStopFailed { .. }
-            )
-        ) {
+        if should_resume_after_audio_stop {
             self.stop_in_flight = false;
-            self.resume_media_if_needed_after_recording_stop();
+            if matches!(
+                &event,
+                RecordedEvent::Worker(RecordingEvent::AudioStopFailed { .. })
+            ) {
+                if let Some(started_at) = self.post_stop_started_at.take() {
+                    log::info!(
+                        "profile.post_stop_audio success=false mode={} stop_to_audio_stop_failed_event_ms={}",
+                        self.state.mode,
+                        started_at.elapsed().as_millis()
+                    );
+                }
+            }
         }
 
-        if matches!(
-            &event,
-            RecordedEvent::Worker(
-                RecordingEvent::ProcessCompleted
-                    | RecordingEvent::AudioStartFailed { .. }
-                    | RecordingEvent::AudioDeviceUnavailable { .. }
-                    | RecordingEvent::ProcessFailed { .. }
-                    | RecordingEvent::RecoveryFailed { .. }
-            )
-        ) {
+        if should_resume_after_process_outcome {
             self.pending_recording = None;
-            self.resume_media_if_needed();
         }
 
         let transition = transition(&self.state, event.clone());
+        let queues_processing = matches!(
+            &transition.result,
+            TransitionResult::StateChange {
+                command: Some(RecordingCommand::RunProcessing),
+                ..
+            }
+        );
         self.apply_transition(transition, event);
+        if queues_processing {
+            if let Some(started_at) = audio_stopped_to_processing_started_at {
+                log::info!(
+                    "profile.post_stop_gap audio_stopped_to_processing_command_ms={}",
+                    started_at.elapsed().as_millis()
+                );
+            }
+        }
+        if should_resume_after_audio_stop {
+            self.resume_media_if_needed_after_recording_stop();
+        }
+        if should_resume_after_process_outcome {
+            self.resume_media_if_needed();
+        }
     }
 
     async fn on_command(&mut self, command: RecordingCommand) -> Result<bool> {
@@ -496,6 +554,7 @@ impl Orchestrator {
             );
         } else {
             self.stop_in_flight = true;
+            self.post_stop_started_at = Some(Instant::now());
         }
         Ok(())
     }
@@ -644,20 +703,67 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn resume_media_if_needed(&self) {
-        if !self.cfg.recording.pause_media {
-            return;
+    fn clear_finished_media_resume_task(&mut self) {
+        let finished = self
+            .media_resume_in_flight
+            .as_ref()
+            .map(|task| task.is_finished())
+            .unwrap_or(false);
+        if finished {
+            let _ = self.media_resume_in_flight.take();
         }
-        let resumed = self.media_pause.resume_now();
-        log::debug!("recording media resume result={resumed}");
     }
 
-    fn resume_media_if_needed_after_recording_stop(&self) {
+    fn resume_media_if_needed(&mut self) {
         if !self.cfg.recording.pause_media {
             return;
         }
-        let resumed = self.media_pause.resume_after_audio_stopped();
-        log::debug!("recording media resume after audio stopped result={resumed}");
+        self.clear_finished_media_resume_task();
+        if self.media_resume_in_flight.is_some() {
+            log::debug!("recording media resume skipped because resume task is already running");
+            return;
+        }
+        let media_pause = Arc::clone(&self.media_pause);
+        log::info!("profile.media_resume_now started=true");
+        self.media_resume_in_flight = Some(tokio::task::spawn_blocking(move || {
+            let started_at = Instant::now();
+            let outcome = media_pause.resume_now();
+            log::info!(
+                "profile.media_resume_now finished=true restored={} resumed={} elapsed_ms={}",
+                outcome.restored,
+                outcome.resumed,
+                started_at.elapsed().as_millis()
+            );
+        }));
+    }
+
+    fn resume_media_if_needed_after_recording_stop(&mut self) {
+        if !self.cfg.recording.pause_media {
+            return;
+        }
+        self.clear_finished_media_resume_task();
+        if self.media_resume_in_flight.is_some() {
+            log::debug!("recording media resume after audio stopped skipped because resume task is already running");
+            return;
+        }
+        let media_pause = Arc::clone(&self.media_pause);
+        log::info!("profile.media_resume_after_audio_stopped started=true");
+        self.media_resume_in_flight = Some(tokio::task::spawn_blocking(move || {
+            let started_at = Instant::now();
+            let mut attempts = 1u8;
+            let mut outcome = media_pause.resume_after_audio_stopped();
+            if !outcome.restored {
+                attempts = 2;
+                outcome = media_pause.resume_now();
+            }
+            log::info!(
+                "profile.media_resume_after_audio_stopped finished=true restored={} resumed={} attempts={} elapsed_ms={}",
+                outcome.restored,
+                outcome.resumed,
+                attempts,
+                started_at.elapsed().as_millis()
+            );
+        }));
     }
 
     fn publish_status(

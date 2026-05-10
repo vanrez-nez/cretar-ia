@@ -684,6 +684,11 @@ struct ProviderRequestLogContext {
     started_at: std::time::Instant,
 }
 
+struct ProviderNetworkProfile {
+    request_send_to_headers_ms: u128,
+    send_started_at: std::time::Instant,
+}
+
 impl ProviderRequestLogContext {
     fn new(operation: &'static str, provider_id: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
@@ -845,10 +850,61 @@ struct GenericSpeechToTextProvider {
 impl SpeechToTextProvider for GenericSpeechToTextProvider {
     fn transcribe<'a>(&'a self, wav_file: &'a Path) -> ProviderFuture<'a, String> {
         Box::pin(async move {
+            let total_started_at = std::time::Instant::now();
             let result = async {
-                let start = std::time::Instant::now();
-                let file_bytes = read_audio_file(wav_file, self.model_config.max_audio_bytes)?;
-                let url = self.endpoint_url()?;
+                let read_started_at = std::time::Instant::now();
+                let file_bytes = match read_audio_file(wav_file, self.model_config.max_audio_bytes) {
+                    Ok(file_bytes) => file_bytes,
+                    Err(err) => {
+                        log::info!(
+                            "profile.stt_prepare success=false stage=read_audio_file provider={} user_model_id={} model_id={} model={} driver={} audio_read_ms={} wav_path={} error={}",
+                            self.provider_id,
+                            self.user_model_id,
+                            self.model_id,
+                            self.external_model_id,
+                            self.driver.as_str(),
+                            read_started_at.elapsed().as_millis(),
+                            wav_file.display(),
+                            err
+                        );
+                        return Err(err);
+                    }
+                };
+                let audio_read_ms = read_started_at.elapsed().as_millis();
+                let audio_bytes = file_bytes.len();
+
+                let endpoint_started_at = std::time::Instant::now();
+                let url = match self.endpoint_url() {
+                    Ok(url) => url,
+                    Err(err) => {
+                        log::info!(
+                            "profile.stt_prepare success=false stage=endpoint_url provider={} user_model_id={} model_id={} model={} driver={} audio_read_ms={} audio_bytes={} endpoint_url_ms={} wav_path={} error={}",
+                            self.provider_id,
+                            self.user_model_id,
+                            self.model_id,
+                            self.external_model_id,
+                            self.driver.as_str(),
+                            audio_read_ms,
+                            audio_bytes,
+                            endpoint_started_at.elapsed().as_millis(),
+                            wav_file.display(),
+                            err
+                        );
+                        return Err(err);
+                    }
+                };
+                log::info!(
+                    "profile.stt_prepare success=true stage=read_ready provider={} user_model_id={} model_id={} model={} driver={} audio_read_ms={} endpoint_url_ms={} audio_bytes={} wav_path={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    audio_read_ms,
+                    endpoint_started_at.elapsed().as_millis(),
+                    audio_bytes,
+                    wav_file.display()
+                );
 
                 let response = match self.driver {
                     SttDriver::HttpJsonAudioTranscription => self.send_json_audio(&url, &file_bytes).await?,
@@ -865,12 +921,35 @@ impl SpeechToTextProvider for GenericSpeechToTextProvider {
                     self.user_model_id,
                     self.model_id,
                     self.external_model_id,
-                    start.elapsed(),
+                    total_started_at.elapsed(),
                     text.len()
                 );
                 Ok(text)
             }
             .await;
+
+            match &result {
+                Ok(text) => log::info!(
+                    "profile.stt_total success=true provider={} user_model_id={} model_id={} model={} driver={} total_ms={} text_len={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    total_started_at.elapsed().as_millis(),
+                    text.len()
+                ),
+                Err(err) => log::info!(
+                    "profile.stt_total success=false provider={} user_model_id={} model_id={} model={} driver={} total_ms={} error={}",
+                    self.provider_id,
+                    self.user_model_id,
+                    self.model_id,
+                    self.external_model_id,
+                    self.driver.as_str(),
+                    total_started_at.elapsed().as_millis(),
+                    err
+                ),
+            }
 
             if let Some(reporter) = &self.health_reporter {
                 if result.is_ok() {
@@ -912,16 +991,22 @@ impl GenericSpeechToTextProvider {
     }
 
     async fn send_json_audio(&self, url: &str, file_bytes: &[u8]) -> Result<Value> {
+        let base64_started_at = std::time::Instant::now();
+        let encoded_audio = encode_base64(file_bytes);
+        let base64_encode_ms = base64_started_at.elapsed().as_millis();
+        let encoded_audio_bytes = encoded_audio.len();
+        let payload_build_started_at = std::time::Instant::now();
         let mut payload = json!({
             "model": self.external_model_id,
             "input_audio": {
                 "format": self.model_config.format,
-                "data": encode_base64(file_bytes)
+                "data": encoded_audio
             }
         });
         insert_optional_string(&mut payload, "prompt", self.model_config.prompt.as_deref());
         insert_optional_string(&mut payload, "language", self.model_config.language.as_deref());
         insert_parameters(&mut payload, &self.model_config.parameters);
+        let payload_build_ms = payload_build_started_at.elapsed().as_millis();
 
         let context = ProviderRequestLogContext::new("stt_json", &self.provider_id, url)
             .user_model_id(&self.user_model_id)
@@ -936,12 +1021,33 @@ impl GenericSpeechToTextProvider {
                 "body": payload.clone()
             }),
         );
+        let request_builder_started_at = std::time::Instant::now();
         let request = apply_auth(self.client.post(url).json(&payload), &self.provider_config.auth)?;
+        let request_builder_ms = request_builder_started_at.elapsed().as_millis();
+        log::info!(
+            "profile.stt_prepare success=true stage=json_payload provider={} user_model_id={} model_id={} model={} driver={} audio_bytes={} encoded_audio_bytes={} base64_encode_ms={} payload_build_ms={} request_builder_ms={}",
+            self.provider_id,
+            self.user_model_id,
+            self.model_id,
+            self.external_model_id,
+            self.driver.as_str(),
+            file_bytes.len(),
+            encoded_audio_bytes,
+            base64_encode_ms,
+            payload_build_ms,
+            request_builder_ms
+        );
+        let send_started_at = std::time::Instant::now();
         let response = request.send().await.context("posting json stt request")?;
-        read_json_response(response, &context).await
+        let network_profile = ProviderNetworkProfile {
+            request_send_to_headers_ms: send_started_at.elapsed().as_millis(),
+            send_started_at,
+        };
+        read_json_response_with_network_profile(response, &context, network_profile).await
     }
 
     async fn send_multipart_audio(&self, url: &str, file_bytes: Vec<u8>) -> Result<Value> {
+        let multipart_build_started_at = std::time::Instant::now();
         let audio_bytes = file_bytes.len();
         let part = reqwest::multipart::Part::bytes(file_bytes).file_name("recording.wav");
         let mut form = reqwest::multipart::Form::new()
@@ -958,6 +1064,7 @@ impl GenericSpeechToTextProvider {
                 form = form.text(key.clone(), text.to_string());
             }
         }
+        let multipart_build_ms = multipart_build_started_at.elapsed().as_millis();
 
         let context = ProviderRequestLogContext::new("stt_multipart", &self.provider_id, url)
             .user_model_id(&self.user_model_id)
@@ -987,9 +1094,27 @@ impl GenericSpeechToTextProvider {
                 }
             }),
         );
+        let request_builder_started_at = std::time::Instant::now();
         let request = apply_auth(self.client.post(url).multipart(form), &self.provider_config.auth)?;
+        let request_builder_ms = request_builder_started_at.elapsed().as_millis();
+        log::info!(
+            "profile.stt_prepare success=true stage=multipart_payload provider={} user_model_id={} model_id={} model={} driver={} audio_bytes={} multipart_build_ms={} request_builder_ms={}",
+            self.provider_id,
+            self.user_model_id,
+            self.model_id,
+            self.external_model_id,
+            self.driver.as_str(),
+            audio_bytes,
+            multipart_build_ms,
+            request_builder_ms
+        );
+        let send_started_at = std::time::Instant::now();
         let response = request.send().await.context("posting multipart stt request")?;
-        read_json_response(response, &context).await
+        let network_profile = ProviderNetworkProfile {
+            request_send_to_headers_ms: send_started_at.elapsed().as_millis(),
+            send_started_at,
+        };
+        read_json_response_with_network_profile(response, &context, network_profile).await
     }
 }
 
@@ -1301,10 +1426,44 @@ fn truncate_for_log(value: &str, limit: usize) -> String {
 }
 
 async fn read_json_response(response: reqwest::Response, context: &ProviderRequestLogContext) -> Result<Value> {
+    read_json_response_inner(response, context, None).await
+}
+
+async fn read_json_response_with_network_profile(
+    response: reqwest::Response,
+    context: &ProviderRequestLogContext,
+    network_profile: ProviderNetworkProfile,
+) -> Result<Value> {
+    read_json_response_inner(response, context, Some(network_profile)).await
+}
+
+async fn read_json_response_inner(
+    response: reqwest::Response,
+    context: &ProviderRequestLogContext,
+    network_profile: Option<ProviderNetworkProfile>,
+) -> Result<Value> {
     let status = response.status();
     let headers = headers_to_json(response.headers());
+    let body_read_started_at = std::time::Instant::now();
     let body = response.text().await.context("reading provider response body")?;
+    let response_body_read_ms = body_read_started_at.elapsed().as_millis();
     let body_bytes = body.len();
+    if let Some(network_profile) = network_profile {
+        log::info!(
+            "profile.stt_network success={} operation={} provider={} user_model_id={} model_id={} model={} status={} request_send_to_headers_ms={} response_body_read_ms={} request_send_to_body_ms={} response_body_bytes={}",
+            status.is_success(),
+            context.operation,
+            context.provider_id,
+            context.user_model_id.as_deref().unwrap_or(""),
+            context.model_id.as_deref().unwrap_or(""),
+            context.external_model_id.as_deref().unwrap_or(""),
+            status.as_u16(),
+            network_profile.request_send_to_headers_ms,
+            response_body_read_ms,
+            network_profile.send_started_at.elapsed().as_millis(),
+            body_bytes
+        );
+    }
     let raw_response = raw_provider_response(context, status, headers, body_bytes, &body);
     if !status.is_success() {
         log::warn!("provider raw response {}", truncate_for_log(&raw_response.to_string(), PROVIDER_BODY_PREVIEW_LIMIT));
