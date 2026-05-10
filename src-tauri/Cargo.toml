@@ -31,7 +31,7 @@ arboard = "3.4"
 rdev = "0.5"
 rodio = "0.17"
 resvg = { version = "0.47", optional = true }
-tauri = { version = "2", optional = true , features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri = { version = "2", optional = true, features = ["macos-private-api", "protocol-asset", "tray-icon", "image-png"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25"

@@ -26,6 +26,8 @@ mod runtime;
 mod settings_db;
 #[cfg(feature = "settings-ui")]
 mod settings_schema;
+#[cfg(feature = "settings-ui")]
+mod status_widget;
 mod tray;
 
 use anyhow::Result;

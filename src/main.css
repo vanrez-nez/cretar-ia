@@ -104,6 +104,85 @@ body {
   font-family: 'Geist Variable', sans-serif;
 }
 
+html[data-window="status-widget"],
+html[data-window="status-widget"] body,
+html[data-window="status-widget"] #root {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.status-widget {
+  --status-widget-accent: oklch(0.63 0.12 145);
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--status-widget-accent);
+  color: oklch(0.97 0 0);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.status-widget--expanded {
+  justify-content: flex-start;
+  gap: 0.65rem;
+  padding: 0 0.85rem;
+  border: 1px solid oklch(1 0 0 / 14%);
+  background: oklch(0.17 0.015 260);
+}
+
+.status-widget--idle {
+  --status-widget-accent: oklch(0.68 0 0);
+}
+
+.status-widget--recording {
+  --status-widget-accent: oklch(0.65 0.19 28);
+}
+
+.status-widget--transcribing {
+  --status-widget-accent: oklch(0.7 0.13 215);
+}
+
+.status-widget--recovering {
+  --status-widget-accent: oklch(0.74 0.15 85);
+}
+
+.status-widget--error {
+  --status-widget-accent: var(--destructive);
+}
+
+.status-widget__indicator {
+  width: 100%;
+  height: 100%;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--status-widget-accent);
+}
+
+.status-widget--expanded .status-widget__indicator {
+  width: 0.55rem;
+  height: 0.55rem;
+  box-shadow: 0 0 0 0.2rem oklch(1 0 0 / 8%);
+}
+
+.status-widget__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-widget--collapsed .status-widget__label {
+  display: none;
+}
+
 .hljs {
   background: transparent;
   color: var(--foreground);

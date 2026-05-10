@@ -21,6 +21,7 @@
     ]
   },
   "app": {
+    "macOSPrivateApi": true,
     "withGlobalTauri": true,
     "security": {
       "assetProtocol": {
@@ -33,6 +34,12 @@
           "description": "Runtime access for the settings window",
           "windows": ["settings"],
           "permissions": ["core:default", "log:default", "autostart:default", "dialog:allow-open", "dialog:allow-save", "dialog:allow-message", "sql:default", "sql:allow-execute", "settings-ui-commands"]
+        },
+        {
+          "identifier": "status-widget",
+          "description": "Runtime access for the status widget",
+          "windows": ["status-widget"],
+          "permissions": ["core:default", "core:window:allow-set-ignore-cursor-events", "log:default", "status-widget-commands"]
         }
       ]
     },
@@ -46,6 +53,23 @@
         "center": true,
         "visible": false,
         "skipTaskbar": true
+      },
+      {
+        "label": "status-widget",
+        "title": "Cretar IA Status",
+        "url": "index.html?window=status-widget",
+        "width": 40,
+        "height": 5,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false,
+        "create": false
       }
     ]
   },

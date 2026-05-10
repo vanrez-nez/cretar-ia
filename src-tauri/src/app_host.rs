@@ -12,6 +12,7 @@ use crate::recording;
 use crate::recording::command_bus::CommandBusTx;
 use crate::recording::workers::processor_worker::TransformRuntime;
 use crate::settings_db::{SettingsDb, SETTINGS_DB_URL};
+use crate::status_widget::StatusWidget;
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
@@ -230,6 +231,7 @@ pub fn run() -> Result<()> {
             settings::check_permissions,
             settings::request_microphone_permission,
             settings::request_accessibility_permission,
+            crate::status_widget::set_status_widget_hovered,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -264,6 +266,9 @@ pub fn run() -> Result<()> {
             let tray =
                 tray::create_tray(&app_handle, &cfg).map_err(|err| anyhow!(err.to_string()))?;
             app.manage(tray);
+            let status_widget = StatusWidget::new(&app_handle);
+            status_widget.open();
+            app.manage(status_widget);
             tauri::async_runtime::spawn(async move {
                 log::info!("model health startup refresh started");
                 if let Err(err) = health_cache_task.refresh_all(&health_pool).await {
@@ -293,6 +298,10 @@ pub fn run() -> Result<()> {
             handle_menu_event(app, event.id().as_ref());
         })
         .on_window_event(|window, event| {
+            if crate::status_widget::handle_window_event(window, event) {
+                return;
+            }
+
             if window.label() != SETTINGS_WINDOW_LABEL {
                 return;
             }
@@ -313,11 +322,15 @@ pub fn run() -> Result<()> {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {
-                has_visible_windows,
+                has_visible_windows: _,
                 ..
             } = event
             {
-                if !has_visible_windows {
+                let settings_visible = app
+                    .get_webview_window(SETTINGS_WINDOW_LABEL)
+                    .and_then(|window| window.is_visible().ok())
+                    .unwrap_or(false);
+                if !settings_visible {
                     if let Err(err) = open_settings_window(app) {
                         log::warn!("failed to reopen settings window: {err}");
                     }
@@ -375,6 +388,9 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
     );
     let runtime_state = app.state::<AppRuntimeState>().runtime_slot();
     let tray = app.state::<AppTray>().inner().clone();
+    let status_widget = app
+        .try_state::<StatusWidget>()
+        .map(|widget| widget.inner().clone());
     let cue = audio_cues::CuePlayer::new(&cfg.audio_cues, &cfg);
     cue.run_self_test_if_requested();
     let (stt_provider, transform, history) = match app.try_state::<SettingsDb>() {
@@ -475,7 +491,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
         transform,
         history,
     );
-    let status_task = spawn_status_task(status_rx, tray, cue, cfg.clone());
+    let status_task = spawn_status_task(status_rx, tray, status_widget, cue, cfg.clone());
     let shortcut = register_shortcut(app, &cfg)?;
 
     let runtime = AppRuntime {
@@ -597,6 +613,7 @@ fn handle_global_shortcut(
 fn spawn_status_task(
     mut status_rx: SessionStatusReceiver,
     tray: AppTray,
+    status_widget: Option<StatusWidget>,
     cue: audio_cues::CuePlayer,
     cfg: AppConfig,
 ) -> tauri::async_runtime::JoinHandle<()> {
@@ -616,6 +633,9 @@ fn spawn_status_task(
                         break;
                     };
                     let render = crate::runtime::render_status_for_host(&cfg.tray, &status);
+                    if let Some(widget) = &status_widget {
+                        widget.update(&status);
+                    }
                     is_recording = render.should_pulse;
                     tray.set_status(render.tooltip, render.icon_state);
                     if let Some(cue_kind) = render.cue {

@@ -1,0 +1,6 @@
+[[permission]]
+identifier = "status-widget-commands"
+description = "Allows status widget layout commands."
+commands.allow = [
+  "set_status_widget_hovered",
+]
