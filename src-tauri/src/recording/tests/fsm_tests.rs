@@ -10,6 +10,7 @@ fn test_artifact(path: &str) -> RecordingArtifact {
     RecordingArtifact {
         path: path.into(),
         duration_ms: 0,
+        levels: Default::default(),
     }
 }
 

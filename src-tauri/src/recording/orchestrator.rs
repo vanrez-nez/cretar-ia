@@ -6,7 +6,7 @@ use crate::contracts::audio_level::{
 };
 use crate::contracts::commands::RecordingCommand;
 use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
-use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingEvent};
+use crate::contracts::events::{HotkeyEvent, PipelinePhase, RecordingArtifact, RecordingEvent};
 use crate::contracts::status::{
     bounded_status_channel, SessionStatusReceiver, SessionStatusSender,
     SESSION_STATUS_QUEUE_CAPACITY,
@@ -167,7 +167,7 @@ struct Orchestrator {
     recovery_worker: Option<RecoveryWorker>,
     status_tx: SessionStatusSender,
     state: RecordingState,
-    pending_recording: Option<PathBuf>,
+    pending_recording: Option<RecordingArtifact>,
     settling: Option<(PipelinePhase, Instant)>,
     stop_in_flight: bool,
     post_stop_started_at: Option<Instant>,
@@ -259,7 +259,7 @@ impl Orchestrator {
 
         if let RecordedEvent::Worker(RecordingEvent::AudioStopped { artifact }) = &event {
             if matches!(self.state.phase, PipelinePhase::Stopping) {
-                self.pending_recording = Some(artifact.path.clone());
+                self.pending_recording = Some(artifact.clone());
             } else if matches!(self.state.phase, PipelinePhase::Recovering) {
                 cleanup_cancelled_recording_artifact(&artifact.path);
             }
@@ -638,7 +638,7 @@ impl Orchestrator {
     }
 
     async fn handle_run_processing(&mut self) -> Result<()> {
-        let Some(recording_path) = self.pending_recording.clone() else {
+        let Some(recording) = self.pending_recording.clone() else {
             let event = RecordingEvent::ProcessFailed {
                 code: RecordingErrorCode::Processing,
                 reason: "no recorded audio available".to_string(),
@@ -666,7 +666,7 @@ impl Orchestrator {
         if !processor_worker.request_run(
             audio_cfg,
             output_cfg,
-            recording_path,
+            recording,
             stt_provider,
             transform,
             history,
@@ -682,8 +682,8 @@ impl Orchestrator {
     }
 
     fn handle_cancel_processing(&mut self) {
-        if let Some(recording_path) = self.pending_recording.take() {
-            cleanup_cancelled_recording_artifact(&recording_path);
+        if let Some(recording) = self.pending_recording.take() {
+            cleanup_cancelled_recording_artifact(&recording.path);
         }
         self.cancel_stt_preconnect();
         let Some(processor_worker) = self.processor_worker.as_ref() else {

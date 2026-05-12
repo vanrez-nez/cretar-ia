@@ -1,8 +1,7 @@
 use crate::config::AudioCaptureConfig;
 use crate::contracts::audio_level::{AudioLevelSample, AudioLevelSender, AUDIO_SPECTRUM_BANDS};
 use crate::contracts::errors::RecordingErrorCode;
-use crate::contracts::events::RecordingArtifact;
-use crate::contracts::events::RecordingEvent;
+use crate::contracts::events::{RecordingArtifact, RecordingEvent, RecordingLevels};
 use crate::recording::command_bus::CommandBusTx;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -27,6 +26,8 @@ const AUDIO_SPECTRUM_FFT_SIZE: usize = 512;
 const AUDIO_SPECTRUM_MIN_HZ: f32 = 85.0;
 const AUDIO_SPECTRUM_MAX_HZ: f32 = 5_000.0;
 const AUDIO_SPECTRUM_VISUAL_GAIN: f32 = 24.0;
+const RECORDING_LEVEL_SCALE: f64 = 1_000_000.0;
+pub(crate) const RECORDING_LEVEL_WINDOW_MS: u64 = 100;
 
 pub(crate) fn available_input_device_names() -> Vec<String> {
     let host = cpal::default_host();
@@ -140,11 +141,6 @@ impl Recorder {
             "audio capture buffer limit: {checkpoint_samples} samples before persistence checkpoint"
         );
 
-        let state = Arc::new(Mutex::new(RecorderState::new(
-            spool_path.clone(),
-            checkpoint_samples,
-        )?));
-
         let requested = StreamConfig {
             sample_rate: SampleRate(if config.sample_rate == 0 {
                 supported.sample_rate().0
@@ -160,6 +156,12 @@ impl Recorder {
         };
         let requested_sample_rate = requested.sample_rate.0;
         let requested_channels = requested.channels;
+        let state = Arc::new(Mutex::new(RecorderState::new(
+            spool_path.clone(),
+            checkpoint_samples,
+            requested_sample_rate,
+            requested_channels,
+        )?));
 
         let fallback: StreamConfig = supported.clone().into();
         let stream_error_reported = Arc::new(AtomicBool::new(false));
@@ -212,6 +214,9 @@ impl Recorder {
             stream_cfg.sample_rate.0,
             stream_cfg.channels
         );
+        if let Ok(mut state) = state.lock() {
+            state.set_level_window(stream_cfg.sample_rate.0, stream_cfg.channels);
+        }
 
         stream.play().context("starting audio stream")?;
 
@@ -298,19 +303,22 @@ impl Recorder {
         let spool_cleanup_started_at = Instant::now();
         let spool_cleanup_success = std::fs::remove_file(&state.spool_path).is_ok();
         let spool_cleanup_ms = spool_cleanup_started_at.elapsed().as_millis();
+        let levels = state.levels();
 
         log::info!(
-            "recording completed: samples={} non_zero={} raw_peak={:.8} sample_rate={} channels={} checkpoints={}",
+            "recording completed: samples={} non_zero={} raw_peak={:.8} average_rms={:.8} max_window_rms={:.8} sample_rate={} channels={} checkpoints={}",
             state.sample_count,
             state.non_zero_samples,
             state.max_abs,
+            ppm_to_level(levels.average_rms_ppm),
+            ppm_to_level(levels.max_window_rms_ppm),
             self.sample_rate,
             self.channels,
             state.persistence_checkpoints
         );
 
         log::info!(
-            "profile.audio_finalize success=true total_stop_to_wav_ready_ms={} stream_drain_ms={} stream_pause_drop_ms={} callback_drained={} stream_present={} state_lock_ms={} flush_close_ms={} wav_write_ms={} spool_cleanup_ms={} spool_cleanup_success={} samples={} non_zero={} raw_peak={:.8} sample_rate={} channels={} checkpoints={} wav_bytes={} wav_path={}",
+            "profile.audio_finalize success=true total_stop_to_wav_ready_ms={} stream_drain_ms={} stream_pause_drop_ms={} callback_drained={} stream_present={} state_lock_ms={} flush_close_ms={} wav_write_ms={} spool_cleanup_ms={} spool_cleanup_success={} samples={} non_zero={} raw_peak={:.8} average_rms={:.8} max_window_rms={:.8} raw_peak_ppm={} average_rms_ppm={} max_window_rms_ppm={} sample_rate={} channels={} checkpoints={} wav_bytes={} wav_path={}",
             stop_started_at.elapsed().as_millis(),
             stream_profile.drain_ms,
             stream_profile.pause_drop_ms,
@@ -324,6 +332,11 @@ impl Recorder {
             state.sample_count,
             state.non_zero_samples,
             state.max_abs,
+            ppm_to_level(levels.average_rms_ppm),
+            ppm_to_level(levels.max_window_rms_ppm),
+            levels.raw_peak_ppm,
+            levels.average_rms_ppm,
+            levels.max_window_rms_ppm,
             self.sample_rate,
             self.channels,
             state.persistence_checkpoints,
@@ -334,6 +347,7 @@ impl Recorder {
         Ok(RecordingArtifact {
             path: self.out_path.clone(),
             duration_ms: recording_duration_ms(state.sample_count, self.sample_rate, self.channels),
+            levels,
         })
     }
 
@@ -424,6 +438,25 @@ fn recording_duration_ms(sample_count: usize, sample_rate: u32, channels: u16) -
     (sample_count as u64).saturating_mul(1_000) / frames_per_second
 }
 
+fn recording_level_window_samples(sample_rate: u32, channels: u16) -> usize {
+    let samples = u64::from(sample_rate)
+        .saturating_mul(u64::from(channels.max(1)))
+        .saturating_mul(RECORDING_LEVEL_WINDOW_MS)
+        / 1_000;
+    samples.max(1) as usize
+}
+
+fn level_to_ppm(level: f64) -> u32 {
+    if !level.is_finite() {
+        return 0;
+    }
+    (level.clamp(0.0, 1.0) * RECORDING_LEVEL_SCALE).round() as u32
+}
+
+fn ppm_to_level(ppm: u32) -> f64 {
+    f64::from(ppm) / RECORDING_LEVEL_SCALE
+}
+
 impl Drop for Recorder {
     fn drop(&mut self) {
         if self.stream.is_some() {
@@ -466,6 +499,11 @@ struct RecorderState {
     sample_count: usize,
     non_zero_samples: usize,
     max_abs: f32,
+    sum_squares: f64,
+    window_sample_target: usize,
+    window_sample_count: usize,
+    window_sum_squares: f64,
+    max_window_rms: f64,
     checkpoint_samples: usize,
     persistence_checkpoints: usize,
     spool_path: PathBuf,
@@ -474,7 +512,12 @@ struct RecorderState {
 }
 
 impl RecorderState {
-    fn new(spool_path: PathBuf, checkpoint_samples: usize) -> Result<Self> {
+    fn new(
+        spool_path: PathBuf,
+        checkpoint_samples: usize,
+        sample_rate: u32,
+        channels: u16,
+    ) -> Result<Self> {
         let spool = File::create(&spool_path)
             .with_context(|| format!("creating audio capture spool {:?}", spool_path))?;
         Ok(Self {
@@ -482,6 +525,11 @@ impl RecorderState {
             sample_count: 0,
             non_zero_samples: 0,
             max_abs: 0.0,
+            sum_squares: 0.0,
+            window_sample_target: recording_level_window_samples(sample_rate, channels),
+            window_sample_count: 0,
+            window_sum_squares: 0.0,
+            max_window_rms: 0.0,
             checkpoint_samples,
             persistence_checkpoints: 0,
             spool_path,
@@ -512,6 +560,30 @@ impl RecorderState {
             writer.flush()?;
         }
         Ok(())
+    }
+
+    fn set_level_window(&mut self, sample_rate: u32, channels: u16) {
+        self.window_sample_target = recording_level_window_samples(sample_rate, channels);
+    }
+
+    fn levels(&self) -> RecordingLevels {
+        let average_rms = if self.sample_count == 0 {
+            0.0
+        } else {
+            (self.sum_squares / self.sample_count as f64).sqrt()
+        };
+        let partial_window_rms = if self.window_sample_count == 0 {
+            0.0
+        } else {
+            (self.window_sum_squares / self.window_sample_count as f64).sqrt()
+        };
+
+        RecordingLevels {
+            raw_peak_ppm: level_to_ppm(f64::from(self.max_abs)),
+            average_rms_ppm: level_to_ppm(average_rms),
+            max_window_rms_ppm: level_to_ppm(self.max_window_rms.max(partial_window_rms)),
+            non_zero_samples: self.non_zero_samples as u64,
+        }
     }
 }
 
@@ -859,6 +931,16 @@ fn push_sample(state: &mut RecorderState, sample: f32) {
 
     state.buffer.push(sample);
     state.sample_count += 1;
+    let sample_square = f64::from(sample) * f64::from(sample);
+    state.sum_squares += sample_square;
+    state.window_sum_squares += sample_square;
+    state.window_sample_count += 1;
+    if state.window_sample_count >= state.window_sample_target {
+        let window_rms = (state.window_sum_squares / state.window_sample_count as f64).sqrt();
+        state.max_window_rms = state.max_window_rms.max(window_rms);
+        state.window_sum_squares = 0.0;
+        state.window_sample_count = 0;
+    }
     if sample.abs() > 1e-8 {
         state.non_zero_samples += 1;
         state.max_abs = state.max_abs.max(sample.abs());
@@ -1040,5 +1122,79 @@ fn report_audio_stream_error(
     };
     if event_tx.send_worker(event).is_some() {
         log::warn!("audio device unavailable event dropped because worker queue was full");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_stats_are_zero_for_silent_samples() -> anyhow::Result<()> {
+        let mut state = test_state()?;
+        for _ in 0..1_600 {
+            push_sample(&mut state, 0.0);
+        }
+
+        let levels = state.levels();
+        assert_eq!(levels.raw_peak_ppm, 0);
+        assert_eq!(levels.average_rms_ppm, 0);
+        assert_eq!(levels.max_window_rms_ppm, 0);
+        assert_eq!(levels.non_zero_samples, 0);
+        cleanup_state(state);
+        Ok(())
+    }
+
+    #[test]
+    fn level_stats_capture_peak_and_window_rms() -> anyhow::Result<()> {
+        let mut state = test_state()?;
+        for _ in 0..1_600 {
+            push_sample(&mut state, 0.02);
+        }
+
+        let levels = state.levels();
+        assert_eq!(levels.raw_peak_ppm, 20_000);
+        assert_eq!(levels.average_rms_ppm, 20_000);
+        assert_eq!(levels.max_window_rms_ppm, 20_000);
+        assert_eq!(levels.non_zero_samples, 1_600);
+        cleanup_state(state);
+        Ok(())
+    }
+
+    #[test]
+    fn level_stats_keep_loudest_window_with_surrounding_silence() -> anyhow::Result<()> {
+        let mut state = test_state()?;
+        for _ in 0..3_200 {
+            push_sample(&mut state, 0.0);
+        }
+        for _ in 0..1_600 {
+            push_sample(&mut state, 0.03);
+        }
+        for _ in 0..3_200 {
+            push_sample(&mut state, 0.0);
+        }
+
+        let levels = state.levels();
+        assert_eq!(levels.raw_peak_ppm, 30_000);
+        assert!(levels.average_rms_ppm < levels.max_window_rms_ppm);
+        assert_eq!(levels.max_window_rms_ppm, 30_000);
+        cleanup_state(state);
+        Ok(())
+    }
+
+    fn test_state() -> anyhow::Result<RecorderState> {
+        let path = std::env::temp_dir().join(format!(
+            "cretar-ia-audio-level-test-{}.raw-f32.tmp",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|v| v.as_nanos())
+                .unwrap_or(0)
+        ));
+        RecorderState::new(path, 4_096, 16_000, 1)
+    }
+
+    fn cleanup_state(mut state: RecorderState) {
+        let _ = state.close_spool();
+        let _ = std::fs::remove_file(state.spool_path);
     }
 }

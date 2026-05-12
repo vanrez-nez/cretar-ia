@@ -122,6 +122,16 @@ pub enum RecordingEvent {
 pub struct RecordingArtifact {
     pub path: PathBuf,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub levels: RecordingLevels,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingLevels {
+    pub raw_peak_ppm: u32,
+    pub average_rms_ppm: u32,
+    pub max_window_rms_ppm: u32,
+    pub non_zero_samples: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -36,6 +36,7 @@ fn placeholder_artifact() -> RecordingArtifact {
     RecordingArtifact {
         path: "placeholder.wav".into(),
         duration_ms: 0,
+        levels: Default::default(),
     }
 }
 
