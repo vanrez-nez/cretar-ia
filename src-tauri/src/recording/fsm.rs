@@ -220,7 +220,7 @@ fn transition_starting(
                 from: PipelinePhase::Starting,
                 to: PipelinePhase::Recovering,
                 why: "cancel_pressed",
-                command: Some(RecordingCommand::ForceStop),
+                command: Some(RecordingCommand::CancelRecording),
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::Released) if state.mode == PipelineMode::PushToTalk => {
@@ -326,7 +326,7 @@ fn transition_recording(
                 from: PipelinePhase::Recording,
                 to: PipelinePhase::Recovering,
                 why: "cancel_pressed",
-                command: Some(RecordingCommand::ForceStop),
+                command: Some(RecordingCommand::CancelRecording),
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::ModeUpdate(mode)) => {
@@ -449,7 +449,7 @@ fn transition_stopping(
                 from: PipelinePhase::Stopping,
                 to: PipelinePhase::Recovering,
                 why: "cancel_pressed",
-                command: Some(RecordingCommand::ForceStop),
+                command: Some(RecordingCommand::CancelRecording),
             }
         }
         RecordedEvent::Hotkey(HotkeyEvent::ModeUpdate(mode)) => {
@@ -518,6 +518,21 @@ fn transition_processing(
                 from: PipelinePhase::Processing,
                 to: PipelinePhase::Error,
                 why: "processing_failed",
+                command: None,
+            }
+        }
+        RecordedEvent::Worker(RecordingEvent::RecordingCancelled { .. }) => {
+            *next = state
+                .clone()
+                .next_seq()
+                .with_phase(PipelinePhase::Idle)
+                .with_recovery_hint(RecoveryHint::NoRecovery)
+                .with_reason(None)
+                .clear_stop_requested_after_start();
+            TransitionResult::StateChange {
+                from: PipelinePhase::Processing,
+                to: PipelinePhase::Idle,
+                why: "recording_cancelled",
                 command: None,
             }
         }
@@ -610,6 +625,21 @@ fn transition_recovering(
                 to: PipelinePhase::Error,
                 why: "recovery_failed",
                 command: Some(RecordingCommand::ForceStop),
+            }
+        }
+        RecordedEvent::Worker(RecordingEvent::RecordingCancelled { .. }) => {
+            *next = state
+                .clone()
+                .next_seq()
+                .with_phase(PipelinePhase::Idle)
+                .with_recovery_hint(RecoveryHint::NoRecovery)
+                .with_reason(None)
+                .clear_stop_requested_after_start();
+            TransitionResult::StateChange {
+                from: PipelinePhase::Recovering,
+                to: PipelinePhase::Idle,
+                why: "recording_cancelled",
+                command: None,
             }
         }
         RecordedEvent::Worker(RecordingEvent::QueueSaturated { source, dropped }) => {
@@ -758,6 +788,7 @@ fn recorded_event_name(event: &RecordedEvent) -> &'static str {
         RecordedEvent::Worker(RecordingEvent::ProcessStarted) => "process_started",
         RecordedEvent::Worker(RecordingEvent::ProcessCompleted) => "process_completed",
         RecordedEvent::Worker(RecordingEvent::ProcessFailed { .. }) => "process_failed",
+        RecordedEvent::Worker(RecordingEvent::RecordingCancelled { .. }) => "recording_cancelled",
         RecordedEvent::Worker(RecordingEvent::TransformFailed { .. }) => "transform_failed",
         RecordedEvent::Worker(RecordingEvent::QueueSaturated { .. }) => "queue_saturated",
         RecordedEvent::Worker(RecordingEvent::TimeoutExpired) => "timeout_expired",

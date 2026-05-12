@@ -215,6 +215,12 @@ impl Orchestrator {
             RecordedEvent::Worker(
                 RecordingEvent::AudioStopped { .. } | RecordingEvent::AudioStopFailed { .. }
             )
+        ) || matches!(
+            (&self.state.phase, &event),
+            (
+                PipelinePhase::Recovering,
+                RecordedEvent::Worker(RecordingEvent::RecordingCancelled { .. })
+            )
         );
         let should_resume_after_process_outcome = matches!(
             &event,
@@ -224,6 +230,7 @@ impl Orchestrator {
                     | RecordingEvent::AudioDeviceUnavailable { .. }
                     | RecordingEvent::ProcessFailed { .. }
                     | RecordingEvent::RecoveryFailed { .. }
+                    | RecordingEvent::RecordingCancelled { .. }
             )
         );
         let audio_stopped_to_processing_started_at =
@@ -253,6 +260,8 @@ impl Orchestrator {
         if let RecordedEvent::Worker(RecordingEvent::AudioStopped { artifact }) = &event {
             if matches!(self.state.phase, PipelinePhase::Stopping) {
                 self.pending_recording = Some(artifact.path.clone());
+            } else if matches!(self.state.phase, PipelinePhase::Recovering) {
+                cleanup_cancelled_recording_artifact(&artifact.path);
             }
             if let Some(started_at) = self.post_stop_started_at.take() {
                 log::info!(
@@ -319,6 +328,9 @@ impl Orchestrator {
             }
             RecordingCommand::StopRecording => {
                 self.handle_stop().await?;
+            }
+            RecordingCommand::CancelRecording => {
+                self.handle_cancel_recording().await?;
             }
             RecordingCommand::RunProcessing => {
                 self.handle_run_processing().await?;
@@ -598,6 +610,33 @@ impl Orchestrator {
         Ok(())
     }
 
+    async fn handle_cancel_recording(&mut self) -> Result<()> {
+        self.cancel_stt_preconnect();
+        self.pending_recording = None;
+        let Some(audio_worker) = self.audio_worker.as_ref() else {
+            let event = RecordingEvent::RecordingCancelled {
+                reason: "cancel_recording_after_shutdown".to_string(),
+            };
+            if self.tx.send_worker(event.clone()).is_some() {
+                self.publish_queue_event(&event);
+            }
+            return Ok(());
+        };
+
+        if !audio_worker.request_cancel() {
+            let event = RecordingEvent::RecoveryFailed {
+                code: RecordingErrorCode::AudioStop,
+                reason: "failed to cancel recording".to_string(),
+            };
+            if self.tx.send_worker(event.clone()).is_some() {
+                self.publish_queue_event(&event);
+            }
+        } else {
+            self.stop_in_flight = true;
+        }
+        Ok(())
+    }
+
     async fn handle_run_processing(&mut self) -> Result<()> {
         let Some(recording_path) = self.pending_recording.clone() else {
             let event = RecordingEvent::ProcessFailed {
@@ -643,9 +682,17 @@ impl Orchestrator {
     }
 
     fn handle_cancel_processing(&mut self) {
-        self.pending_recording = None;
+        if let Some(recording_path) = self.pending_recording.take() {
+            cleanup_cancelled_recording_artifact(&recording_path);
+        }
         self.cancel_stt_preconnect();
         let Some(processor_worker) = self.processor_worker.as_ref() else {
+            let event = RecordingEvent::RecordingCancelled {
+                reason: "cancel_processing_after_shutdown".to_string(),
+            };
+            if self.tx.send_worker(event.clone()).is_some() {
+                self.publish_queue_event(&event);
+            }
             return;
         };
 
@@ -660,18 +707,11 @@ impl Orchestrator {
             return;
         }
 
-        let Some(recovery_worker) = self.recovery_worker.as_ref() else {
-            return;
+        let event = RecordingEvent::RecordingCancelled {
+            reason: "cancel_processing".to_string(),
         };
-
-        if !recovery_worker.request_recovery() {
-            let event = RecordingEvent::RecoveryFailed {
-                code: RecordingErrorCode::Unknown,
-                reason: "failed to start recovery".to_string(),
-            };
-            if self.tx.send_worker(event.clone()).is_some() {
-                self.publish_queue_event(&event);
-            }
+        if self.tx.send_worker(event.clone()).is_some() {
+            self.publish_queue_event(&event);
         }
     }
 
@@ -851,4 +891,18 @@ fn is_audio_device_unavailable_reason(reason: &str) -> bool {
         || reason.contains("no default input device found")
         || reason.contains("device is no longer available")
         || reason.contains("audio stream error")
+}
+
+fn cleanup_cancelled_recording_artifact(path: &PathBuf) {
+    if !path.exists() {
+        log::trace!("cancelled recording artifact already removed: {:?}", path);
+    } else if let Err(err) = std::fs::remove_file(path) {
+        log::warn!(
+            "failed to cleanup cancelled recording artifact {:?}: {:?}",
+            path,
+            err
+        );
+    } else {
+        log::debug!("removed cancelled recording artifact {:?}", path);
+    }
 }

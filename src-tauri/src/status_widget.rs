@@ -274,6 +274,9 @@ pub fn set_status_widget_hovered(
 impl<'a> From<&'a SessionStatus> for StatusWidgetPayload<'a> {
     fn from(status: &'a SessionStatus) -> Self {
         let (label, state, expanded) = match status.state {
+            PipelinePhase::Idle if status.source == "recording_cancelled" => {
+                ("Cancelled", "cancelled", false)
+            }
             PipelinePhase::Idle => ("Idle", "idle", false),
             PipelinePhase::Starting | PipelinePhase::Recording => ("Recording", "recording", true),
             PipelinePhase::Stopping | PipelinePhase::Processing => {
@@ -293,5 +296,48 @@ impl<'a> From<&'a SessionStatus> for StatusWidgetPayload<'a> {
             mic_active: matches!(status.state, PipelinePhase::Recording),
             error: status.error_code.map(|code| code.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::events::{PipelineMode, PipelinePhase};
+    use crate::contracts::status::SessionStatus;
+
+    #[test]
+    fn recording_cancelled_idle_status_maps_to_cancelled_widget_state() {
+        let status = SessionStatus::with_defaults(
+            PipelinePhase::Idle,
+            PipelineMode::PushToTalk,
+            7,
+            11,
+            "recording_cancelled".to_string(),
+        );
+
+        let payload = StatusWidgetPayload::from(&status);
+
+        assert_eq!(payload.label, "Cancelled");
+        assert_eq!(payload.state, "cancelled");
+        assert!(!payload.expanded);
+        assert!(!payload.mic_active);
+        assert_eq!(payload.source, "recording_cancelled");
+    }
+
+    #[test]
+    fn processing_completed_idle_status_keeps_idle_widget_state() {
+        let status = SessionStatus::with_defaults(
+            PipelinePhase::Idle,
+            PipelineMode::PushToTalk,
+            7,
+            12,
+            "processing_completed".to_string(),
+        );
+
+        let payload = StatusWidgetPayload::from(&status);
+
+        assert_eq!(payload.label, "Idle");
+        assert_eq!(payload.state, "idle");
+        assert!(!payload.expanded);
     }
 }

@@ -137,6 +137,7 @@ pub fn runtime_config_from_settings(settings: &Value) -> Result<AppConfig> {
             enabled: setting(settings, "recording.sounds.enabled")?,
             start_sound: setting(settings, "recording.sounds.start")?,
             stop_sound: setting(settings, "recording.sounds.stop")?,
+            cancel_sound: setting(settings, "recording.sounds.cancel")?,
             error_sound: setting(settings, "recording.sounds.error")?,
             volume: setting(settings, "recording.sounds.volume")?,
         },

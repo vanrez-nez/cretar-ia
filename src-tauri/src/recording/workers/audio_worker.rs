@@ -19,6 +19,7 @@ enum AudioWorkerCommand {
         record_base: PathBuf,
     },
     Stop,
+    Cancel,
     ForceStop,
     Shutdown {
         ack: oneshot::Sender<()>,
@@ -31,6 +32,10 @@ pub struct AudioWorkerHandle {
 }
 
 impl AudioWorkerHandle {
+    pub fn request_cancel(&self) -> bool {
+        self.command_tx.send(AudioWorkerCommand::Cancel).is_ok()
+    }
+
     pub fn request_force_stop(&self) -> bool {
         self.command_tx.send(AudioWorkerCommand::ForceStop).is_ok()
     }
@@ -79,6 +84,10 @@ impl AudioWorker {
 
     pub fn request_stop(&self) -> bool {
         self.command_tx.send(AudioWorkerCommand::Stop).is_ok()
+    }
+
+    pub fn request_cancel(&self) -> bool {
+        self.command_tx.send(AudioWorkerCommand::Cancel).is_ok()
     }
 
     pub fn request_force_stop(&self) -> bool {
@@ -154,6 +163,11 @@ async fn worker_loop(
                 active_recorder = stop_active_recorder(active_recorder.take(), tx.clone());
             }
 
+            AudioWorkerCommand::Cancel => {
+                active_recorder =
+                    cancel_active_recorder(active_recorder.take(), tx.clone(), "cancel_recording");
+            }
+
             AudioWorkerCommand::ForceStop => {
                 active_recorder = stop_active_recorder(active_recorder.take(), tx.clone());
             }
@@ -165,6 +179,26 @@ async fn worker_loop(
             }
         }
     }
+}
+
+fn cancel_active_recorder(
+    recorder: Option<Recorder>,
+    tx: CommandBusTx,
+    reason: &'static str,
+) -> Option<Recorder> {
+    if let Some(recorder) = recorder {
+        recorder.cancel();
+    }
+
+    if tx
+        .send_worker(RecordingEvent::RecordingCancelled {
+            reason: reason.to_string(),
+        })
+        .is_some()
+    {
+        log::warn!("recording cancelled event dropped because worker queue was full");
+    }
+    None
 }
 
 fn is_audio_device_unavailable_error(reason: &str) -> bool {

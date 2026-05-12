@@ -1,5 +1,5 @@
 use crate::contracts::commands::RecordingCommand;
-use crate::contracts::errors::RecordingErrorCode;
+use crate::contracts::errors::{RecordingErrorCode, RecoveryHint};
 use crate::contracts::events::{
     HotkeyEvent, PipelineMode, PipelinePhase, RecordingArtifact, RecordingEvent,
 };
@@ -287,6 +287,45 @@ fn processing_failed_enters_error_without_cancel_command() {
 }
 
 #[test]
+fn recording_cancelled_returns_to_idle_without_error() {
+    let state = RecordingState::new(PipelineMode::PushToTalk, 0);
+    let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::Pressed));
+    let recording = transition(
+        &starting.next,
+        RecordedEvent::Worker(RecordingEvent::AudioStarted),
+    );
+    let stopping = transition(
+        &recording.next,
+        RecordedEvent::Hotkey(HotkeyEvent::Released),
+    );
+    let processing = transition(
+        &stopping.next,
+        RecordedEvent::Worker(RecordingEvent::AudioStopped {
+            artifact: test_artifact("test.wav"),
+        }),
+    );
+    let cancelled = transition(
+        &processing.next,
+        RecordedEvent::Worker(RecordingEvent::RecordingCancelled {
+            reason: "recording_too_short".to_string(),
+        }),
+    );
+
+    assert_eq!(
+        cancelled.result,
+        TransitionResult::StateChange {
+            from: PipelinePhase::Processing,
+            to: PipelinePhase::Idle,
+            why: "recording_cancelled",
+            command: None,
+        }
+    );
+    assert_eq!(cancelled.next.phase, PipelinePhase::Idle);
+    assert_eq!(cancelled.next.recovery_hint, RecoveryHint::NoRecovery);
+    assert_eq!(cancelled.next.last_reason, None);
+}
+
+#[test]
 fn toggle_mode_release_never_stops_recording() {
     let state = RecordingState::new(PipelineMode::Toggle, 0);
     let starting = transition(&state, RecordedEvent::Hotkey(HotkeyEvent::TogglePressed));
@@ -331,7 +370,7 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
             from: PipelinePhase::Starting,
             to: PipelinePhase::Recovering,
             why: "cancel_pressed",
-            command: Some(RecordingCommand::ForceStop),
+            command: Some(RecordingCommand::CancelRecording),
         }
     );
 
@@ -349,7 +388,7 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
             from: PipelinePhase::Recording,
             to: PipelinePhase::Recovering,
             why: "cancel_pressed",
-            command: Some(RecordingCommand::ForceStop),
+            command: Some(RecordingCommand::CancelRecording),
         }
     );
 
@@ -367,7 +406,7 @@ fn cancel_pressed_moves_non_idle_states_to_recovering() {
             from: PipelinePhase::Stopping,
             to: PipelinePhase::Recovering,
             why: "cancel_pressed",
-            command: Some(RecordingCommand::ForceStop),
+            command: Some(RecordingCommand::CancelRecording),
         }
     );
 

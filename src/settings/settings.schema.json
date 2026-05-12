@@ -19,6 +19,7 @@
     "recording.sounds.enabled",
     "recording.sounds.start",
     "recording.sounds.stop",
+    "recording.sounds.cancel",
     "recording.sounds.error",
     "recording.sounds.volume",
     "recording.pause_media",
@@ -159,6 +160,17 @@
       "x-ui": {
         "section": "recording",
         "label": "recording.soundEnd.title"
+      }
+    },
+    "recording.sounds.cancel": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": "sounds/cancel.wav",
+      "x-ui": {
+        "section": "recording",
+        "label": "recording.soundCancel.title"
       }
     },
     "recording.sounds.error": {

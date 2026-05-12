@@ -4,7 +4,7 @@ import { cursorPosition } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type StatusWidgetState = "idle" | "recording" | "transcribing" | "recovering" | "error";
+type StatusWidgetState = "idle" | "cancelled" | "recording" | "transcribing" | "recovering" | "error";
 
 type StatusWidgetPayload = {
   label: string;
@@ -272,7 +272,12 @@ export default function StatusWidgetApp() {
 
   const expanded = hovered || status.expanded;
   const showWaveform = status.mic_active;
-  const showLoader = expanded && !showWaveform && status.state !== "idle" && status.state !== "error";
+  const showLoader =
+    expanded &&
+    !showWaveform &&
+    status.state !== "idle" &&
+    status.state !== "cancelled" &&
+    status.state !== "error";
   const showDot = expanded && !showWaveform && !showLoader;
   const visualStateClass = showWaveform
     ? "status-widget--waveform"

@@ -6,6 +6,7 @@ use std::fmt;
 pub enum RecordingCommand {
     StartRecording,
     StopRecording,
+    CancelRecording,
     ForceStop,
     RunProcessing,
     CancelProcessing,
@@ -17,6 +18,7 @@ impl fmt::Display for RecordingCommand {
         let text = match self {
             Self::StartRecording => "start_recording",
             Self::StopRecording => "stop_recording",
+            Self::CancelRecording => "cancel_recording",
             Self::ForceStop => "force_stop",
             Self::RunProcessing => "run_processing",
             Self::CancelProcessing => "cancel_processing",

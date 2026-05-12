@@ -110,7 +110,7 @@ type SoundOption = {
   file: string;
 };
 
-type SoundSlot = "start" | "stop" | "error";
+type SoundSlot = "start" | "stop" | "cancel" | "error";
 
 const IDLE_HISTORY_EXPORT: HistoryExportState = {
   exportId: null,
@@ -1221,6 +1221,19 @@ function RecordingPane({
               disabled={disabled}
               previewingSoundKey={previewingSoundKey}
               onChange={(value) => updateDraft("recording.sounds.stop", value)}
+              onPreview={previewSound}
+            />
+          </SettingRow>
+
+          <SettingRow title={t("recording.soundCancel.title")} description={t("recording.soundCancel.description")}>
+            <SoundControl
+              settingKey="recording.sounds.cancel"
+              slot="cancel"
+              value={draft["recording.sounds.cancel"] as string | null}
+              options={soundOptions}
+              disabled={disabled}
+              previewingSoundKey={previewingSoundKey}
+              onChange={(value) => updateDraft("recording.sounds.cancel", value)}
               onPreview={previewSound}
             />
           </SettingRow>

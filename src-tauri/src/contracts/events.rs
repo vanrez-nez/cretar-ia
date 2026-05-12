@@ -100,6 +100,9 @@ pub enum RecordingEvent {
         code: RecordingErrorCode,
         reason: String,
     },
+    RecordingCancelled {
+        reason: String,
+    },
     TransformFailed {
         reason: String,
     },
@@ -209,6 +212,9 @@ impl fmt::Display for RecordingEvent {
             Self::ProcessCompleted => "recording.process_completed",
             Self::ProcessFailed { code, reason } => {
                 return write!(f, "recording.process_failed:{code}:{reason}");
+            }
+            Self::RecordingCancelled { reason } => {
+                return write!(f, "recording.cancelled:{reason}");
             }
             Self::TransformFailed { reason } => {
                 return write!(f, "recording.transform_failed:{reason}");

@@ -22,6 +22,8 @@ pub fn render_status_for_host(cfg: &TrayConfig, status: &SessionStatus) -> Statu
         PipelinePhase::Idle => {
             if status.source == "processing_completed" {
                 cfg.tooltip.success.clone()
+            } else if status.source == "recording_cancelled" {
+                cfg.tooltip.idle.clone()
             } else if !status.source.is_empty() && status.error_code.is_none() {
                 status.source.clone()
             } else {

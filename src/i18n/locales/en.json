@@ -122,15 +122,19 @@
     },
     "soundStart": {
       "title": "Sound Record Start",
-      "description": "Enable or disable the configured start cue."
+      "description": "The sound you hear when recording starts."
     },
     "soundEnd": {
       "title": "Sound Record End",
-      "description": "Enable or disable the configured stop cue."
+      "description": "The sound you hear when recording stops and transcription begins."
+    },
+    "soundCancel": {
+      "title": "Sound Record Cancel",
+      "description": "The sound you hear when a recording is cancelled."
     },
     "soundError": {
       "title": "Sound Record Error",
-      "description": "Enable or disable the configured error cue."
+      "description": "The sound you hear when recording or transcription fails."
     },
     "pauseMedia": {
       "title": "Pause media during recording",

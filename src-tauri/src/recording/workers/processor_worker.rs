@@ -141,8 +141,7 @@ impl ProcessorWorker {
 }
 
 async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, tx: CommandBusTx) {
-    let (result_tx, mut result_rx) =
-        mpsc::unbounded_channel::<Result<(), (RecordingErrorCode, String)>>();
+    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<ProcessorWorkOutcome>();
     let mut processing_task: Option<JoinHandle<()>> = None;
 
     loop {
@@ -185,8 +184,8 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
                                     history,
                                 )
                                 .await;
-                            let success = result.is_ok();
-                            if let Err((code, reason)) = &result {
+                            let success = matches!(result, ProcessorWorkOutcome::Completed);
+                            if let ProcessorWorkOutcome::Failed { code, reason } = &result {
                                 log::warn!(
                                     "processing task failed in {:?}: code={} reason={}",
                                     start.elapsed(),
@@ -219,8 +218,11 @@ async fn worker_loop(mut command_rx: UnboundedReceiver<ProcessorWorkerCommand>, 
             Some(result) = result_rx.recv() => {
                 processing_task = None;
                 let outcome = match result {
-                    Ok(()) => RecordingEvent::ProcessCompleted,
-                    Err((code, reason)) => {
+                    ProcessorWorkOutcome::Completed => RecordingEvent::ProcessCompleted,
+                    ProcessorWorkOutcome::Cancelled { reason } => {
+                        RecordingEvent::RecordingCancelled { reason }
+                    }
+                    ProcessorWorkOutcome::Failed { code, reason } => {
                         log::warn!("processing outcome failed: code={} reason={}", code, reason);
                         RecordingEvent::ProcessFailed { code, reason }
                     }
@@ -244,73 +246,74 @@ async fn process_recording_work(
     stt_provider: Option<DynSpeechToTextProvider>,
     transform: TransformRuntime,
     history: Option<HistoryStore>,
-) -> Result<(), (RecordingErrorCode, String)> {
+) -> ProcessorWorkOutcome {
     if wav_file.as_os_str().is_empty() {
-        return Err((
-            RecordingErrorCode::Processing,
-            "missing recording path".to_string(),
-        ));
+        return ProcessorWorkOutcome::Failed {
+            code: RecordingErrorCode::Processing,
+            reason: "missing recording path".to_string(),
+        };
     }
     let audio_duration_ms = wav_duration_ms(&wav_file).unwrap_or(0);
 
-    let mut record = ProcessRecord::empty();
-    let result = if audio_duration_ms <= MIN_TRANSCRIPTION_AUDIO_DURATION_MS {
+    if audio_duration_ms <= MIN_TRANSCRIPTION_AUDIO_DURATION_MS {
         log::warn!(
             "recording too short for transcription: duration_ms={} min_duration_ms={}",
             audio_duration_ms,
             MIN_TRANSCRIPTION_AUDIO_DURATION_MS
         );
-        let reason = friendly_recording_too_short_error();
-        record.error_message = Some(reason.clone());
-        Err((RecordingErrorCode::Processing, reason))
-    } else {
-        match run_transcript_step(stt_provider, &wav_file, output_cfg.processing_timeout_ms).await {
-            Ok(transcript_text) => {
-                record.transcript_text = Some(transcript_text.clone());
-                let mut output_text = transcript_text.clone();
+        cleanup_audio_artifact(&wav_file);
+        return ProcessorWorkOutcome::Cancelled {
+            reason: "recording_too_short".to_string(),
+        };
+    }
 
-                match run_transform_step(
-                    &transcript_text,
-                    transform,
-                    output_cfg.processing_timeout_ms,
-                )
-                .await
-                {
-                    TransformAttempt::Skipped => {}
-                    TransformAttempt::Succeeded(text) => {
-                        output_text = text.clone();
-                        record.transform_text = Some(text);
-                    }
-                    TransformAttempt::Failed { friendly_message } => {
-                        record.error_message = Some(friendly_message);
-                    }
+    let mut record = ProcessRecord::empty();
+    let result: Result<(), (RecordingErrorCode, String)> = match run_transcript_step(
+        stt_provider,
+        &wav_file,
+        output_cfg.processing_timeout_ms,
+    )
+    .await
+    {
+        Ok(transcript_text) => {
+            record.transcript_text = Some(transcript_text.clone());
+            let mut output_text = transcript_text.clone();
+
+            match run_transform_step(
+                &transcript_text,
+                transform,
+                output_cfg.processing_timeout_ms,
+            )
+            .await
+            {
+                TransformAttempt::Skipped => {}
+                TransformAttempt::Succeeded(text) => {
+                    output_text = text.clone();
+                    record.transform_text = Some(text);
                 }
-
-                match inject::deliver_text(&audio_cfg, &output_cfg, &output_text).await {
-                    Ok(_) => Ok(()),
-                    Err(err) => {
-                        log::warn!("processing inject failed: {err:?}");
-                        let reason = friendly_inject_error();
-                        record.error_message = Some(reason.clone());
-                        Err((RecordingErrorCode::Processing, reason))
-                    }
+                TransformAttempt::Failed { friendly_message } => {
+                    record.error_message = Some(friendly_message);
                 }
             }
-            Err((code, reason)) => {
-                record.error_message = Some(reason.clone());
-                Err((code, reason))
+
+            match inject::deliver_text(&audio_cfg, &output_cfg, &output_text).await {
+                Ok(_) => Ok(()),
+                Err(err) => {
+                    log::warn!("processing inject failed: {err:?}");
+                    let reason = friendly_inject_error();
+                    record.error_message = Some(reason.clone());
+                    Err((RecordingErrorCode::Processing, reason))
+                }
             }
+        }
+        Err((code, reason)) => {
+            record.error_message = Some(reason.clone());
+            Err((code, reason))
         }
     };
 
     if output_cfg.cleanup_recording_after_processing {
-        if !wav_file.exists() {
-            log::trace!("audio artifact already removed: {:?}", wav_file);
-        } else if let Err(err) = std::fs::remove_file(&wav_file) {
-            log::warn!("failed to cleanup audio artifact {:?}: {:?}", wav_file, err);
-        } else {
-            log::debug!("removed audio artifact {:?}", wav_file);
-        }
+        cleanup_audio_artifact(&wav_file);
     } else if wav_file.exists() {
         log::trace!("audio artifact retained by policy: {:?}", wav_file);
     }
@@ -330,9 +333,32 @@ async fn process_recording_work(
         }
     }
 
-    let result = result.map(|_| ());
+    match result {
+        Ok(()) => ProcessorWorkOutcome::Completed,
+        Err((code, reason)) => ProcessorWorkOutcome::Failed { code, reason },
+    }
+}
 
-    result
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProcessorWorkOutcome {
+    Completed,
+    Cancelled {
+        reason: String,
+    },
+    Failed {
+        code: RecordingErrorCode,
+        reason: String,
+    },
+}
+
+fn cleanup_audio_artifact(wav_file: &PathBuf) {
+    if !wav_file.exists() {
+        log::trace!("audio artifact already removed: {:?}", wav_file);
+    } else if let Err(err) = std::fs::remove_file(wav_file) {
+        log::warn!("failed to cleanup audio artifact {:?}: {:?}", wav_file, err);
+    } else {
+        log::debug!("removed audio artifact {:?}", wav_file);
+    }
 }
 
 #[derive(Default)]
@@ -528,10 +554,6 @@ fn friendly_transcription_error() -> String {
     "Transcription failed. Check your selected transcript model and provider settings.".to_string()
 }
 
-fn friendly_recording_too_short_error() -> String {
-    "Recording is too short. Hold the hotkey for more than 1 second and try again.".to_string()
-}
-
 fn friendly_inject_error() -> String {
     "The text was created but could not be pasted automatically.".to_string()
 }
@@ -546,4 +568,101 @@ fn friendly_transform_timeout_error() -> String {
 
 fn friendly_transform_error() -> String {
     "Transform failed, so the original transcript was used.".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OutputConfig;
+    use hound::{SampleFormat, WavSpec, WavWriter};
+    use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
+    use std::fs;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn short_recordings_do_not_write_history_or_retain_audio() -> anyhow::Result<()> {
+        let pool = history_pool().await?;
+        let history = HistoryStore::new(pool.clone());
+        let test_dir =
+            std::env::temp_dir().join(format!("cretar-ia-short-recording-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&test_dir)?;
+        let wav_file = test_dir.join("short.wav");
+        write_test_wav(&wav_file, 500)?;
+
+        let result = process_recording_work(
+            AudioCaptureConfig::default(),
+            OutputConfig {
+                cleanup_recording_after_processing: false,
+                ..OutputConfig::default()
+            },
+            wav_file.clone(),
+            None,
+            TransformRuntime::disabled(),
+            Some(history),
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            ProcessorWorkOutcome::Cancelled {
+                reason: "recording_too_short".to_string(),
+            }
+        );
+
+        assert_eq!(history_row_count(&pool).await?, 0);
+        assert!(
+            !wav_file.exists(),
+            "short recording artifact should be removed even when retention is enabled"
+        );
+
+        fs::remove_dir_all(&test_dir)?;
+        Ok(())
+    }
+
+    async fn history_pool() -> anyhow::Result<SqlitePool> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::query(
+            "CREATE TABLE history (
+                id TEXT PRIMARY KEY,
+                audio_file_path TEXT,
+                audio_duration_ms INTEGER NOT NULL DEFAULT 0,
+                transcript_text TEXT,
+                transform_text TEXT,
+                error_message TEXT,
+                word_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+        Ok(pool)
+    }
+
+    async fn history_row_count(pool: &SqlitePool) -> anyhow::Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) AS count FROM history")
+            .fetch_one(pool)
+            .await?;
+        Ok(row.try_get("count")?)
+    }
+
+    fn write_test_wav(path: &PathBuf, duration_ms: u64) -> anyhow::Result<()> {
+        let sample_rate = 16_000;
+        let sample_count = sample_rate as u64 * duration_ms / 1_000;
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(path, spec)?;
+        for _ in 0..sample_count {
+            writer.write_sample::<i16>(0)?;
+        }
+        writer.finalize()?;
+        Ok(())
+    }
 }

@@ -45,6 +45,7 @@ export function settingFingerprint(settings: SettingsRecord): Record<string, Set
     "models.formatting.enabled": settings["models.formatting.enabled"],
     "recording.sounds.start": settings["recording.sounds.start"],
     "recording.sounds.stop": settings["recording.sounds.stop"],
+    "recording.sounds.cancel": settings["recording.sounds.cancel"],
     "recording.sounds.error": settings["recording.sounds.error"],
   };
 }

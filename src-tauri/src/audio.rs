@@ -337,6 +337,39 @@ impl Recorder {
         })
     }
 
+    pub fn cancel(mut self) {
+        let cancel_started_at = Instant::now();
+        let stream_profile = self.stop_audio_stream();
+        let mut sample_count = 0usize;
+        let mut spool_cleanup_success = false;
+
+        match self.state.lock() {
+            Ok(mut state) => {
+                sample_count = state.sample_count;
+                let _ = state.close_spool();
+                spool_cleanup_success = std::fs::remove_file(&state.spool_path).is_ok();
+            }
+            Err(err) => {
+                log::warn!("audio sample lock error while cancelling recording: {err}");
+            }
+        }
+
+        if self.out_path.exists() {
+            let _ = std::fs::remove_file(&self.out_path);
+        }
+
+        log::info!(
+            "recording cancelled: samples={} stream_drain_ms={} stream_pause_drop_ms={} callback_drained={} stream_present={} spool_cleanup_success={} elapsed_ms={}",
+            sample_count,
+            stream_profile.drain_ms,
+            stream_profile.pause_drop_ms,
+            stream_profile.callback_drained,
+            stream_profile.stream_present,
+            spool_cleanup_success,
+            cancel_started_at.elapsed().as_millis()
+        );
+    }
+
     fn stop_audio_stream(&mut self) -> AudioStreamStopProfile {
         self.stop_requested.store(true, Ordering::SeqCst);
 

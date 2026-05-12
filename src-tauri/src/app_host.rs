@@ -17,12 +17,15 @@ use crate::status_widget::StatusWidget;
 use crate::tray::{self, AppTray};
 use anyhow::{anyhow, Result};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_log::{Target, TargetKind};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 const SETTINGS_WINDOW_LABEL: &str = "settings";
+const CANCEL_SHORTCUT_RAW: &str = "Esc";
+const DOUBLE_ESC_CANCEL_WINDOW: Duration = Duration::from_millis(600);
 
 #[cfg(target_os = "macos")]
 pub fn show_dock_icon(app: &AppHandle) {
@@ -47,6 +50,41 @@ struct AppRuntime {
     status_task: tauri::async_runtime::JoinHandle<()>,
     orchestrator: tokio::task::JoinHandle<Result<()>>,
     shortcut: Option<Shortcut>,
+    cancel_shortcut: CancelShortcutHandle,
+}
+
+#[derive(Clone)]
+struct CancelShortcutHandle {
+    inner: Arc<Mutex<CancelShortcutState>>,
+}
+
+#[derive(Debug)]
+struct CancelShortcutState {
+    shortcut: Option<Shortcut>,
+    active: bool,
+    last_pressed_at: Option<Instant>,
+}
+
+impl CancelShortcutHandle {
+    fn disabled() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(CancelShortcutState {
+                shortcut: None,
+                active: false,
+                last_pressed_at: None,
+            })),
+        }
+    }
+
+    fn new(shortcut: Option<Shortcut>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(CancelShortcutState {
+                shortcut,
+                active: false,
+                last_pressed_at: None,
+            })),
+        }
+    }
 }
 
 impl AppRuntimeState {
@@ -493,15 +531,18 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
             transform,
             history,
         );
+    let shortcut = register_shortcut(app, &cfg)?;
+    let cancel_shortcut = cancel_shortcut_handle(shortcut.as_ref());
     let status_task = spawn_status_task(
+        app.clone(),
         status_rx,
         audio_level_rx,
         tray,
         status_widget,
         cue,
         cfg.clone(),
+        cancel_shortcut.clone(),
     );
-    let shortcut = register_shortcut(app, &cfg)?;
 
     let runtime = AppRuntime {
         cfg,
@@ -509,6 +550,7 @@ async fn start_runtime(app: &AppHandle, cfg: AppConfig) -> Result<()> {
         status_task,
         orchestrator,
         shortcut,
+        cancel_shortcut,
     };
 
     if let Ok(mut guard) = runtime_state.lock() {
@@ -528,6 +570,7 @@ fn stop_runtime(app: &AppHandle) {
                 log::warn!("failed to unregister shortcut: {err}");
             }
         }
+        set_cancel_shortcut_active(app, &runtime.cancel_shortcut, false);
         let _ = runtime.bus_tx.send_command(RecordingCommand::Shutdown);
         runtime.status_task.abort();
         runtime.orchestrator.abort();
@@ -561,6 +604,110 @@ fn register_shortcut(app: &AppHandle, cfg: &AppConfig) -> Result<Option<Shortcut
     Ok(Some(shortcut))
 }
 
+fn cancel_shortcut_handle(primary_shortcut: Option<&Shortcut>) -> CancelShortcutHandle {
+    let shortcut = match CANCEL_SHORTCUT_RAW.parse::<Shortcut>() {
+        Ok(shortcut) => shortcut,
+        Err(err) => {
+            log::warn!("failed to parse cancel shortcut '{CANCEL_SHORTCUT_RAW}': {err}");
+            return CancelShortcutHandle::disabled();
+        }
+    };
+
+    if primary_shortcut == Some(&shortcut) {
+        log::warn!(
+            "double-Esc cancel shortcut disabled because it matches the configured recording shortcut"
+        );
+        return CancelShortcutHandle::disabled();
+    }
+
+    CancelShortcutHandle::new(Some(shortcut))
+}
+
+fn set_cancel_shortcut_active(
+    app: &AppHandle,
+    cancel_shortcut: &CancelShortcutHandle,
+    active: bool,
+) {
+    let shortcut = {
+        let Ok(mut state) = cancel_shortcut.inner.lock() else {
+            log::warn!("cancel shortcut state unavailable");
+            return;
+        };
+        if state.active == active {
+            return;
+        }
+        let Some(shortcut) = state.shortcut.clone() else {
+            return;
+        };
+        state.last_pressed_at = None;
+        shortcut
+    };
+
+    let result = if active {
+        app.global_shortcut().register(shortcut)
+    } else {
+        app.global_shortcut().unregister(shortcut)
+    };
+
+    match result {
+        Ok(()) => {
+            if let Ok(mut state) = cancel_shortcut.inner.lock() {
+                state.active = active;
+                state.last_pressed_at = None;
+            }
+            log::debug!("double-Esc cancel shortcut active={active}");
+        }
+        Err(err) => {
+            log::warn!("failed to set double-Esc cancel shortcut active={active}: {err}");
+        }
+    }
+}
+
+fn should_enable_cancel_shortcut(status: &crate::contracts::status::SessionStatus) -> bool {
+    matches!(status.mode, crate::contracts::events::PipelineMode::Toggle)
+        && matches!(
+            status.state,
+            PipelinePhase::Starting
+                | PipelinePhase::Recording
+                | PipelinePhase::Stopping
+                | PipelinePhase::Processing
+        )
+}
+
+fn handle_cancel_shortcut_press(
+    cancel_shortcut: &CancelShortcutHandle,
+    shortcut: &Shortcut,
+    state: ShortcutState,
+) -> bool {
+    if state != ShortcutState::Pressed {
+        return false;
+    }
+
+    let now = Instant::now();
+    let Ok(mut cancel_state) = cancel_shortcut.inner.lock() else {
+        log::warn!("cancel shortcut state unavailable");
+        return false;
+    };
+
+    if !cancel_state.active || cancel_state.shortcut.as_ref() != Some(shortcut) {
+        return false;
+    }
+
+    let double_press = cancel_state
+        .last_pressed_at
+        .map(|pressed_at| now.duration_since(pressed_at) <= DOUBLE_ESC_CANCEL_WINDOW)
+        .unwrap_or(false);
+
+    if double_press {
+        cancel_state.last_pressed_at = None;
+        true
+    } else {
+        cancel_state.last_pressed_at = Some(now);
+        log::debug!("double-Esc cancel armed");
+        false
+    }
+}
+
 fn runtime_fingerprint(cfg: &AppConfig) -> String {
     serde_json::json!({
         "language": cfg.ui.language,
@@ -572,6 +719,7 @@ fn runtime_fingerprint(cfg: &AppConfig) -> String {
         "formatting_enabled": cfg.models.formatting_enabled,
         "start_sound": cfg.audio_cues.start_sound,
         "stop_sound": cfg.audio_cues.stop_sound,
+        "cancel_sound": cfg.audio_cues.cancel_sound,
         "error_sound": cfg.audio_cues.error_sound,
     })
     .to_string()
@@ -586,19 +734,28 @@ fn handle_global_shortcut(
         return;
     };
 
-    let Some((cfg, bus_tx, registered)) = runtime_state.inner.lock().ok().and_then(|guard| {
-        guard.as_ref().map(|runtime| {
-            (
-                runtime.cfg.clone(),
-                runtime.bus_tx.clone(),
-                runtime.shortcut,
-            )
+    let Some((cfg, bus_tx, registered, cancel_shortcut)) =
+        runtime_state.inner.lock().ok().and_then(|guard| {
+            guard.as_ref().map(|runtime| {
+                (
+                    runtime.cfg.clone(),
+                    runtime.bus_tx.clone(),
+                    runtime.shortcut.clone(),
+                    runtime.cancel_shortcut.clone(),
+                )
+            })
         })
-    }) else {
+    else {
         return;
     };
 
     if registered.as_ref() != Some(shortcut) {
+        if handle_cancel_shortcut_press(&cancel_shortcut, shortcut, event.state()) {
+            log::debug!("double-Esc cancel shortcut accepted");
+            if let Some(worker_event) = bus_tx.send_hotkey(HotkeyEvent::CancelPressed) {
+                let _ = bus_tx.send_worker(worker_event);
+            }
+        }
         return;
     }
 
@@ -620,12 +777,14 @@ fn handle_global_shortcut(
 }
 
 fn spawn_status_task(
+    app: AppHandle,
     mut status_rx: SessionStatusReceiver,
     mut audio_level_rx: AudioLevelReceiver,
     tray: AppTray,
     status_widget: Option<StatusWidget>,
     cue: audio_cues::CuePlayer,
     cfg: AppConfig,
+    cancel_shortcut: CancelShortcutHandle,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut pulse_timer = tokio::time::interval(tokio::time::Duration::from_millis(
@@ -644,6 +803,11 @@ fn spawn_status_task(
                     let Some(status) = status else {
                         break;
                     };
+                    set_cancel_shortcut_active(
+                        &app,
+                        &cancel_shortcut,
+                        should_enable_cancel_shortcut(&status),
+                    );
                     let render = crate::runtime::render_status_for_host(&cfg.tray, &status);
                     let next_widget_recording_active = matches!(status.state, PipelinePhase::Recording);
                     if let Some(widget) = &status_widget {
@@ -664,6 +828,7 @@ fn spawn_status_task(
                                 }
                                 audio_cues::CueKind::Start => cue.play_start(),
                                 audio_cues::CueKind::Stop => cue.play_stop(),
+                                audio_cues::CueKind::Cancel => cue.play_cancel(),
                                 audio_cues::CueKind::Error => cue.play_error(),
                             }
                             last_cued_event = Some(cue_key);
@@ -688,6 +853,7 @@ fn spawn_status_task(
                 }
             }
         }
+        set_cancel_shortcut_active(&app, &cancel_shortcut, false);
     })
 }
 

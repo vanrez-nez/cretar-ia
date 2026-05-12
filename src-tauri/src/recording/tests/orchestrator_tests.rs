@@ -79,6 +79,25 @@ where
     }
 }
 
+async fn drive_to_recording(
+    bus_tx: &CommandBusTx,
+    status_rx: &mut SessionStatusReceiver,
+) -> SessionStatus {
+    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
+    let _ = wait_for_status(status_rx, |status| status.state == PipelinePhase::Starting).await;
+    let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
+    wait_for_status(status_rx, |status| status.state == PipelinePhase::Recording).await
+}
+
+async fn drive_to_stopping(
+    bus_tx: &CommandBusTx,
+    status_rx: &mut SessionStatusReceiver,
+) -> SessionStatus {
+    let _ = drive_to_recording(bus_tx, status_rx).await;
+    let _ = bus_tx.send_hotkey(HotkeyEvent::Released);
+    wait_for_status(status_rx, |status| status.state == PipelinePhase::Stopping).await
+}
+
 #[tokio::test]
 async fn bounded_status_channel_drops_oldest_and_keeps_latest_ordered_state() {
     let (status_tx, mut status_rx) = bounded_status_channel(2);
@@ -123,103 +142,70 @@ async fn bounded_status_channel_drops_oldest_and_keeps_latest_ordered_state() {
 }
 
 #[tokio::test]
-async fn cancel_during_starting_moves_to_recovering() {
+async fn cancel_during_starting_returns_idle_with_cancelled_status() {
     let cfg = harness_config();
     let (bus_tx, mut status_rx, handle) = start_runtime(cfg).await;
 
     let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
+    let _ = wait_for_status(&mut status_rx, |status| {
+        status.state == PipelinePhase::Starting
+    })
+    .await;
     if let Some(event) = bus_tx.send_hotkey(HotkeyEvent::CancelPressed) {
         let _ = bus_tx.send_worker(event);
     }
 
-    let recovering = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recovering
+    let idle = wait_for_status(&mut status_rx, |status| {
+        status.state == PipelinePhase::Idle && status.source == "recording_cancelled"
     })
     .await;
-    assert_eq!(recovering.source, "cancel_pressed");
-
-    let _ = bus_tx.send_worker(RecordingEvent::RecoveryCompleted);
-    let idle = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Idle).await;
-    assert!(idle.seq > recovering.seq);
+    assert_eq!(idle.error_code, None);
+    assert_eq!(idle.error_hint, RecoveryHint::NoRecovery);
 
     shutdown_runtime(bus_tx, handle).await;
 }
 
 #[tokio::test]
-async fn cancel_during_recording_moves_to_recovering() {
+async fn cancel_during_recording_returns_idle_with_cancelled_status() {
     let cfg = harness_config();
     let (bus_tx, mut status_rx, handle) = start_runtime(cfg).await;
 
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
-    let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
-
-    let _recording = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recording
-    })
-    .await;
+    let _ = drive_to_recording(&bus_tx, &mut status_rx).await;
     let _ = bus_tx.send_hotkey(HotkeyEvent::CancelPressed);
-    let recovering = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recovering
+    let idle = wait_for_status(&mut status_rx, |status| {
+        status.state == PipelinePhase::Idle && status.source == "recording_cancelled"
     })
     .await;
-    assert_eq!(recovering.error_hint, RecoveryHint::RetryStop);
-
-    let _ = bus_tx.send_worker(RecordingEvent::RecoveryCompleted);
-    let idle = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Idle).await;
-    assert!(idle.seq > recovering.seq);
+    assert_eq!(idle.error_code, None);
+    assert_eq!(idle.error_hint, RecoveryHint::NoRecovery);
 
     shutdown_runtime(bus_tx, handle).await;
 }
 
 #[tokio::test]
-async fn cancel_during_stopping_moves_to_recovering() {
+async fn cancel_during_stopping_returns_idle_with_cancelled_status() {
     let cfg = harness_config();
     let (bus_tx, mut status_rx, handle) = start_runtime(cfg).await;
 
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
-    let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recording
-    })
-    .await;
-
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Released);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Stopping
-    })
-    .await;
+    let _ = drive_to_stopping(&bus_tx, &mut status_rx).await;
 
     let _ = bus_tx.send_hotkey(HotkeyEvent::CancelPressed);
-    let recovering = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recovering
+    let idle = wait_for_status(&mut status_rx, |status| {
+        status.state == PipelinePhase::Idle && status.source == "recording_cancelled"
     })
     .await;
-    assert_eq!(recovering.source, "cancel_pressed");
-
-    let _ = bus_tx.send_worker(RecordingEvent::RecoveryCompleted);
-    let _ = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Idle).await;
+    assert_eq!(idle.error_code, None);
+    assert_eq!(idle.error_hint, RecoveryHint::NoRecovery);
 
     shutdown_runtime(bus_tx, handle).await;
 }
 
 #[tokio::test]
-async fn cancel_during_processing_moves_to_recovering() {
+async fn cancel_during_processing_returns_idle_with_cancelled_status() {
     let cfg = harness_config();
     let (bus_tx, mut status_rx, handle) = start_runtime(cfg).await;
 
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
-    let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recording
-    })
-    .await;
-
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Released);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Stopping
-    })
-    .await;
+    let _ = drive_to_stopping(&bus_tx, &mut status_rx).await;
     let _ = bus_tx.send_worker(RecordingEvent::AudioStopped {
         artifact: placeholder_artifact(),
     });
@@ -229,12 +215,12 @@ async fn cancel_during_processing_moves_to_recovering() {
     .await;
 
     let _ = bus_tx.send_hotkey(HotkeyEvent::CancelPressed);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recovering
+    let idle = wait_for_status(&mut status_rx, |status| {
+        status.state == PipelinePhase::Idle && status.source == "recording_cancelled"
     })
     .await;
-    let _ = bus_tx.send_worker(RecordingEvent::RecoveryCompleted);
-    let _ = wait_for_status(&mut status_rx, |status| status.state == PipelinePhase::Idle).await;
+    assert_eq!(idle.error_code, None);
+    assert_eq!(idle.error_hint, RecoveryHint::NoRecovery);
 
     shutdown_runtime(bus_tx, handle).await;
 }
@@ -278,18 +264,7 @@ async fn worker_stop_failure_transitions_to_error_with_retry_hint() {
     let cfg = harness_config();
     let (bus_tx, mut status_rx, handle) = start_runtime(cfg).await;
 
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
-    let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recording
-    })
-    .await;
-
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Released);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Stopping
-    })
-    .await;
+    let _ = drive_to_stopping(&bus_tx, &mut status_rx).await;
     let _ = bus_tx.send_worker(RecordingEvent::AudioStopFailed {
         code: RecordingErrorCode::AudioStop,
         reason: "stop failure".into(),
@@ -337,18 +312,7 @@ async fn process_failure_transitions_to_error_and_recovers() {
     let cfg = harness_config();
     let (bus_tx, mut status_rx, handle) = start_runtime(cfg).await;
 
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Pressed);
-    let _ = bus_tx.send_worker(RecordingEvent::AudioStarted);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Recording
-    })
-    .await;
-
-    let _ = bus_tx.send_hotkey(HotkeyEvent::Released);
-    let _ = wait_for_status(&mut status_rx, |status| {
-        status.state == PipelinePhase::Stopping
-    })
-    .await;
+    let _ = drive_to_stopping(&bus_tx, &mut status_rx).await;
     let _ = bus_tx.send_worker(RecordingEvent::AudioStopped {
         artifact: placeholder_artifact(),
     });

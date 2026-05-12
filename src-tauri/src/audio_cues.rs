@@ -14,6 +14,7 @@ use std::time::Duration;
 pub enum CueKind {
     Start,
     Stop,
+    Cancel,
     Error,
 }
 
@@ -33,8 +34,16 @@ impl CuePlayer {
         let volume = cfg.volume;
         let start_sound = config.resolve_sound_path(cfg.start_sound.as_ref());
         let stop_sound = config.resolve_sound_path(cfg.stop_sound.as_ref());
+        let cancel_sound = config.resolve_sound_path(cfg.cancel_sound.as_ref());
         let error_sound = config.resolve_sound_path(cfg.error_sound.as_ref());
-        log_cue_config(enabled, volume, &start_sound, &stop_sound, &error_sound);
+        log_cue_config(
+            enabled,
+            volume,
+            &start_sound,
+            &stop_sound,
+            &cancel_sound,
+            &error_sound,
+        );
         let (tx, rx) = mpsc::channel::<CueRequest>();
 
         thread::spawn(move || {
@@ -43,6 +52,7 @@ impl CuePlayer {
                 volume,
                 start_sound: CueAsset::load("start", start_sound, 880),
                 stop_sound: CueAsset::load("stop", stop_sound, 1040),
+                cancel_sound: CueAsset::load("cancel", cancel_sound, 660),
                 error_sound: CueAsset::load("error", error_sound, 220),
                 output: if enabled { CueOutput::new() } else { None },
             };
@@ -51,6 +61,7 @@ impl CuePlayer {
                 let played = match request.kind {
                     CueKind::Start => player.play(CueKind::Start, request.completion.is_some()),
                     CueKind::Stop => player.play(CueKind::Stop, request.completion.is_some()),
+                    CueKind::Cancel => player.play(CueKind::Cancel, request.completion.is_some()),
                     CueKind::Error => player.play(CueKind::Error, request.completion.is_some()),
                 };
                 if let Some(completion) = request.completion {
@@ -76,6 +87,7 @@ impl CuePlayer {
         log::info!("audio cue self-test requested by CRETAR_IA_AUDIO_CUES_SELF_TEST=1");
         self.play_start();
         self.play_stop();
+        self.play_cancel();
         self.play_error();
     }
 
@@ -99,6 +111,11 @@ impl CuePlayer {
         self.queue(CueKind::Error);
     }
 
+    pub fn play_cancel(&self) {
+        log::debug!("queue cancel cue");
+        self.queue(CueKind::Cancel);
+    }
+
     pub fn status_to_cue(status: &SessionStatus) -> Option<CueKind> {
         if status.source == "start_requested" {
             return Some(CueKind::Start);
@@ -109,6 +126,10 @@ impl CuePlayer {
             "push_release_stop" | "toggle_press_stop" | "audio_started_stop_requested"
         ) {
             return Some(CueKind::Stop);
+        }
+
+        if status.source == "recording_cancelled" {
+            return Some(CueKind::Cancel);
         }
 
         if status.state == PipelinePhase::Error {
@@ -158,6 +179,7 @@ struct SerializedCuePlayer {
     volume: f32,
     start_sound: CueAsset,
     stop_sound: CueAsset,
+    cancel_sound: CueAsset,
     error_sound: CueAsset,
     output: Option<CueOutput>,
 }
@@ -194,6 +216,7 @@ impl SerializedCuePlayer {
         let asset = match kind {
             CueKind::Start => &self.start_sound,
             CueKind::Stop => &self.stop_sound,
+            CueKind::Cancel => &self.cancel_sound,
             CueKind::Error => &self.error_sound,
         };
         self.play_asset(asset, wait)
@@ -334,11 +357,13 @@ fn log_cue_config(
     volume: f32,
     start_sound: &Option<PathBuf>,
     stop_sound: &Option<PathBuf>,
+    cancel_sound: &Option<PathBuf>,
     error_sound: &Option<PathBuf>,
 ) {
     log::info!("audio cues config: enabled={enabled} volume={volume}");
     log_cue_asset("start", start_sound);
     log_cue_asset("stop", stop_sound);
+    log_cue_asset("cancel", cancel_sound);
     log_cue_asset("error", error_sound);
 }
 

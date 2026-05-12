@@ -884,6 +884,7 @@ fn settings_fingerprint(settings: &Value) -> String {
         "models.formatting.enabled": settings.get("models.formatting.enabled"),
         "recording.sounds.start": settings.get("recording.sounds.start"),
         "recording.sounds.stop": settings.get("recording.sounds.stop"),
+        "recording.sounds.cancel": settings.get("recording.sounds.cancel"),
         "recording.sounds.error": settings.get("recording.sounds.error"),
     })
     .to_string()
@@ -900,6 +901,7 @@ fn config_fingerprint(config: &AppConfig) -> String {
         "models.formatting.enabled": config.models.formatting_enabled,
         "recording.sounds.start": config.audio_cues.start_sound,
         "recording.sounds.stop": config.audio_cues.stop_sound,
+        "recording.sounds.cancel": config.audio_cues.cancel_sound,
         "recording.sounds.error": config.audio_cues.error_sound,
     })
     .to_string()

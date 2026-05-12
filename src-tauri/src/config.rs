@@ -431,8 +431,16 @@ pub struct AudioCueConfig {
     pub enabled: bool,
     pub start_sound: Option<String>,
     pub stop_sound: Option<String>,
+    #[serde(default = "AudioCueConfig::default_cancel_sound")]
+    pub cancel_sound: Option<String>,
     pub error_sound: Option<String>,
     pub volume: f32,
+}
+
+impl AudioCueConfig {
+    fn default_cancel_sound() -> Option<String> {
+        Some("sounds/cancel.wav".to_string())
+    }
 }
 
 impl Default for AudioCueConfig {
@@ -441,6 +449,7 @@ impl Default for AudioCueConfig {
             enabled: true,
             start_sound: Some("sounds/sine_transition_start.wav".to_string()),
             stop_sound: Some("sounds/sine_transition_stop.wav".to_string()),
+            cancel_sound: Self::default_cancel_sound(),
             error_sound: Some("sounds/sine_error.wav".to_string()),
             volume: 0.6,
         }
@@ -793,6 +802,7 @@ fn bundled_sound_bytes(file: &str) -> Result<&'static [u8]> {
         "sine_transition_start.wav" => Ok(include_bytes!("../sounds/sine_transition_start.wav")),
         "sine_select.wav" => Ok(include_bytes!("../sounds/sine_select.wav")),
         "sine_transition_stop.wav" => Ok(include_bytes!("../sounds/sine_transition_stop.wav")),
+        "cancel.wav" => Ok(include_bytes!("../sounds/cancel.wav")),
         other => Err(anyhow!(
             "sound manifest references unknown bundled file '{other}'"
         )),

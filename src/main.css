@@ -197,6 +197,11 @@ html[data-window="status-widget"] #root {
   --status-widget-accent: oklch(0.68 0 0);
 }
 
+.status-widget--cancelled {
+  --status-widget-accent: oklch(0.68 0 0);
+  --status-widget-color-duration: 0ms;
+}
+
 .status-widget--recording {
   --status-widget-accent: oklch(0.65 0.19 28);
 }

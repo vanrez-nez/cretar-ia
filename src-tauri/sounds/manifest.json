@@ -26,6 +26,11 @@
       "file": "sine_transition_stop.wav"
     },
     {
+      "id": "cancel",
+      "label": "Cancel",
+      "file": "cancel.wav"
+    },
+    {
       "id": "sine_error",
       "label": "Sine Error",
       "file": "sine_error.wav"

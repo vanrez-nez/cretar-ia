@@ -122,15 +122,19 @@
     },
     "soundStart": {
       "title": "Sonido al iniciar grabación",
-      "description": "Activa o desactiva el sonido de inicio configurado."
+      "description": "El sonido que escuchas cuando empieza la grabación."
     },
     "soundEnd": {
       "title": "Sonido al terminar grabación",
-      "description": "Activa o desactiva el sonido de fin configurado."
+      "description": "El sonido que escuchas cuando termina la grabación y empieza la transcripción."
+    },
+    "soundCancel": {
+      "title": "Sonido al cancelar grabación",
+      "description": "El sonido que escuchas cuando se cancela una grabación."
     },
     "soundError": {
       "title": "Sonido de error",
-      "description": "Activa o desactiva el sonido de error configurado."
+      "description": "El sonido que escuchas cuando falla la grabación o la transcripción."
     },
     "pauseMedia": {
       "title": "Pausar medios durante la grabación",
