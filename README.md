@@ -1,66 +1,51 @@
-# cretar-ia
+# Cretar IA
 
-Minimal cross-platform dictation agent with:
-- global shortcut control
-- recording from mic
-- OpenRouter transcription
-- systray-style status updates (optional with `--features tray`)
-- configurable start/stop/error cues
-- home-directory config at `~/.cretar-ia/config.json`
+Cretar IA is a desktop dictation app for turning short voice recordings into text and pasting them into the app you are already using. It runs from the tray, listens for a global hotkey, records from your selected microphone, sends the audio to your configured transcription provider, and delivers the result through the clipboard/paste flow.
 
-## Config
+## What You Can Do With Cretar IA
 
-`~/.cretar-ia/config.json` is created automatically on first run.
+- Dictate text into any app with a global hotkey.
+- Use push-to-talk or toggle recording mode.
+- Choose the microphone used for recording.
+- See when the app is listening or transcribing in the tray and always-on-top widget.
+- Transcribe with OpenRouter or OpenAI-compatible providers.
+- Choose separate models for transcription and text cleanup.
+- Clean up, rewrite, or format dictated text with reusable prompts.
+- Paste results automatically, with clipboard fallback when paste automation is unavailable.
+- Keep an optional local history of transcripts and retained recordings.
+- Review, replay, delete, or export saved transcript history.
+- Configure recording feedback sounds and app language.
 
-```json
-{
-  "provider": {
-    "provider": "openrouter",
-    "openrouter": {
-      "api_key": "OPENROUTER_API_KEY",
-      "model": "openai/whisper-1",
-      "base_url": "https://openrouter.ai/api/v1",
-      "endpoint": "audio/transcriptions",
-      "prompt": null
-    }
-  },
-  "interaction": {
-    "mode": "push_to_talk",
-    "shortcut": "ctrl+shift+space"
-  },
-  "audio": {
-    "sample_rate": 16000,
-    "channels": 1,
-    "input_device": null,
-    "max_duration_secs": 120,
-    "recording_dir": "recordings"
-  },
-  "audio_cues": {
-    "enabled": false,
-    "start_sound": null,
-    "stop_sound": null,
-    "error_sound": null,
-    "volume": 0.6
-  },
-  "output": {
-    "mode": "clipboard_paste",
-    "paste_delay_ms": 40
-  },
-  "tray": {
-    "title": "Cretar IA",
-    "icon": "idle",
-    "tooltip": {
-      "idle": "Cretar IA idle",
-      "recording": "Cretar IA recording",
-      "sending": "Cretar IA transcribing...",
-      "success": "Cretar IA ready"
-    },
-    "refresh_ms": 500
-  }
-}
-```
+## Getting Started
 
-## Run (official Vite + Tauri layout)
+Open **Settings** from the tray and configure:
+
+1. **Transcript model**: add/select an STT model provider. OpenRouter and OpenAI-compatible providers are supported.
+2. **Transform model**: optionally add/select a formatting model for prompt-based cleanup or rewriting.
+3. **Prompts**: choose or create reusable prompt templates for transcript transformation.
+4. **Recording**: choose push-to-talk or toggle mode, set the hotkey, select the microphone, and configure sound cues.
+5. **History**: enable retained history if you want transcripts and audio files kept locally for review/export.
+
+The default hotkey is `Ctrl+Shift+Space`.
+
+## Permissions
+
+On macOS, grant the app:
+
+- **Microphone** permission so it can record audio.
+- **Accessibility** permission if you want automatic paste keystrokes to work.
+
+Clipboard fallback can still place the transcript on the clipboard when paste automation is unavailable.
+
+When testing microphone permissions, run the packaged `.app` bundle. macOS permission prompts are tied to the app bundle, and running the raw debug binary from a terminal may not show the expected prompt.
+
+## Developer Build
+
+Prerequisites:
+
+- Node.js/npm
+- Rust toolchain
+- Tauri system prerequisites for your platform
 
 Install dependencies:
 
@@ -68,28 +53,26 @@ Install dependencies:
 npm install
 ```
 
-Run the combined app (frontend + backend) in development:
+Run the app in development:
 
 ```bash
 npm run tauri dev
 ```
 
-Important permission note (macOS):
-- Clipboard actions do not trigger macOS privacy prompts in this app.
-- Microphone permissions are tied to the app bundle runtime.
-- If you only run the raw debug binary, permission prompts may not appear.
-- Validate mic permission by running a built `.app` from `target/debug/bundle/macos` (or release) and granting access in **System Settings > Privacy & Security > Microphone**.
-
-Run the tray app with only backend features (no settings window):
+Run TypeScript checks:
 
 ```bash
-cd src-tauri
-cargo run --features tray
+npm run check
 ```
 
-Open the settings UI directly:
+Run Rust tests with the app features enabled:
 
 ```bash
-cd src-tauri
-cargo run --features "tray settings-ui" -- --settings
+cargo test --manifest-path src-tauri/Cargo.toml --features settings-ui,tray
+```
+
+Build a macOS DMG release:
+
+```bash
+npm run release
 ```
