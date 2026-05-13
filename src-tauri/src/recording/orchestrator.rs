@@ -25,6 +25,7 @@ use crate::recording::workers::{
 };
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -141,6 +142,7 @@ fn start_with_worker_mode(
             stop_in_flight: false,
             post_stop_started_at: None,
             media_resume_in_flight: None,
+            cancel_cue_after_route_restore_pending: Arc::new(AtomicBool::new(false)),
             shutdown_started: false,
             max_recording_limit_triggered: false,
             last_device_recovery_check: Instant::now(),
@@ -172,6 +174,7 @@ struct Orchestrator {
     stop_in_flight: bool,
     post_stop_started_at: Option<Instant>,
     media_resume_in_flight: Option<JoinHandle<()>>,
+    cancel_cue_after_route_restore_pending: Arc<AtomicBool>,
     shutdown_started: bool,
     max_recording_limit_triggered: bool,
     last_device_recovery_check: Instant,
@@ -233,6 +236,11 @@ impl Orchestrator {
                     | RecordingEvent::RecordingCancelled { .. }
             )
         );
+        let should_play_cancel_cue_after_route_restore = self.cfg.recording.pause_media
+            && matches!(
+                &event,
+                RecordedEvent::Worker(RecordingEvent::RecordingCancelled { .. })
+            );
         let audio_stopped_to_processing_started_at =
             if matches!(
                 &event,
@@ -294,6 +302,10 @@ impl Orchestrator {
         if should_resume_after_process_outcome {
             self.pending_recording = None;
             self.cancel_stt_preconnect();
+        }
+        if should_play_cancel_cue_after_route_restore {
+            self.cancel_cue_after_route_restore_pending
+                .store(true, Ordering::SeqCst);
         }
 
         let transition = transition(&self.state, event.clone());
@@ -813,6 +825,8 @@ impl Orchestrator {
             return;
         }
         let media_pause = Arc::clone(&self.media_pause);
+        let cancel_cue_pending = Arc::clone(&self.cancel_cue_after_route_restore_pending);
+        let cue = self.cue.clone();
         log::info!("profile.media_resume_now started=true");
         self.media_resume_in_flight = Some(tokio::task::spawn_blocking(move || {
             let started_at = Instant::now();
@@ -823,6 +837,7 @@ impl Orchestrator {
                 outcome.resumed,
                 started_at.elapsed().as_millis()
             );
+            play_pending_cancel_cue_after_route_restore(&cancel_cue_pending, &cue, "resume_now");
         }));
     }
 
@@ -836,6 +851,8 @@ impl Orchestrator {
             return;
         }
         let media_pause = Arc::clone(&self.media_pause);
+        let cancel_cue_pending = Arc::clone(&self.cancel_cue_after_route_restore_pending);
+        let cue = self.cue.clone();
         log::info!("profile.media_resume_after_audio_stopped started=true");
         self.media_resume_in_flight = Some(tokio::task::spawn_blocking(move || {
             let started_at = Instant::now();
@@ -851,6 +868,11 @@ impl Orchestrator {
                 outcome.resumed,
                 attempts,
                 started_at.elapsed().as_millis()
+            );
+            play_pending_cancel_cue_after_route_restore(
+                &cancel_cue_pending,
+                &cue,
+                "resume_after_audio_stopped",
             );
         }));
     }
@@ -904,5 +926,16 @@ fn cleanup_cancelled_recording_artifact(path: &PathBuf) {
         );
     } else {
         log::debug!("removed cancelled recording artifact {:?}", path);
+    }
+}
+
+fn play_pending_cancel_cue_after_route_restore(
+    pending: &AtomicBool,
+    cue: &CuePlayer,
+    context: &'static str,
+) {
+    if pending.swap(false, Ordering::SeqCst) {
+        log::info!("recording cancel cue after route restore context={context}");
+        cue.play_cancel();
     }
 }

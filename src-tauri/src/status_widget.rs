@@ -15,7 +15,7 @@ const STATUS_WIDGET_AUDIO_LEVEL_EVENT: &str = "status-widget:audio-level";
 const STATUS_WIDGET_AUDIO_LEVEL_RESET_EVENT: &str = "status-widget:audio-level-reset";
 const COLLAPSED_WIDTH: f64 = 40.0;
 const COLLAPSED_HEIGHT: f64 = 5.0;
-const EXPANDED_WIDTH: f64 = 100.0;
+const EXPANDED_WIDTH: f64 = 60.0;
 const EXPANDED_HEIGHT: f64 = 32.0;
 const BOTTOM_MARGIN: f64 = 16.0;
 

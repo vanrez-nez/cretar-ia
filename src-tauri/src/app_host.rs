@@ -826,6 +826,9 @@ fn spawn_status_task(
                                 audio_cues::CueKind::Start if cfg.recording.pause_media => {
                                     log::debug!("cue skipped in status task because recording pause_media owns start cue");
                                 }
+                                audio_cues::CueKind::Cancel if cfg.recording.pause_media => {
+                                    log::debug!("cue skipped in status task because recording pause_media owns cancel cue");
+                                }
                                 audio_cues::CueKind::Start => cue.play_start(),
                                 audio_cues::CueKind::Stop => cue.play_stop(),
                                 audio_cues::CueKind::Cancel => cue.play_cancel(),
